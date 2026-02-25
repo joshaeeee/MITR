@@ -42,6 +42,86 @@ pnpm dev:agent
 pnpm test:web
 ```
 
+## Local Testing (End-to-End)
+Use this section when you want to verify the full stack locally without guessing.
+
+### 1) Preflight
+- Ensure `mitr-backend/.env` is configured from `.env.example`.
+- Required services/keys should be valid: LiveKit, OpenAI Realtime, Postgres, Redis, and any enabled tool providers (Exa, Mem0, Prokerala, etc.).
+- Ensure `ffmpeg` is installed (required for satsang ambience track publishing).
+
+Quick checks:
+```bash
+cd mitr-backend
+pnpm typecheck
+pnpm build
+```
+
+### 2) Start all local processes
+Terminal A:
+```bash
+cd mitr-backend
+pnpm dev:api
+```
+
+Terminal B:
+```bash
+cd mitr-backend
+pnpm dev:agent
+```
+
+Terminal C (web simulator):
+```bash
+cd mitr-backend
+pnpm test:web
+```
+Open `http://localhost:8787`.
+
+### 3) Connect and run voice test
+In web simulator:
+1. Set host as your API host (`http://localhost:<api-port>` if local API).
+2. Enter a test `userId`.
+3. Click `Connect`.
+4. Speak the prompts from the tool matrix below.
+
+### 4) Fast smoke test checklist
+Run these in order:
+1. Health: `GET /healthz` should return healthy.
+2. Voice connect: simulator connects and microphone is active.
+3. Basic satsang: say “Satsang shuru karo” and verify `flow_start`.
+4. Continue flow: say “Agle shlok par jao” and verify `flow_next`.
+5. Stop flow: say “Satsang stop karo” and verify `flow_stop`.
+6. Async news: say “Latest Maharashtra news batao” and verify pending-first + followup.
+7. Async YouTube: ask for a bhajan and verify pending-first + playback-ready event.
+8. Memory roundtrip: save memory, then ask recall.
+9. Reminder roundtrip: create future reminder, then list reminders.
+
+### 5) Log signals to confirm success
+Look for these in `pnpm dev:agent` logs:
+- `Agent tools registered`
+- `received tool call from the realtime API`
+- `Tool call execution finished` with `isError: false`
+- For async tools: first `status: pending`, then corresponding `*_ready`
+- For satsang ambience:
+  - `Satsang ambience track started`
+  - `Satsang ambience track stopped`
+
+### 6) Optional direct API checks
+```bash
+# health
+curl -s http://localhost:8787/healthz
+
+# onboarding status (replace user)
+curl -s "http://localhost:8787/onboarding/status?userId=user-local-web-1"
+```
+
+### 7) If something fails
+1. Validate env vars in `mitr-backend/.env`.
+2. Confirm Redis/Postgres are reachable.
+3. Restart agent worker after env or code changes.
+4. Check tool timeout warnings in logs and verify provider credentials.
+5. Re-run `pnpm typecheck && pnpm build` to catch structural issues.
+
 ## Tool Test Prompts (Say These)
 Use these utterances to force different tools/features.
 
