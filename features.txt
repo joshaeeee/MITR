@@ -1,0 +1,105 @@
+Feature Set
+1. Conversation & Companionship
+This is the soul of the product. The device is always available to just talk. No task required.
+
+Open-ended conversation in their native language — Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Kannada, Punjabi, Odia
+Remembers everything said across all conversations — names, preferences, health concerns, family details, past stories shared
+Asks follow-up questions based on memory ("Last time you mentioned your son was visiting — did he come?")
+Recognizes emotional tone and adapts — if someone sounds lonely or low, it shifts toward comfort and warmth rather than information
+Never ends a conversation abruptly — always closes warmly
+
+
+2. Religious & Spiritual Knowledge
+This is your deepest content moat.
+Storytelling
+
+Stories from all 18 Mahapuranas, Ramayana (all regional versions — Valmiki, Tulsidas, Kamban, Adhyatma), Mahabharata, Bhagavata
+Panchatantra, Jataka tales, Hitopadesha
+Stories of saints — Mirabai, Tukaram, Kabir, Andal, Ramakrishna, Vivekananda, Ramanuja, Adi Shankaracharya, Guru Nanak, Mahavir
+Regional folk versions of myths — the Ramayana in Kerala is different from the one in Bengal, and elderly users will know this and appreciate that the device knows it too
+Ability to tell the same story in different depths — a 2-minute version or a 20-minute version depending on mood
+
+Daily Spiritual Content
+
+Shloka or verse of the day with meaning explained in simple language
+Daily prayer assistant — it can lead them through their morning or evening prayer sequence
+Festival calendar — automatically knows when Ekadashi is, when Navratri starts, what each day of a festival signifies
+Significance of the day — "Today is Margashirsha Purnima, which is considered especially auspicious for this reason..."
+
+Q&A on Texts
+
+They can ask anything — "Why did Krishna say this to Arjuna?", "What is the difference between Dvaita and Advaita?", "What does the Gita say about death?"
+Answers calibrated for a non-scholarly elderly person — no jargon, always relatable
+
+Multi-faith
+
+Covers Hinduism, Sikhism, Jainism, and Islam at depth — India's elderly are not monolithic
+
+
+3. Music & Audio
+You need this to compete with the music box, but you go deeper.
+
+Bhajan library — by deity, by saint, by language, by occasion
+Classical ragas by time of day — device suggests the right raga for morning, afternoon, evening, night
+Explains why a raga fits a time — this turns passive listening into learning
+Devotional music for specific festivals and occasions
+Can sing along or hum familiar tunes to prompt memory in dementia-adjacent cases
+Guided meditation music rooted in Indian tradition — not generic wellness sounds
+
+
+4. Memory & Notes
+
+Voice-recorded personal notes — "Remember that my daughter's anniversary is March 12th"
+The device proactively surfaces these at the right time — "You asked me to remind you about your daughter's anniversary, it's in three days"
+Records important family information — grandchildren's names, their schools, their birthdays
+Can store prayers or personal verses they want to remember
+Life story recording — the device prompts them with questions and records their answers as an ongoing audio memoir
+
+
+5. Reminders & Daily Routine
+
+Medication reminders — multiple times a day, persistent until acknowledged
+Prayer time reminders aligned to their specific tradition
+Water and meal reminders — gentle, non-patronizing
+Doctor appointment reminders
+Festival and puja day reminders set weeks in advance
+Morning routine prompt — "Good morning. Today is Tuesday, Hanuman's day. Your blood pressure medicine reminder is at 9am. Shall I tell you today's shloka?"
+
+
+6. Family Connection
+This is a major stickiness and monetization lever.
+
+Family members install a companion app on their phone
+They can record voice messages that play on the device at a set time — a grandchild's "Good morning Dadi" playing every morning is worth more than any feature
+Grandparent can reply by voice, message goes back to the family app
+Family can send photos that display if you add a small screen, or the device describes them verbally
+Family can see device activity — not surveillance, but a gentle "Nani spoke to the device for 45 minutes today" that gives remote family peace of mind
+SOS button — one physical press calls a pre-set family member immediately
+
+
+7. Health & Wellness
+Positioned within their cultural framework, not as a medical product.
+
+Guided pranayama — Anulom Vilom, Bhramari, Kapalbhati — explained in traditional terms
+Yoga nidra for sleep — deeply rooted in Indian tradition, not Western wellness
+Gentle movement prompts — framed as what their tradition recommends, not exercise
+Mood check-ins — casual, conversational, never clinical
+Identifies concerning patterns over time and can notify family if someone hasn't spoken to the device in an unusual amount of time
+
+
+8. General Knowledge & Curiosity
+Elderly people are not intellectually dead. Many are deeply curious.
+
+Current affairs explained simply — what's happening in the country, explained without political bias
+History — India's independence movement, Partition stories, stories about their era that they personally lived through
+Geography, science explained through Indian context — "Do you know why the Ganges doesn't stagnate the way other rivers do?"
+Trivia and quizzes rooted in Indian culture and mythology — this creates engagement and mental stimulation
+
+
+9. Mental Stimulation & Games
+Fighting cognitive decline is a real need.
+
+Memory games — the device tells a short story and asks questions about it
+Name-that-deity games — clues about attributes and the user guesses
+Shayari and poetry games — the device says a line and the user completes it
+Simple riddles rooted in Indian folk tradition

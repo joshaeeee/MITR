@@ -1,0 +1,51 @@
+{
+  "name": "mitr-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "dev": "pnpm dev:api",
+    "dev:api": "tsx watch src/index.ts",
+    "dev:agent": "tsx watch src/agent-worker/main.ts -- dev",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "start": "pnpm start:api",
+    "start:api": "node dist/src/index.js",
+    "start:agent": "node dist/src/agent-worker/main.js start",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "worker": "tsx src/workers/reminder-worker.ts",
+    "test:agent": "tsx scripts/test-agent-tools.ts",
+    "test:unit": "tsx --test src/agent-worker/async-followup-manager.test.ts src/services/reminders/reminder-time.test.ts src/services/companion/satsang-ledger.test.ts",
+    "test:web": "tsx tools/web-sim/server.ts",
+    "ingest:religious": "tsx scripts/ingest-religious-corpus.ts",
+    "stories:translate": "tsx scripts/translate-stories-sarvam.ts",
+    "ingest:stories": "tsx scripts/ingest-stories-corpus.ts",
+    "drizzle:generate": "drizzle-kit generate",
+    "drizzle:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@livekit/agents": "1.x",
+    "@livekit/agents-plugin-openai": "1.x",
+    "@livekit/rtc-node": "^0.13.24",
+    "@livekit/protocol": "^1.44.0",
+    "@qdrant/js-client-rest": "^1.15.0",
+    "bullmq": "^5.43.0",
+    "dotenv": "^16.4.7",
+    "drizzle-orm": "^0.40.1",
+    "fastify": "^5.2.1",
+    "ioredis": "^5.4.2",
+    "livekit-client": "^2.17.2",
+    "livekit-server-sdk": "^2.15.0",
+    "pg": "^8.13.3",
+    "uuid": "^11.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.8",
+    "@types/pg": "^8.11.11",
+    "drizzle-kit": "^0.30.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

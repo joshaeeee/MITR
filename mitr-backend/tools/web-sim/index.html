@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mitr LiveKit Web Simulator</title>
+    <style>
+      :root {
+        --bg: #08162f;
+        --bg2: #0d2346;
+        --card: #0b1a33;
+        --text: #e8efff;
+        --muted: #9fb2d4;
+        --green: #22c55e;
+        --red: #ef4444;
+        --amber: #f59e0b;
+        --border: #1d355e;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: radial-gradient(circle at 10% 0%, #153566 0%, var(--bg) 50%, #040c1c 100%);
+      }
+
+      .wrap {
+        max-width: 980px;
+        margin: 24px auto;
+        padding: 0 16px 24px;
+      }
+
+      .card {
+        background: linear-gradient(180deg, var(--bg2), var(--card));
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 16px;
+        margin-bottom: 14px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 34px;
+      }
+
+      h2 {
+        margin: 0 0 10px;
+        font-size: 24px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      @media (max-width: 760px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      input {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #2d4b7a;
+        background: #051129;
+        color: var(--text);
+        padding: 10px 12px;
+        font-size: 15px;
+      }
+
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .btn-primary {
+        background: var(--green);
+        color: #02170a;
+      }
+
+      .btn-danger {
+        background: var(--red);
+        color: #fff;
+      }
+
+      .btn-amber {
+        background: var(--amber);
+        color: #1f1200;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #12294c;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      pre {
+        margin: 0;
+        background: #040a18;
+        border: 1px solid #1c2d4e;
+        border-radius: 12px;
+        padding: 10px;
+        max-height: 240px;
+        overflow: auto;
+        white-space: pre-wrap;
+        color: #d8e6ff;
+      }
+
+      .transcript-line {
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid #1f355d;
+        background: #07152d;
+        margin-bottom: 8px;
+      }
+
+      .transcript-line strong {
+        color: #93c5fd;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Mitr LiveKit Web Simulator</h1>
+        <p class="muted">Direct LiveKit transport test: Mic -> LiveKit -> OpenAI Realtime Agent -> Speaker.</p>
+        <div class="grid">
+          <div>
+            <label for="host">API Host</label>
+            <input id="host" value="http://localhost:8080" />
+          </div>
+          <div>
+            <label for="userId">User ID</label>
+            <input id="userId" value="user-local-web-1" />
+          </div>
+          <div>
+            <label for="language">Language</label>
+            <input id="language" value="hi-IN" />
+          </div>
+          <div>
+            <label for="roomName">Room Name (optional)</label>
+            <input id="roomName" placeholder="mitr-dev-room" />
+          </div>
+        </div>
+        <div class="row">
+          <button id="connectBtn" class="btn-primary">Connect + Start Mic</button>
+          <button id="muteBtn" class="btn-amber" disabled>Mute Mic</button>
+          <button id="disconnectBtn" class="btn-danger" disabled>Disconnect</button>
+          <span id="state" class="badge">disconnected</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Transcript</h2>
+        <div id="transcript"></div>
+      </div>
+
+      <div class="card">
+        <h2>Background Ambience</h2>
+        <p class="muted">Auto-managed channel: starts during satsang flow, stops when satsang ends.</p>
+        <div class="row">
+          <span id="ambienceState" class="badge">ambience:off</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Logs</h2>
+        <pre id="logs"></pre>
+      </div>
+
+      <div id="audioContainer"></div>
+    </div>
+
+    <script type="module">
+      import { Room, RoomEvent, Track } from 'https://esm.sh/livekit-client@2.17.2';
+
+      const hostInput = document.getElementById('host');
+      const userIdInput = document.getElementById('userId');
+      const languageInput = document.getElementById('language');
+      const roomNameInput = document.getElementById('roomName');
+      const connectBtn = document.getElementById('connectBtn');
+      const muteBtn = document.getElementById('muteBtn');
+      const disconnectBtn = document.getElementById('disconnectBtn');
+      const stateBadge = document.getElementById('state');
+      const logsEl = document.getElementById('logs');
+      const transcriptEl = document.getElementById('transcript');
+      const audioContainer = document.getElementById('audioContainer');
+      const ambienceStateBadge = document.getElementById('ambienceState');
+      const FLOW_STATE_TOPIC = 'mitr.flow_state';
+      const TOOL_EVENT_TOPIC = 'mitr.tool_event';
+      const AUTO_AMBIENCE_PRESET = 'none';
+      const AUTO_AMBIENCE_VOLUME = 0.12;
+      const AMBIENCE_TRACKS = [
+        {
+          id: 'birds_rain_woods',
+          label: 'Birdsong + Light Rain',
+          url: '/assets/ambience/birds_rain_woods.mp3'
+        },
+        {
+          id: 'rain_light',
+          label: 'Light Rainfall',
+          url: '/assets/ambience/rain_light.ogg'
+        },
+        {
+          id: 'water_on_rocks',
+          label: 'Water On Rocks',
+          url: '/assets/ambience/water_on_rocks.ogg'
+        },
+        {
+          id: 'rain_woods_0757',
+          label: 'Woodland Rain',
+          url: '/assets/ambience/rain_woods_0757.mp3'
+        }
+      ];
+
+      let room = null;
+      let micEnabled = true;
+      let ambienceRunning = false;
+      let ambienceAudio = null;
+      let ambienceCurrentTrackId = null;
+      let ambienceAutoplayPrimed = false;
+      let satsangFlowActive = false;
+      let ambienceAutoStarted = false;
+      let externalMediaAudio = null;
+      let externalMediaFrame = null;
+
+      const log = (event, payload = '') => {
+        const ts = new Date().toISOString();
+        const line = typeof payload === 'string' ? payload : JSON.stringify(payload);
+        logsEl.textContent += `[${ts}] ${event}${line ? ` ${line}` : ''}\n`;
+        logsEl.scrollTop = logsEl.scrollHeight;
+      };
+
+      const setState = (value) => {
+        stateBadge.textContent = value;
+      };
+
+      const setAmbienceState = (value) => {
+        ambienceStateBadge.textContent = `ambience:${value}`;
+      };
+
+      const clearTranscript = () => {
+        transcriptEl.innerHTML = '';
+      };
+
+      const getAmbienceVolume = () => AUTO_AMBIENCE_VOLUME;
+
+      const disposeAmbienceAudio = () => {
+        ambienceCurrentTrackId = null;
+        if (!ambienceAudio) return;
+        try {
+          ambienceAudio.pause();
+        } catch (_) {}
+        try {
+          ambienceAudio.removeAttribute('src');
+          ambienceAudio.load();
+        } catch (_) {}
+        ambienceAudio = null;
+      };
+
+      const primeAmbienceAutoplay = async () => {
+        if (ambienceAutoplayPrimed) return;
+        const primerTrack = AMBIENCE_TRACKS[0];
+        if (!primerTrack) return;
+        const audio = new Audio(primerTrack.url);
+        audio.preload = 'auto';
+        audio.muted = true;
+        audio.volume = 0;
+        try {
+          await audio.play();
+          audio.pause();
+          audio.currentTime = 0;
+          ambienceAutoplayPrimed = true;
+          log('ambience_primed', primerTrack.id);
+        } catch (error) {
+          log('ambience_prime_error', error?.message || String(error));
+        }
+      };
+
+
+      const pickRandomAmbienceTrack = () => {
+        if (AMBIENCE_TRACKS.length === 0) return null;
+        if (AMBIENCE_TRACKS.length === 1) return AMBIENCE_TRACKS[0];
+        const options = AMBIENCE_TRACKS.filter((track) => track.id !== ambienceCurrentTrackId);
+        return options[Math.floor(Math.random() * options.length)] ?? AMBIENCE_TRACKS[0];
+      };
+
+      const playAmbienceTrack = async (track) => {
+        if (!track) return;
+        disposeAmbienceAudio();
+        const audio = new Audio(track.url);
+        audio.preload = 'auto';
+        audio.loop = false;
+        audio.volume = getAmbienceVolume();
+        audio.onended = async () => {
+          if (!ambienceRunning) return;
+          try {
+            const nextTrack = pickRandomAmbienceTrack();
+            await playAmbienceTrack(nextTrack);
+          } catch (error) {
+            log('ambience_error', error?.message || String(error));
+          }
+        };
+        audio.onerror = () => {
+          log('ambience_error', `failed to play track ${track.id}`);
+        };
+        ambienceAudio = audio;
+        ambienceCurrentTrackId = track.id;
+        await audio.play();
+        setAmbienceState(`on:${track.id}`);
+        log('ambience_track', `${track.label} (${track.id})`);
+      };
+
+      const startAmbiencePreset = async (preset) => {
+        disposeAmbienceAudio();
+
+        if (preset === 'none') {
+          ambienceRunning = false;
+          setAmbienceState('off');
+          log('ambience', 'off');
+          return;
+        }
+
+        if (preset === 'satsang_nature_mix' || preset === 'rain_temple_ambient' || preset === 'rain') {
+          ambienceRunning = true;
+          const track = pickRandomAmbienceTrack();
+          await playAmbienceTrack(track);
+          log('ambience', `on:${preset}`);
+          return;
+        }
+        ambienceRunning = true;
+        const fallbackTrack = pickRandomAmbienceTrack();
+        await playAmbienceTrack(fallbackTrack);
+        log('ambience', `on:${preset || 'auto'}`);
+      };
+
+      const stopAmbience = () => {
+        disposeAmbienceAudio();
+        ambienceRunning = false;
+        ambienceAutoStarted = false;
+        setAmbienceState('off');
+        log('ambience', 'stopped');
+      };
+
+      const handleFlowStatePacket = async (payload) => {
+        if (!payload || payload.type !== 'flow_state') return;
+        const flow = payload.flow || null;
+        const isSatsangRunning =
+          flow &&
+          typeof flow === 'object' &&
+          flow.type === 'satsang' &&
+          flow.status === 'running';
+
+        if (isSatsangRunning && !satsangFlowActive) {
+          satsangFlowActive = true;
+          if (AUTO_AMBIENCE_PRESET === 'none') {
+            return;
+          }
+          if (!ambienceRunning) {
+            try {
+              await startAmbiencePreset(AUTO_AMBIENCE_PRESET);
+              ambienceAutoStarted = true;
+              log('ambience_auto', `started for satsang flow ${flow.id || ''}`.trim());
+            } catch (error) {
+              log('ambience_auto_error', error?.message || String(error));
+            }
+          }
+          return;
+        }
+
+        if (!isSatsangRunning && satsangFlowActive) {
+          satsangFlowActive = false;
+          if (ambienceAutoStarted) {
+            stopAmbience();
+            log('ambience_auto', 'stopped (satsang flow ended)');
+          }
+        }
+      };
+
+      const appendTranscript = (speaker, text, isFinal = true) => {
+        const row = document.createElement('div');
+        row.className = 'transcript-line';
+        row.innerHTML = `<strong>${speaker}</strong>: ${text}${isFinal ? '' : ' ...'}`;
+        transcriptEl.appendChild(row);
+      };
+
+      const stopExternalMedia = () => {
+        if (externalMediaAudio) {
+          try {
+            externalMediaAudio.pause();
+          } catch (_) {}
+          try {
+            externalMediaAudio.src = '';
+          } catch (_) {}
+          try {
+            externalMediaAudio.remove();
+          } catch (_) {}
+          externalMediaAudio = null;
+        }
+        if (externalMediaFrame) {
+          try {
+            externalMediaFrame.remove();
+          } catch (_) {}
+          externalMediaFrame = null;
+        }
+      };
+
+      const youtubeEmbedUrlFromPage = (rawUrl) => {
+        try {
+          const u = new URL(rawUrl);
+          let videoId = '';
+          if (u.hostname.includes('youtu.be')) {
+            videoId = u.pathname.replace(/^\/+/, '').split('/')[0] || '';
+          } else if (u.hostname.includes('youtube.com')) {
+            if (u.pathname === '/watch') {
+              videoId = u.searchParams.get('v') || '';
+            } else if (u.pathname.startsWith('/shorts/')) {
+              videoId = u.pathname.split('/')[2] || '';
+            } else if (u.pathname.startsWith('/embed/')) {
+              videoId = u.pathname.split('/')[2] || '';
+            }
+          }
+          if (!videoId) return null;
+          return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&playsinline=1`;
+        } catch (_) {
+          return null;
+        }
+      };
+
+      const playExternalMedia = async ({ title, streamUrl, webpageUrl }) => {
+        const url = streamUrl || '';
+        if (!url) {
+          const embedUrl = webpageUrl ? youtubeEmbedUrlFromPage(webpageUrl) : null;
+          if (!embedUrl) {
+            log('media_ready_no_stream', {
+              title: title || 'media',
+              webpageUrl: webpageUrl || null
+            });
+            return;
+          }
+          stopExternalMedia();
+          const frame = document.createElement('iframe');
+          frame.src = embedUrl;
+          frame.allow = 'autoplay; encrypted-media';
+          frame.style.width = '1px';
+          frame.style.height = '1px';
+          frame.style.border = '0';
+          frame.style.opacity = '0';
+          frame.style.position = 'absolute';
+          frame.style.pointerEvents = 'none';
+          audioContainer.appendChild(frame);
+          externalMediaFrame = frame;
+          log('media_playback_embed_started', {
+            title: title || 'media',
+            webpageUrl: webpageUrl || null
+          });
+          return;
+        }
+        stopExternalMedia();
+        const audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.controls = false;
+        audio.style.display = 'none';
+        audio.src = url;
+        audioContainer.appendChild(audio);
+        externalMediaAudio = audio;
+        try {
+          await audio.play();
+          log('media_playback_started', {
+            title: title || 'media',
+            hasStreamUrl: true
+          });
+        } catch (error) {
+          log('media_playback_error', error?.message || String(error));
+        }
+      };
+
+      const handleToolEventPacket = async (packet) => {
+        if (!packet || typeof packet !== 'object') return;
+        const type = packet.type;
+        if (type === 'youtube_media_ready') {
+          await playExternalMedia(packet.payload || {});
+          return;
+        }
+        if (type === 'youtube_media_failed') {
+          log('youtube_media_failed', packet.payload || {});
+          return;
+        }
+        if (type === 'news_retrieve_ready') {
+          const items = Array.isArray(packet?.payload?.items) ? packet.payload.items : [];
+          const preview = items
+            .slice(0, 3)
+            .map((item, idx) => `${idx + 1}. ${item?.title || 'Untitled'} (${item?.source || 'unknown'})`)
+            .join(' ');
+          if (preview) {
+            appendTranscript('mitr-news', preview, true);
+          }
+          log('news_retrieve_ready', {
+            requestId: packet?.requestId,
+            itemCount: items.length
+          });
+          return;
+        }
+        if (type === 'news_retrieve_failed') {
+          log('news_retrieve_failed', packet.payload || {});
+        }
+      };
+
+      const ensureOnboarding = async (host, userId) => {
+        const statusRes = await fetch(`${host}/onboarding/status?userId=${encodeURIComponent(userId)}`);
+        if (!statusRes.ok) {
+          throw new Error(`Onboarding status failed: ${statusRes.status}`);
+        }
+        const status = await statusRes.json();
+        if (status.completed) return;
+
+        const questionsRes = await fetch(`${host}/onboarding/questions`);
+        if (!questionsRes.ok) {
+          throw new Error(`Onboarding questions failed: ${questionsRes.status}`);
+        }
+        const questionsPayload = await questionsRes.json();
+        const answers = {};
+
+        for (const q of questionsPayload.questions || []) {
+          const response = window.prompt(`${q.prompt}${q.required ? ' (required)' : ' (optional)'}`) || '';
+          if (q.required && !response.trim()) {
+            throw new Error(`Onboarding cancelled: ${q.id} is required`);
+          }
+          answers[q.id] = response.trim();
+        }
+
+        const submitRes = await fetch(`${host}/onboarding/submit`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ userId, answers })
+        });
+        if (!submitRes.ok) {
+          const body = await submitRes.text();
+          throw new Error(`Onboarding submit failed: ${submitRes.status} ${body}`);
+        }
+      };
+
+      const fetchLivekitToken = async (host, body) => {
+        const res = await fetch(`${host}/livekit/token`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`Token request failed (${res.status}): ${text}`);
+        }
+
+        return res.json();
+      };
+
+      const cleanupRoom = () => {
+        stopAmbience();
+        stopExternalMedia();
+        satsangFlowActive = false;
+        ambienceAutoStarted = false;
+        if (!room) return;
+        room.removeAllListeners();
+        room.disconnect();
+        room = null;
+        audioContainer.innerHTML = '';
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+        muteBtn.disabled = true;
+        muteBtn.textContent = 'Mute Mic';
+        micEnabled = true;
+        setState('disconnected');
+      };
+
+      connectBtn.addEventListener('click', async () => {
+        const host = hostInput.value.trim().replace(/\/$/, '');
+        const userId = userIdInput.value.trim();
+        const language = languageInput.value.trim() || 'hi-IN';
+        const roomName = roomNameInput.value.trim();
+
+        if (!host || !userId) {
+          log('error', 'host and userId are required');
+          return;
+        }
+
+        await primeAmbienceAutoplay();
+        connectBtn.disabled = true;
+        setState('connecting');
+
+        try {
+          await ensureOnboarding(host, userId);
+          const tokenResponse = await fetchLivekitToken(host, {
+            userId,
+            language,
+            roomName: roomName || undefined
+          });
+
+          clearTranscript();
+          room = new Room({ adaptiveStream: true, dynacast: true });
+
+          room.on(RoomEvent.Connected, () => {
+            setState('connected');
+            log('connected', { room: tokenResponse.roomName, identity: tokenResponse.identity });
+          });
+
+          room.on(RoomEvent.Disconnected, () => {
+            log('disconnected');
+            cleanupRoom();
+          });
+
+          room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+            if (track.kind !== Track.Kind.Audio) return;
+            const mediaEl = track.attach();
+            mediaEl.autoplay = true;
+            audioContainer.appendChild(mediaEl);
+            log('track_subscribed', {
+              participant: participant.identity,
+              source: publication.source,
+              trackSid: publication.trackSid
+            });
+          });
+
+          room.on(RoomEvent.TrackUnsubscribed, (track) => {
+            const attached = track.detach();
+            attached.forEach((el) => el.remove());
+          });
+
+          room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
+            for (const segment of segments) {
+              if (!segment.text) continue;
+              appendTranscript(participant?.identity || 'unknown', segment.text, Boolean(segment.final));
+            }
+          });
+
+          room.on(RoomEvent.ConnectionStateChanged, (state) => {
+            setState(`state:${state}`);
+            log('connection_state', state);
+          });
+
+          room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+            if (topic !== FLOW_STATE_TOPIC && topic !== TOOL_EVENT_TOPIC) return;
+            try {
+              const decoded = new TextDecoder().decode(payload);
+              const data = JSON.parse(decoded);
+              if (topic === FLOW_STATE_TOPIC) {
+                handleFlowStatePacket(data);
+                log('flow_state', {
+                  from: participant?.identity,
+                  flow: data?.flow ?? null
+                });
+                return;
+              }
+              handleToolEventPacket(data);
+              log('tool_event', {
+                from: participant?.identity,
+                type: data?.type,
+                sourceTool: data?.sourceTool
+              });
+            } catch (error) {
+              log('data_packet_error', error?.message || String(error));
+            }
+          });
+
+          await room.connect(tokenResponse.serverUrl, tokenResponse.participantToken);
+          await room.localParticipant.setMicrophoneEnabled(true);
+
+          muteBtn.disabled = false;
+          disconnectBtn.disabled = false;
+          connectBtn.disabled = true;
+          setState('listening');
+          log('mic_enabled', 'true');
+        } catch (error) {
+          log('connect_error', error?.message || String(error));
+          cleanupRoom();
+        }
+      });
+
+      disconnectBtn.addEventListener('click', () => {
+        log('disconnect_requested');
+        cleanupRoom();
+      });
+
+      muteBtn.addEventListener('click', async () => {
+        if (!room) return;
+        micEnabled = !micEnabled;
+        await room.localParticipant.setMicrophoneEnabled(micEnabled);
+        muteBtn.textContent = micEnabled ? 'Mute Mic' : 'Unmute Mic';
+        log('mic_enabled', String(micEnabled));
+      });
+
+      setState('disconnected');
+      setAmbienceState('off');
+      log('ready', 'click Connect + Start Mic');
+    </script>
+  </body>
+</html>
