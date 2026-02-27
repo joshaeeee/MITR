@@ -20,6 +20,8 @@
     "ingest:religious": "tsx scripts/ingest-religious-corpus.ts",
     "stories:translate": "tsx scripts/translate-stories-sarvam.ts",
     "ingest:stories": "tsx scripts/ingest-stories-corpus.ts",
+    "seed:dev-account": "tsx scripts/seed-dev-account.ts",
+    "migrate:redis-to-postgres": "tsx scripts/migrate-redis-to-postgres.ts",
     "drizzle:generate": "drizzle-kit generate",
     "drizzle:migrate": "drizzle-kit migrate"
   },

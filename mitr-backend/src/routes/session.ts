@@ -8,14 +8,16 @@ import { ProfileService } from '../services/profile/profile-service.js';
 import { latencyTracker } from '../services/latency-tracker.js';
 import { SessionDirectorService } from '../services/long-session/session-director-service.js';
 import { longSessionMetrics } from '../services/long-session/long-session-metrics.js';
+import { requireAuth } from '../services/auth/auth-middleware.js';
+import type { AuthService } from '../services/auth/auth-service.js';
 
 const sessionStartSchema = z.object({
-  userId: z.string().min(1)
+  userId: z.string().min(1).optional()
 });
 
 const sessionEventsPullSchema = z.object({
-  userId: z.string().min(1),
-  limit: z.number().int().min(1).max(50).optional()
+  limit: z.number().int().min(1).max(50).optional(),
+  afterEventId: z.string().uuid().optional()
 });
 
 const sessionEndSchema = z.object({
@@ -23,12 +25,11 @@ const sessionEndSchema = z.object({
 });
 
 const onboardingSubmitSchema = z.object({
-  userId: z.string().min(1),
   answers: z.record(z.string())
 });
 
 const livekitTokenSchema = z.object({
-  userId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   roomName: z.string().min(1).optional(),
   language: z.string().optional(),
   participantName: z.string().optional(),
@@ -36,7 +37,7 @@ const livekitTokenSchema = z.object({
 });
 
 const longSessionStartSchema = z.object({
-  userId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   mode: z.enum(['companion_long', 'satsang_long', 'story_long']),
   targetDurationSec: z.number().int().min(300).max(7200).optional(),
   topic: z.string().optional(),
@@ -58,19 +59,26 @@ const buildRoomName = (userId: string, roomName?: string): string => {
   return `mitr-${slug(userId)}-${Date.now()}`;
 };
 
-export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore, profiles: ProfileService): void => {
+export const registerSessionRoutes = (
+  app: FastifyInstance,
+  store: SessionStore,
+  profiles: ProfileService,
+  auth: AuthService
+): void => {
   const director = new SessionDirectorService();
+  const authGuard = requireAuth(auth);
 
-  app.post('/session/start', async (request, reply) => {
-    const parsed = sessionStartSchema.safeParse(request.body);
+  app.post('/session/start', { preHandler: authGuard }, async (request, reply) => {
+    const parsed = sessionStartSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const profile = await profiles.getProfile(parsed.data.userId);
-    const onboardingRequired = !(await profiles.hasCompletedOnboarding(parsed.data.userId));
-    const sessionId = await store.create(parsed.data.userId, profile?.answers);
-    const pendingEvents = await store.pullUserEvents(parsed.data.userId, 20);
+    const userId = request.auth!.user.id;
+    const profile = await profiles.getProfile(userId);
+    const onboardingRequired = !(await profiles.hasCompletedOnboarding(userId));
+    const sessionId = await store.create(userId, profile?.answers);
+    const pendingEvents = await store.pullUserEvents(userId, 20);
 
     return reply.send({
       sessionId,
@@ -84,7 +92,7 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
     });
   });
 
-  app.post('/session/end', async (request, reply) => {
+  app.post('/session/end', { preHandler: authGuard }, async (request, reply) => {
     const parsed = sessionEndSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
@@ -94,17 +102,42 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
     return reply.send({ ok: true });
   });
 
-  app.post('/session/events/pull', async (request, reply) => {
-    const parsed = sessionEventsPullSchema.safeParse(request.body);
+  app.post('/session/events/pull', { preHandler: authGuard }, async (request, reply) => {
+    const parsed = sessionEventsPullSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
-    const events = await store.pullUserEvents(parsed.data.userId, parsed.data.limit ?? 20);
-    return reply.send({ events });
+    const events = await store.pullUserEvents(request.auth!.user.id, parsed.data.limit ?? 20, parsed.data.afterEventId);
+    return reply.send({
+      events,
+      nextAfterEventId: events.length > 0 ? events[events.length - 1]?.id : parsed.data.afterEventId ?? null
+    });
   });
 
-  app.post('/livekit/token', async (request, reply) => {
-    const parsed = livekitTokenSchema.safeParse(request.body);
+  app.get('/events/stream', { preHandler: authGuard }, async (request, reply) => {
+    const parsed = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(50).optional(),
+        afterEventId: z.string().uuid().optional()
+      })
+      .safeParse(request.query ?? {});
+
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const events = await store.streamUserEvents(request.auth!.user.id, {
+      limit: parsed.data.limit ?? 20,
+      afterEventId: parsed.data.afterEventId
+    });
+    return reply.send({
+      events,
+      nextAfterEventId: events.length > 0 ? events[events.length - 1]?.id : parsed.data.afterEventId ?? null
+    });
+  });
+
+  app.post('/livekit/token', { preHandler: authGuard }, async (request, reply) => {
+    const parsed = livekitTokenSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
@@ -114,7 +147,7 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
       });
     }
 
-    const userId = parsed.data.userId;
+    const userId = request.auth!.user.id;
     const profile = await profiles.getProfile(userId);
     const roomName = buildRoomName(userId, parsed.data.roomName);
     const identity = parsed.data.participantName?.trim() || `user-${slug(userId)}-${Math.floor(Math.random() * 10_000)}`;
@@ -163,24 +196,19 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
     return reply.send({ questions: profiles.getQuestions() });
   });
 
-  app.get('/onboarding/status', async (request, reply) => {
-    const query = z.object({ userId: z.string().min(1) }).safeParse(request.query);
-    if (!query.success) {
-      return reply.status(400).send({ error: query.error.flatten() });
-    }
-
-    const profile = await profiles.getProfile(query.data.userId);
-    const completed = await profiles.hasCompletedOnboarding(query.data.userId);
+  app.get('/onboarding/status', { preHandler: authGuard }, async (request, reply) => {
+    const userId = request.auth!.user.id;
+    const profile = await profiles.getProfile(userId);
+    const completed = await profiles.hasCompletedOnboarding(userId);
     return reply.send({ completed, profile: profile?.answers ?? null });
   });
 
-  app.post('/onboarding/submit', async (request, reply) => {
+  app.post('/onboarding/submit', { preHandler: authGuard }, async (request, reply) => {
     const parsed = onboardingSubmitSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
-
-    const profile = await profiles.saveAnswers(parsed.data.userId, parsed.data.answers);
+    const profile = await profiles.saveAnswers(request.auth!.user.id, parsed.data.answers);
     return reply.send({ ok: true, profile: profile.answers });
   });
 
@@ -196,17 +224,20 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
     });
   });
 
-  app.post('/long-session/start', async (request, reply) => {
-    const parsed = longSessionStartSchema.safeParse(request.body);
+  app.post('/long-session/start', { preHandler: authGuard }, async (request, reply) => {
+    const parsed = longSessionStartSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
-    const started = await director.start(parsed.data);
+    const started = await director.start({
+      ...parsed.data,
+      userId: request.auth!.user.id
+    });
     longSessionMetrics.recordStarted();
     return reply.send(started);
   });
 
-  app.post('/long-session/next', async (request, reply) => {
+  app.post('/long-session/next', { preHandler: authGuard }, async (request, reply) => {
     const parsed = z
       .object({
         longSessionId: z.string().min(1),
@@ -238,7 +269,7 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
     return reply.send({ session: snapshot, nextBlock: recoveredNextBlock });
   });
 
-  app.post('/long-session/stop', async (request, reply) => {
+  app.post('/long-session/stop', { preHandler: authGuard }, async (request, reply) => {
     const parsed = longSessionStopSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
@@ -247,7 +278,7 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
     return reply.send({ session: stopped });
   });
 
-  app.get('/long-session/:id', async (request, reply) => {
+  app.get('/long-session/:id', { preHandler: authGuard }, async (request, reply) => {
     const parsed = z.object({ id: z.string().min(1) }).safeParse(request.params);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
@@ -257,7 +288,7 @@ export const registerSessionRoutes = (app: FastifyInstance, store: SessionStore,
     return reply.send(details);
   });
 
-  app.get('/long-session/:id/summary', async (request, reply) => {
+  app.get('/long-session/:id/summary', { preHandler: authGuard }, async (request, reply) => {
     const parsed = z.object({ id: z.string().min(1) }).safeParse(request.params);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });

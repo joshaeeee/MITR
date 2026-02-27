@@ -24,6 +24,19 @@ type PanchangPeriod = {
   }>;
 };
 
+type PanchangLocation = {
+  inputCity: string;
+  city?: string;
+  state?: string;
+  district?: string;
+  country?: string;
+  countryCode?: string;
+  latitude: number;
+  longitude: number;
+  timezone?: string;
+  confidence?: 'high' | 'medium' | 'low' | 'provided';
+};
+
 const mapLanguage = (language?: string): PanchangLanguage => {
   const value = (language ?? '').toLowerCase();
   if (value.startsWith('hi')) return 'hi';
@@ -46,9 +59,42 @@ const asString = (value: unknown): string | undefined => {
 
 const firstEntry = (value: unknown): Record<string, unknown> | undefined => asArray(value)[0];
 
-const withDefaultDateTime = (dateISO: string | undefined): string => {
-  if (dateISO && !Number.isNaN(Date.parse(dateISO))) return new Date(dateISO).toISOString();
-  return new Date().toISOString();
+const INDIA_TIMEZONE = 'Asia/Kolkata';
+const INDIA_OFFSET = '+05:30';
+
+const toIstNowIso = (): string => {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: INDIA_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  });
+  const parts = formatter.formatToParts(new Date());
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const year = map.year ?? '1970';
+  const month = map.month ?? '01';
+  const day = map.day ?? '01';
+  const hour = map.hour ?? '00';
+  const minute = map.minute ?? '00';
+  const second = map.second ?? '00';
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}${INDIA_OFFSET}`;
+};
+
+const withDefaultDateTime = (
+  dateISO: string | undefined,
+  _timeZone: string | undefined,
+  _countryCode: string | undefined
+): string => {
+  if (dateISO && dateISO.trim().length > 0) {
+    const raw = dateISO.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T12:00:00${INDIA_OFFSET}`;
+    if (!Number.isNaN(Date.parse(raw))) return new Date(raw).toISOString();
+  }
+  return toIstNowIso();
 };
 
 export class PanchangService {
@@ -117,6 +163,112 @@ export class PanchangService {
       .filter((period) => period.period.length > 0);
   }
 
+  private async fetchByLocation(input: {
+    location: PanchangLocation;
+    dateISO?: string;
+    language?: string;
+    ayanamsa?: number;
+  }): Promise<Record<string, unknown>> {
+    const token = await this.getAccessToken();
+    const dateTime = withDefaultDateTime(input.dateISO, input.location.timezone, input.location.countryCode);
+    const ayanamsa = [1, 3, 5].includes(input.ayanamsa ?? 1) ? (input.ayanamsa ?? 1) : 1;
+    const language = mapLanguage(input.language);
+
+    const url = new URL(`${env.PROKERALA_BASE_URL}/astrology/panchang/advanced`);
+    url.searchParams.set('ayanamsa', String(ayanamsa));
+    url.searchParams.set('coordinates', `${input.location.latitude},${input.location.longitude}`);
+    url.searchParams.set('datetime', dateTime);
+    url.searchParams.set('la', language);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), env.PROKERALA_TIMEOUT_MS);
+    try {
+      const response = await fetch(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        throw new Error(`Panchang request failed with status ${response.status}`);
+      }
+      const payload = (await response.json()) as ProkeralaPanchangResponse;
+      if (payload.status !== 'ok' || !payload.data || typeof payload.data !== 'object') {
+        throw new Error('Panchang provider returned unexpected response');
+      }
+      const data = payload.data;
+      const tithi = firstEntry(data.tithi);
+      const nakshatra = firstEntry(data.nakshatra);
+      const yoga = firstEntry(data.yoga);
+      const karana = firstEntry(data.karana);
+
+      const result = {
+        status: 'ready',
+        location: {
+          inputCity: input.location.inputCity,
+          city: input.location.city,
+          state: input.location.state,
+          district: input.location.district,
+          country: input.location.country,
+          countryCode: input.location.countryCode,
+          latitude: input.location.latitude,
+          longitude: input.location.longitude,
+          timezone: input.location.timezone,
+          confidence: input.location.confidence
+        },
+        datetime: dateTime,
+        ayanamsa,
+        language,
+        panchang: {
+          vaara: asString(data.vaara),
+          tithi: {
+            id: typeof tithi?.id === 'number' ? tithi.id : undefined,
+            name: asString(tithi?.name),
+            paksha: asString(tithi?.paksha),
+            start: asString(tithi?.start),
+            end: asString(tithi?.end)
+          },
+          nakshatra: {
+            id: typeof nakshatra?.id === 'number' ? nakshatra.id : undefined,
+            name: asString(nakshatra?.name),
+            start: asString(nakshatra?.start),
+            end: asString(nakshatra?.end)
+          },
+          yoga: {
+            id: typeof yoga?.id === 'number' ? yoga.id : undefined,
+            name: asString(yoga?.name),
+            start: asString(yoga?.start),
+            end: asString(yoga?.end)
+          },
+          karana: {
+            id: typeof karana?.id === 'number' ? karana.id : undefined,
+            name: asString(karana?.name),
+            start: asString(karana?.start),
+            end: asString(karana?.end)
+          },
+          sunrise: asString(data.sunrise),
+          sunset: asString(data.sunset),
+          moonrise: asString(data.moonrise),
+          moonset: asString(data.moonset),
+          auspiciousPeriods: this.simplifyPeriods(data.auspicious_period),
+          inauspiciousPeriods: this.simplifyPeriods(data.inauspicious_period)
+        }
+      };
+
+      logger.info('Panchang fetch success', {
+        city: input.location.city ?? input.location.inputCity,
+        state: input.location.state ?? null,
+        countryCode: input.location.countryCode ?? null,
+        datetime: dateTime,
+        language
+      });
+
+      return result;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async getByCity(input: {
     city: string;
     stateOrRegion?: string;
@@ -144,7 +296,7 @@ export class PanchangService {
     const resolved = await this.geocodingService.resolveCity({
       city,
       stateOrRegion: input.stateOrRegion,
-      countryCode: input.countryCode
+      countryCode: 'IN'
     });
 
     const best = resolved.primary;
@@ -175,99 +327,55 @@ export class PanchangService {
       };
     }
 
-    const token = await this.getAccessToken();
-    const dateTime = withDefaultDateTime(input.dateISO);
-    const ayanamsa = [1, 3, 5].includes(input.ayanamsa ?? 1) ? (input.ayanamsa ?? 1) : 1;
-    const language = mapLanguage(input.language);
-
-    const url = new URL(`${env.PROKERALA_BASE_URL}/astrology/panchang/advanced`);
-    url.searchParams.set('ayanamsa', String(ayanamsa));
-    url.searchParams.set('coordinates', `${best.latitude},${best.longitude}`);
-    url.searchParams.set('datetime', dateTime);
-    url.searchParams.set('la', language);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), env.PROKERALA_TIMEOUT_MS);
-    try {
-      const response = await fetch(url.toString(), {
-        headers: {
-          Authorization: `Bearer ${token}`
-        },
-        signal: controller.signal
-      });
-      if (!response.ok) {
-        throw new Error(`Panchang request failed with status ${response.status}`);
-      }
-      const payload = (await response.json()) as ProkeralaPanchangResponse;
-      if (payload.status !== 'ok' || !payload.data || typeof payload.data !== 'object') {
-        throw new Error('Panchang provider returned unexpected response');
-      }
-      const data = payload.data;
-      const tithi = firstEntry(data.tithi);
-      const nakshatra = firstEntry(data.nakshatra);
-      const yoga = firstEntry(data.yoga);
-      const karana = firstEntry(data.karana);
-
-      const result = {
-        status: 'ready',
-        location: {
-          inputCity: city,
-          city: best.name,
-          state: best.admin1,
-          district: best.admin2,
-          country: best.country,
-          countryCode: best.countryCode,
-          latitude: best.latitude,
-          longitude: best.longitude,
-          timezone: best.timezone,
-          confidence: best.confidence
-        },
-        datetime: dateTime,
-        ayanamsa,
-        language,
-        panchang: {
-          vaara: asString(data.vaara),
-          tithi: {
-            name: asString(tithi?.name),
-            paksha: asString(tithi?.paksha),
-            start: asString(tithi?.start),
-            end: asString(tithi?.end)
-          },
-          nakshatra: {
-            name: asString(nakshatra?.name),
-            start: asString(nakshatra?.start),
-            end: asString(nakshatra?.end)
-          },
-          yoga: {
-            name: asString(yoga?.name),
-            start: asString(yoga?.start),
-            end: asString(yoga?.end)
-          },
-          karana: {
-            name: asString(karana?.name),
-            start: asString(karana?.start),
-            end: asString(karana?.end)
-          },
-          sunrise: asString(data.sunrise),
-          sunset: asString(data.sunset),
-          moonrise: asString(data.moonrise),
-          moonset: asString(data.moonset),
-          auspiciousPeriods: this.simplifyPeriods(data.auspicious_period),
-          inauspiciousPeriods: this.simplifyPeriods(data.inauspicious_period)
-        }
-      };
-
-      logger.info('Panchang fetch success', {
+    return this.fetchByLocation({
+      location: {
+        inputCity: city,
         city: best.name,
-        state: best.admin1 ?? null,
-        countryCode: best.countryCode ?? null,
-        datetime: dateTime,
-        language
-      });
+        state: best.admin1,
+        district: best.admin2,
+        country: best.country,
+        countryCode: best.countryCode,
+        latitude: best.latitude,
+        longitude: best.longitude,
+        timezone: best.timezone,
+        confidence: best.confidence
+      },
+      dateISO: input.dateISO,
+      language: input.language,
+      ayanamsa: input.ayanamsa
+    });
+  }
 
-      return result;
-    } finally {
-      clearTimeout(timeout);
-    }
+  async getByCoordinates(input: {
+    inputCity: string;
+    city?: string;
+    state?: string;
+    district?: string;
+    country?: string;
+    countryCode?: string;
+    latitude: number;
+    longitude: number;
+    timezone?: string;
+    dateISO?: string;
+    language?: string;
+    ayanamsa?: number;
+  }): Promise<Record<string, unknown>> {
+    return this.fetchByLocation({
+      location: {
+        inputCity: input.inputCity,
+        city: input.city,
+        state: input.state,
+        district: input.district,
+        country: input.country,
+        countryCode: input.countryCode,
+        latitude: input.latitude,
+        longitude: input.longitude,
+        timezone: input.timezone,
+        confidence: 'provided'
+      },
+      dateISO: input.dateISO,
+      language: input.language,
+      ayanamsa: input.ayanamsa
+    });
   }
 }

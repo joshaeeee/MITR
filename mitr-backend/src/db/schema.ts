@@ -3,9 +3,20 @@ import { pgTable, text, timestamp, uuid, jsonb, boolean, integer, index, uniqueI
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
   externalId: text('external_id').notNull().unique(),
+  displayName: text('display_name'),
   preferredLanguage: text('preferred_language'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 });
+
+export const userProfiles = pgTable('user_profiles', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  answers: jsonb('answers').$type<Record<string, string>>().default({}).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  userUnique: uniqueIndex('user_profiles_user_uq').on(table.userId)
+}));
 
 export const reminders = pgTable('reminders', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -28,7 +39,9 @@ export const conversationTurns = pgTable('conversation_turns', {
   language: text('language'),
   citations: jsonb('citations').$type<Array<Record<string, unknown>>>().default([]).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
-});
+}, (table) => ({
+  userCreatedIdx: index('conversation_turns_user_created_idx').on(table.userId, table.createdAt)
+}));
 
 export const longSessions = pgTable('long_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -85,4 +98,245 @@ export const longSessionEvents = pgTable('long_session_events', {
   ts: timestamp('ts', { withTimezone: true }).defaultNow().notNull()
 }, (table) => ({
   sessionTsIdx: index('long_session_events_session_ts_idx').on(table.longSessionId, table.ts)
+}));
+
+export const familyAccounts = pgTable('family_accounts', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  ownerUserId: text('owner_user_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const familyMembers = pgTable('family_members', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  familyId: uuid('family_id').notNull(),
+  userId: text('user_id').notNull(),
+  role: text('role').$type<'owner' | 'member'>().notNull(),
+  displayName: text('display_name'),
+  email: text('email'),
+  phone: text('phone'),
+  invitedAt: timestamp('invited_at', { withTimezone: true }).defaultNow().notNull(),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true })
+}, (table) => ({
+  familyUserIdx: uniqueIndex('family_members_family_user_uq').on(table.familyId, table.userId)
+}));
+
+export const elderProfiles = pgTable('elder_profiles', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  familyId: uuid('family_id').notNull(),
+  name: text('name').notNull(),
+  ageRange: text('age_range'),
+  language: text('language'),
+  city: text('city'),
+  timezone: text('timezone'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const elderDevices = pgTable('elder_devices', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  serialNumber: text('serial_number').notNull(),
+  firmwareVersion: text('firmware_version'),
+  wifiConnected: boolean('wifi_connected').default(false).notNull(),
+  linkedAt: timestamp('linked_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderIdx: uniqueIndex('elder_devices_elder_uq').on(table.elderId)
+}));
+
+export const nudges = pgTable('nudges', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  createdByUserId: text('created_by_user_id').notNull(),
+  type: text('type').$type<'text' | 'voice'>().notNull(),
+  text: text('text'),
+  voiceUrl: text('voice_url'),
+  priority: text('priority').$type<'gentle' | 'important' | 'urgent'>().notNull(),
+  deliveryState: text('delivery_state')
+    .$type<'queued' | 'delivering' | 'delivered' | 'acknowledged' | 'failed'>()
+    .notNull(),
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  nudgeStateIdx: index('nudges_elder_delivery_state_scheduled_idx').on(table.elderId, table.deliveryState, table.scheduledAt)
+}));
+
+export const voiceNotes = pgTable('voice_notes', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  uploadedByUserId: text('uploaded_by_user_id').notNull(),
+  fileUrl: text('file_url').notNull(),
+  mimeType: text('mime_type'),
+  durationSec: integer('duration_sec'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const insightSnapshots = pgTable('insight_snapshots', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  ts: timestamp('ts', { withTimezone: true }).defaultNow().notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull()
+}, (table) => ({
+  elderTsIdx: index('insight_snapshots_elder_ts_idx').on(table.elderId, table.ts)
+}));
+
+export const concernSignals = pgTable('concern_signals', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  type: text('type').notNull(),
+  severity: text('severity').$type<'low' | 'medium' | 'high' | 'critical'>().notNull(),
+  confidence: text('confidence').$type<'low' | 'medium' | 'high'>().notNull(),
+  message: text('message').notNull(),
+  status: text('status').$type<'open' | 'resolved'>().default('open').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const alerts = pgTable('alerts', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  concernSignalId: uuid('concern_signal_id'),
+  severity: text('severity').$type<'low' | 'medium' | 'high' | 'critical'>().notNull(),
+  status: text('status').$type<'open' | 'acknowledged' | 'resolved'>().default('open').notNull(),
+  title: text('title').notNull(),
+  details: text('details').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderStatusSeverityCreatedIdx: index('alerts_elder_status_severity_created_idx').on(
+    table.elderId,
+    table.status,
+    table.severity,
+    table.createdAt
+  )
+}));
+
+export const alertActions = pgTable('alert_actions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  alertId: uuid('alert_id').notNull(),
+  action: text('action').notNull(),
+  actorUserId: text('actor_user_id'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const escalationPolicies = pgTable('escalation_policies', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  quietHoursStart: text('quiet_hours_start').notNull(),
+  quietHoursEnd: text('quiet_hours_end').notNull(),
+  stage1NudgeDelayMin: integer('stage1_nudge_delay_min').notNull(),
+  stage2FamilyAlertDelayMin: integer('stage2_family_alert_delay_min').notNull(),
+  stage3EmergencyDelayMin: integer('stage3_emergency_delay_min').notNull(),
+  enabledTriggers: jsonb('enabled_triggers').$type<string[]>().default([]).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderUnique: uniqueIndex('escalation_policies_elder_uq').on(table.elderId)
+}));
+
+export const careRoutines = pgTable('care_routines', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  key: text('key').notNull(),
+  title: text('title').notNull(),
+  enabled: boolean('enabled').default(true).notNull(),
+  schedule: text('schedule').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const careReminders = pgTable('care_reminders', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  title: text('title').notNull(),
+  description: text('description'),
+  scheduledTime: text('scheduled_time').notNull(),
+  enabled: boolean('enabled').default(true).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const auditEvents = pgTable('audit_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  actorUserId: text('actor_user_id'),
+  scope: text('scope').notNull(),
+  action: text('action').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const authIdentities = pgTable('auth_identities', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  provider: text('provider').notNull(),
+  providerUserId: text('provider_user_id').notNull(),
+  email: text('email'),
+  phone: text('phone'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  providerIdentityUnique: uniqueIndex('auth_identities_provider_user_uq').on(table.provider, table.providerUserId)
+}));
+
+export const refreshTokens = pgTable('refresh_tokens', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  tokenHash: text('token_hash').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const otpChallenges = pgTable('otp_challenges', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  phone: text('phone').notNull(),
+  codeHash: text('code_hash').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const oauthLinkages = pgTable('oauth_linkages', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  provider: text('provider').notNull(),
+  providerUserId: text('provider_user_id').notNull(),
+  linkedAt: timestamp('linked_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  linkageUnique: uniqueIndex('oauth_linkages_provider_user_uq').on(table.provider, table.providerUserId)
+}));
+
+export const authPasswords = pgTable('auth_passwords', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  userUnique: uniqueIndex('auth_passwords_user_uq').on(table.userId)
+}));
+
+export const authSessions = pgTable('auth_sessions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  accessTokenHash: text('access_token_hash').notNull(),
+  refreshTokenHash: text('refresh_token_hash').notNull(),
+  accessExpiresAt: timestamp('access_expires_at', { withTimezone: true }).notNull(),
+  refreshExpiresAt: timestamp('refresh_expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  accessUnique: uniqueIndex('auth_sessions_access_token_uq').on(table.accessTokenHash),
+  refreshUnique: uniqueIndex('auth_sessions_refresh_token_uq').on(table.refreshTokenHash),
+  userCreatedIdx: index('auth_sessions_user_created_idx').on(table.userId, table.createdAt)
+}));
+
+export const userEventStream = pgTable('user_event_stream', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  eventType: text('event_type').notNull(),
+  payloadJson: jsonb('payload_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  userCreatedIdx: index('user_event_stream_user_created_idx').on(table.userId, table.createdAt),
+  userIdIdIdx: index('user_event_stream_user_id_idx').on(table.userId, table.id)
 }));

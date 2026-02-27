@@ -9,6 +9,7 @@ import { YoutubeStreamService } from '../src/services/media/youtube-stream-servi
 import { SessionDirectorService } from '../src/services/long-session/session-director-service.js';
 import { GeocodingService } from '../src/services/location/geocoding-service.js';
 import { PanchangService } from '../src/services/panchang/panchang-service.js';
+import { WebSearchService } from '../src/services/web/web-search-service.js';
 
 const reminderService = new ReminderService();
 const religiousRetriever = new ReligiousRetriever();
@@ -23,7 +24,8 @@ const tools = createToolDefinitions({
   diaryService: new DiaryService(),
   sessionDirector: new SessionDirectorService(),
   youtubeStreamService: new YoutubeStreamService(),
-  panchangService: new PanchangService(geocodingService)
+  panchangService: new PanchangService(geocodingService),
+  webSearchService: new WebSearchService()
 });
 
 console.log(`Loaded ${tools.length} tools`);

@@ -1,5 +1,6 @@
-import { Redis } from 'ioredis';
-import { getSharedRedisClient } from '../../lib/redis.js';
+import { eq } from 'drizzle-orm';
+import { db } from '../../db/client.js';
+import { userProfiles } from '../../db/schema.js';
 import { normalizeLanguageCode } from '../../lib/language.js';
 
 export interface OnboardingQuestion {
@@ -23,23 +24,18 @@ const DEFAULT_QUESTIONS: OnboardingQuestion[] = [
 ];
 
 export class ProfileService {
-  private redis?: Redis;
-  private memory = new Map<string, UserProfile>();
-
-  constructor() {
-    this.redis = getSharedRedisClient() ?? undefined;
-  }
-
   getQuestions(): OnboardingQuestion[] {
     return DEFAULT_QUESTIONS;
   }
 
   async getProfile(userId: string): Promise<UserProfile | null> {
-    if (this.redis) {
-      const raw = await this.redis.get(`profile:${userId}`);
-      return raw ? (JSON.parse(raw) as UserProfile) : null;
-    }
-    return this.memory.get(userId) ?? null;
+    const [row] = await db.select().from(userProfiles).where(eq(userProfiles.userId, userId)).limit(1);
+    if (!row) return null;
+    return {
+      userId,
+      answers: row.answers,
+      updatedAt: row.updatedAt.getTime()
+    };
   }
 
   async hasCompletedOnboarding(userId: string): Promise<boolean> {
@@ -57,21 +53,40 @@ export class ProfileService {
     }
 
     const existing = await this.getProfile(userId);
-    const merged: UserProfile = {
-      userId,
-      answers: {
-        ...(existing?.answers ?? {}),
-        ...normalizedAnswers
-      },
-      updatedAt: Date.now()
+    const mergedAnswers = {
+      ...(existing?.answers ?? {}),
+      ...normalizedAnswers
     };
 
-    if (this.redis) {
-      await this.redis.set(`profile:${userId}`, JSON.stringify(merged));
-      return merged;
+    if (!existing) {
+      const [created] = await db
+        .insert(userProfiles)
+        .values({
+          userId,
+          answers: mergedAnswers,
+          updatedAt: new Date()
+        })
+        .returning();
+      return {
+        userId,
+        answers: created.answers,
+        updatedAt: created.updatedAt.getTime()
+      };
     }
 
-    this.memory.set(userId, merged);
-    return merged;
+    const [updated] = await db
+      .update(userProfiles)
+      .set({
+        answers: mergedAnswers,
+        updatedAt: new Date()
+      })
+      .where(eq(userProfiles.userId, userId))
+      .returning();
+
+    return {
+      userId,
+      answers: updated.answers,
+      updatedAt: updated.updatedAt.getTime()
+    };
   }
 }

@@ -91,19 +91,31 @@ export class GeocodingService {
     url.searchParams.set('language', 'en');
     url.searchParams.set('format', 'json');
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), env.GEOCODING_TIMEOUT_MS);
-    try {
-      const response = await fetch(url.toString(), { signal: controller.signal });
-      if (!response.ok) {
-        throw new Error(`Geocoding failed with status ${response.status}`);
-      }
+    const timeoutMs = Math.max(env.GEOCODING_TIMEOUT_MS, 7000);
+    let lastError: Error | null = null;
 
-      const payload = (await response.json()) as OpenMeteoGeocodeResponse;
-      return Array.isArray(payload.results) ? payload.results : [];
-    } finally {
-      clearTimeout(timeout);
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url.toString(), { signal: controller.signal });
+        if (!response.ok) {
+          throw new Error(`Geocoding failed with status ${response.status}`);
+        }
+
+        const payload = (await response.json()) as OpenMeteoGeocodeResponse;
+        return Array.isArray(payload.results) ? payload.results : [];
+      } catch (error) {
+        lastError = error as Error;
+        const message = (error as Error)?.message ?? 'unknown geocoding error';
+        const isAbort = message.toLowerCase().includes('aborted');
+        if (!isAbort || attempt === 2) break;
+      } finally {
+        clearTimeout(timeout);
+      }
     }
+
+    throw lastError ?? new Error('Geocoding request failed');
   }
 
   async resolveCity(input: {

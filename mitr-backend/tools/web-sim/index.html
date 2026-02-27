@@ -255,6 +255,10 @@
       let ambienceAutoStarted = false;
       let externalMediaAudio = null;
       let externalMediaFrame = null;
+      let accessToken = window.localStorage.getItem('mitr_websim_access_token') || null;
+      let refreshToken = window.localStorage.getItem('mitr_websim_refresh_token') || null;
+      const TEST_EMAIL = 'tester@gmail.com';
+      const TEST_PASSWORD = '12345678910';
 
       const log = (event, payload = '') => {
         const ts = new Date().toISOString();
@@ -269,6 +273,61 @@
 
       const setAmbienceState = (value) => {
         ambienceStateBadge.textContent = `ambience:${value}`;
+      };
+
+      const persistAuthSession = (session) => {
+        accessToken = session?.accessToken || null;
+        refreshToken = session?.refreshToken || null;
+        if (accessToken) {
+          window.localStorage.setItem('mitr_websim_access_token', accessToken);
+        } else {
+          window.localStorage.removeItem('mitr_websim_access_token');
+        }
+        if (refreshToken) {
+          window.localStorage.setItem('mitr_websim_refresh_token', refreshToken);
+        } else {
+          window.localStorage.removeItem('mitr_websim_refresh_token');
+        }
+      };
+
+      const authHeaders = () => {
+        const base = { 'content-type': 'application/json' };
+        return accessToken ? { ...base, authorization: `Bearer ${accessToken}` } : base;
+      };
+
+      const bootstrapAuth = async (host) => {
+        if (accessToken) {
+          const me = await fetch(`${host}/auth/me`, {
+            headers: { authorization: `Bearer ${accessToken}` },
+          });
+          if (me.ok) return;
+        }
+
+        const login = await fetch(`${host}/auth/email/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD }),
+        });
+
+        if (login.ok) {
+          const payload = await login.json();
+          persistAuthSession(payload.session);
+          return;
+        }
+
+        const signup = await fetch(`${host}/auth/email/signup`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD, name: 'Tester Family' }),
+        });
+
+        if (!signup.ok) {
+          const body = await signup.text();
+          throw new Error(`Auth bootstrap failed (${signup.status}): ${body}`);
+        }
+
+        const payload = await signup.json();
+        persistAuthSession(payload.session);
       };
 
       const clearTranscript = () => {
@@ -538,8 +597,10 @@
         }
       };
 
-      const ensureOnboarding = async (host, userId) => {
-        const statusRes = await fetch(`${host}/onboarding/status?userId=${encodeURIComponent(userId)}`);
+      const ensureOnboarding = async (host) => {
+        const statusRes = await fetch(`${host}/onboarding/status`, {
+          headers: authHeaders(),
+        });
         if (!statusRes.ok) {
           throw new Error(`Onboarding status failed: ${statusRes.status}`);
         }
@@ -563,8 +624,8 @@
 
         const submitRes = await fetch(`${host}/onboarding/submit`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ userId, answers })
+          headers: authHeaders(),
+          body: JSON.stringify({ answers })
         });
         if (!submitRes.ok) {
           const body = await submitRes.text();
@@ -575,7 +636,7 @@
       const fetchLivekitToken = async (host, body) => {
         const res = await fetch(`${host}/livekit/token`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: authHeaders(),
           body: JSON.stringify(body)
         });
 
@@ -621,9 +682,9 @@
         setState('connecting');
 
         try {
-          await ensureOnboarding(host, userId);
+          await bootstrapAuth(host);
+          await ensureOnboarding(host);
           const tokenResponse = await fetchLivekitToken(host, {
-            userId,
             language,
             roomName: roomName || undefined
           });

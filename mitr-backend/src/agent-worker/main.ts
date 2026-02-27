@@ -34,6 +34,8 @@ import { YoutubeStreamService } from '../services/media/youtube-stream-service.j
 import { SessionDirectorService } from '../services/long-session/session-director-service.js';
 import { GeocodingService } from '../services/location/geocoding-service.js';
 import { PanchangService } from '../services/panchang/panchang-service.js';
+import { WebSearchService } from '../services/web/web-search-service.js';
+import { ConversationService } from '../services/conversations/conversation-service.js';
 import {
   AgentToolContext,
   AgentToolDefinition,
@@ -306,6 +308,14 @@ type NewsItemForFollowup = {
   publishedAt: string;
 };
 
+type WebItemForFollowup = {
+  title: string;
+  summary: string;
+  source: string;
+  url: string;
+  publishedAt: string;
+};
+
 const asNonEmptyString = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -338,6 +348,24 @@ const toNewsItemsForFollowup = (value: unknown): NewsItemForFollowup[] => {
       };
     })
     .filter((item): item is NewsItemForFollowup => item !== null);
+};
+
+const toWebItemsForFollowup = (value: unknown): WebItemForFollowup[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 5)
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+      const item = entry as Record<string, unknown>;
+      return {
+        title: asNonEmptyString(item.title) ?? '',
+        summary: truncate(asNonEmptyString(item.summary) ?? '', 420),
+        source: asNonEmptyString(item.source) ?? '',
+        url: asNonEmptyString(item.url) ?? '',
+        publishedAt: asNonEmptyString(item.publishedAt) ?? ''
+      };
+    })
+    .filter((item): item is WebItemForFollowup => item !== null);
 };
 
 type CitationForFollowup = {
@@ -475,7 +503,8 @@ const buildToolDeps = (): ToolDeps => {
     diaryService: new DiaryService(),
     sessionDirector,
     youtubeStreamService,
-    panchangService: new PanchangService(geocodingService)
+    panchangService: new PanchangService(geocodingService),
+    webSearchService: new WebSearchService()
   };
 };
 
@@ -513,6 +542,8 @@ export default defineAgent({
     let latestUserState: voice.UserState = 'listening';
     let sessionRef: voice.AgentSession | null = null;
     let satsangAmbiencePublisher: SatsangAmbiencePublisher | null = null;
+    const conversations = new ConversationService();
+    const pendingUserTurns: string[] = [];
 
     const buildNewsFollowupInstructions = (payload: Record<string, unknown>): string => {
       const items = toNewsItemsForFollowup(payload.items);
@@ -552,23 +583,68 @@ export default defineAgent({
       ].join('\n');
     };
 
+    const buildWebSearchFollowupInstructions = (payload: Record<string, unknown>): string => {
+      const items = toWebItemsForFollowup(payload.items);
+      const query = asNonEmptyString(payload.query) ?? 'web search';
+      const recencyDays = typeof payload.recencyDays === 'number' ? payload.recencyDays : undefined;
+      const includeDomains = Array.isArray(payload.includeDomains)
+        ? payload.includeDomains
+            .map((d) => (typeof d === 'string' ? d.trim() : ''))
+            .filter((d) => d.length > 0)
+        : [];
+      const compactItems = items.map((item) => ({
+        title: item.title,
+        summary: item.summary,
+        source: item.source,
+        url: item.url,
+        publishedAt: item.publishedAt
+      }));
+
+      return [
+        'The background web search is complete.',
+        `Reply in ${language}.`,
+        'Answer the user query first, then mention 2-4 relevant websites with what each contains.',
+        'Use only provided tool data and do not call any tool in this turn.',
+        'If no results, say that no reliable results were found and ask one clarifying follow-up.',
+        `ToolData=${JSON.stringify({
+          query,
+          recencyDays,
+          includeDomains,
+          itemCount: compactItems.length,
+          items: compactItems
+        })}`
+      ].join('\n');
+    };
+
     const buildPanchangFollowupInstructions = (payload: Record<string, unknown>): string => {
       const result = asRecord(payload.result) ?? {};
       const status = asNonEmptyString(result.status) ?? 'unknown';
+      const queryType = asNonEmptyString(payload.queryType) ?? asNonEmptyString(result.queryType) ?? 'today_snapshot';
+      const tithiKey = asNonEmptyString(payload.tithiKey) ?? asNonEmptyString(result.targetTithi) ?? '';
       const city = asNonEmptyString(payload.city) ?? asNonEmptyString(result.location && asRecord(result.location)?.city) ?? '';
       const stateOrRegion = asNonEmptyString(payload.stateOrRegion) ?? '';
       const countryCode = asNonEmptyString(payload.countryCode) ?? '';
       const message = asNonEmptyString(result.message) ?? '';
+      const responseStyle =
+        status !== 'ready'
+          ? 'If retrieval is incomplete or needs confirmation, ask one short clarification question.'
+          : queryType === 'next_tithi'
+            ? 'Answer with the next matching tithi date/time first. Keep to 2-4 short sentences. Add only one brief practical note.'
+            : queryType === 'upcoming_tithi_dates'
+              ? 'Provide only the next few matching dates in concise spoken form. Keep to 3-5 short sentences. Do not narrate full daily panchang.'
+              : queryType === 'tithi_on_date'
+                ? 'Answer only the tithi for that date first, then one short supporting line.'
+                : 'Give a concise Panchang answer. Mention asked item first. Add at most one extra context line unless user requested full details.';
 
       return [
         'The background panchang retrieval is complete.',
         `Reply in ${language}.`,
         'Use only the tool data and do not call any tool in this turn.',
-        status === 'ready'
-          ? 'Give a clear spoken Panchang summary: vaara, current tithi, current nakshatra, sunrise/sunset, and top 1-2 auspicious and inauspicious periods.'
-          : 'If retrieval is incomplete or needs user confirmation, ask one short clarification question.',
+        responseStyle,
         `ToolData=${JSON.stringify({
           status,
+          queryType,
+          tithiKey,
           city,
           stateOrRegion,
           countryCode,
@@ -706,6 +782,21 @@ export default defineAgent({
 
       if (payload.type === 'news_retrieve_failed') {
         followupManager.clear('news');
+      }
+
+      if (payload.type === 'web_search_ready') {
+        followupManager.schedule({
+          type: 'web',
+          requestId: payload.requestId ?? `web_${Date.now().toString(36)}`,
+          payload: payload.payload ?? {},
+          buildInstructions: buildWebSearchFollowupInstructions
+        });
+        flushFollowups();
+        return;
+      }
+
+      if (payload.type === 'web_search_failed') {
+        followupManager.clear('web');
       }
 
       if (payload.type === 'panchang_get_ready') {
@@ -928,6 +1019,37 @@ export default defineAgent({
         language: event.language,
         transcript: sanitizeForLog(transcript)
       });
+    });
+
+    session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (event) => {
+      const text = event.item.textContent?.trim();
+      if (!text) return;
+
+      if (event.item.role === 'user') {
+        pendingUserTurns.push(text);
+        return;
+      }
+
+      if (event.item.role !== 'assistant') return;
+
+      const userText = pendingUserTurns.shift() ?? '';
+      if (!userText) return;
+
+      void conversations
+        .appendTurn({
+          sessionId,
+          userId,
+          userText,
+          assistantText: text,
+          language
+        })
+        .catch((error) => {
+          logger.warn('Failed to persist conversation turn', {
+            sessionId,
+            userId,
+            error: (error as Error).message
+          });
+        });
     });
 
     session.on(voice.AgentSessionEventTypes.FunctionToolsExecuted, (event) => {

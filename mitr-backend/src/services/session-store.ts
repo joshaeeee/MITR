@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { env } from '../config/env.js';
 import { getSharedRedisClient } from '../lib/redis.js';
+import { db } from '../db/client.js';
+import { userEventStream } from '../db/schema.js';
+import { and, asc, eq, gte } from 'drizzle-orm';
 
 export type SessionTerminationReason = 'client_end' | 'idle_timeout' | 'server_shutdown';
 
@@ -180,16 +183,24 @@ export class SessionStore {
         const dedupe = await this.redis.set(userEventDedupKey(userId, dedupeKey), '1', 'EX', USER_EVENTS_TTL_SEC, 'NX');
         if (dedupe !== 'OK') return false;
       }
-      await this.redis.rpush(userEventKey(userId), JSON.stringify(eventRecord));
-      await this.redis.ltrim(userEventKey(userId), -USER_EVENTS_MAX, -1);
-      await this.redis.expire(userEventKey(userId), USER_EVENTS_TTL_SEC);
-      return true;
-    }
-
-    if (dedupeKey) {
+    } else if (dedupeKey) {
       const key = `${userId}:${dedupeKey}`;
       if (this.memoryEventDedup.has(key)) return false;
       this.memoryEventDedup.set(key, Date.now());
+    }
+
+    await db.insert(userEventStream).values({
+      id: eventRecord.id,
+      userId,
+      eventType: eventRecord.type,
+      payloadJson: eventRecord.payload,
+      createdAt: new Date(eventRecord.createdAt)
+    });
+
+    if (this.redis) {
+      await this.redis.rpush(userEventKey(userId), JSON.stringify(eventRecord));
+      await this.redis.ltrim(userEventKey(userId), -USER_EVENTS_MAX, -1);
+      await this.redis.expire(userEventKey(userId), USER_EVENTS_TTL_SEC);
     }
 
     const current = this.memoryUserEvents.get(userId) ?? [];
@@ -198,28 +209,55 @@ export class SessionStore {
     return true;
   }
 
-  async pullUserEvents(userId: string, limit = 20): Promise<UserEventRecord[]> {
+  async pullUserEvents(userId: string, limit = 20, afterEventId?: string): Promise<UserEventRecord[]> {
+    return this.streamUserEvents(userId, { limit, afterEventId });
+  }
+
+  async streamUserEvents(
+    userId: string,
+    options: {
+      limit?: number;
+      afterEventId?: string;
+    } = {}
+  ): Promise<UserEventRecord[]> {
+    const limit = options.limit ?? 20;
+    const afterEventId = options.afterEventId;
     const safeLimit = Math.max(1, Math.min(limit, USER_EVENTS_MAX));
 
-    if (this.redis) {
-      const rows = await this.redis.lrange(userEventKey(userId), 0, safeLimit - 1);
-      if (rows.length > 0) {
-        await this.redis.ltrim(userEventKey(userId), rows.length, -1);
-      }
-      return rows
-        .map((row) => {
-          try {
-            return JSON.parse(row) as UserEventRecord;
-          } catch {
-            return null;
-          }
+    let minCreatedAt: Date | null = null;
+    if (afterEventId) {
+      const [cursor] = await db
+        .select({
+          createdAt: userEventStream.createdAt
         })
-        .filter((row): row is UserEventRecord => row !== null);
+        .from(userEventStream)
+        .where(eq(userEventStream.id, afterEventId))
+        .limit(1);
+      minCreatedAt = cursor?.createdAt ?? null;
     }
 
-    const queue = this.memoryUserEvents.get(userId) ?? [];
-    const events = queue.slice(0, safeLimit);
-    this.memoryUserEvents.set(userId, queue.slice(events.length));
-    return events;
+    const rows = await db
+      .select()
+      .from(userEventStream)
+      .where(
+        minCreatedAt
+          ? and(eq(userEventStream.userId, userId), gte(userEventStream.createdAt, minCreatedAt))
+          : eq(userEventStream.userId, userId)
+      )
+      .orderBy(asc(userEventStream.createdAt), asc(userEventStream.id))
+      .limit(USER_EVENTS_MAX);
+
+    const mapped = rows.map((row) => ({
+      id: row.id,
+      type: row.eventType,
+      payload: row.payloadJson,
+      createdAt: row.createdAt.getTime()
+    }));
+
+    if (!afterEventId) return mapped.slice(-safeLimit);
+
+    const cursorIndex = mapped.findIndex((row) => row.id === afterEventId);
+    if (cursorIndex < 0) return mapped.slice(0, safeLimit);
+    return mapped.slice(cursorIndex + 1, cursorIndex + 1 + safeLimit);
   }
 }

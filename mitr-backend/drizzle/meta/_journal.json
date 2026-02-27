@@ -15,6 +15,20 @@
       "when": 1771937473484,
       "tag": "0001_sad_norrin_radd",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772182268756,
+      "tag": "0002_sparkling_raider",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1772268600000,
+      "tag": "0003_unified_sync",
+      "breakpoints": true
     }
   ]
 }

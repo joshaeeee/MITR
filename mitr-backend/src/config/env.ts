@@ -28,6 +28,12 @@ const envSchema = z.object({
   OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime'),
   OPENAI_REALTIME_VOICE: z.string().default('alloy'),
 
+  AUTH_SESSION_TTL_SEC: z.coerce.number().default(3600),
+  AUTH_REFRESH_TTL_SEC: z.coerce.number().default(60 * 60 * 24 * 30),
+  AUTH_OTP_TTL_SEC: z.coerce.number().default(300),
+  AUTH_DEV_OTP_BYPASS: envBoolean(true),
+  AUTH_DEV_OTP_CODE: z.string().default('123456'),
+
   DEVICE_TOKEN_TTL_SEC: z.coerce.number().default(86_400),
   SESSION_IDLE_TIMEOUT_SEC: z.coerce.number().default(1_800),
   REDIS_URL: z.string().url().optional(),
