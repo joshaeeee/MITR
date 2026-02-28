@@ -36,6 +36,7 @@ import { GeocodingService } from '../services/location/geocoding-service.js';
 import { PanchangService } from '../services/panchang/panchang-service.js';
 import { WebSearchService } from '../services/web/web-search-service.js';
 import { ConversationService } from '../services/conversations/conversation-service.js';
+import { NudgesService } from '../services/nudges/nudges-service.js';
 import {
   AgentToolContext,
   AgentToolDefinition,
@@ -504,7 +505,8 @@ const buildToolDeps = (): ToolDeps => {
     sessionDirector,
     youtubeStreamService,
     panchangService: new PanchangService(geocodingService),
-    webSearchService: new WebSearchService()
+    webSearchService: new WebSearchService(),
+    nudgesService: new NudgesService()
   };
 };
 

@@ -6,6 +6,30 @@ export class NudgesService {
   private readonly repo = getFamilyRepository();
   private readonly store = new SessionStore();
 
+  private async toAgentNudgePayload(nudge: {
+    id: string;
+    type: 'text' | 'voice';
+    text?: string;
+    voiceUrl?: string;
+    priority: NudgePriority;
+    createdByUserId: string;
+    createdAt: number;
+    scheduledFor: number;
+  }) {
+    const sender = await this.repo.getMemberByUser(nudge.createdByUserId);
+    return {
+      nudgeId: nudge.id,
+      type: nudge.type,
+      text: nudge.text,
+      voiceUrl: nudge.voiceUrl,
+      priority: nudge.priority,
+      fromUserId: nudge.createdByUserId,
+      fromName: sender?.displayName ?? sender?.email ?? sender?.phone ?? 'family member',
+      createdAt: nudge.createdAt,
+      scheduledFor: nudge.scheduledFor
+    };
+  }
+
   async sendNow(
     userId: string,
     input: { text?: string; voiceUrl?: string; priority?: NudgePriority }
@@ -48,5 +72,26 @@ export class NudgesService {
 
   async history(userId: string) {
     return this.repo.getNudges(userId);
+  }
+
+  async getPendingForElder(userId: string) {
+    const pending = await this.repo.getNextPendingNudge(userId);
+    if (!pending) return null;
+    return this.toAgentNudgePayload(pending);
+  }
+
+  async markListened(userId: string, nudgeId: string) {
+    const updated = await this.repo.acknowledgeNudge(userId, nudgeId);
+    if (!updated) return null;
+    const payload = await this.toAgentNudgePayload(updated);
+
+    await this.store.pushUserEvent(userId, {
+      type: 'family_nudge_acknowledged',
+      payload: {
+        ...payload
+      }
+    });
+
+    return payload;
   }
 }

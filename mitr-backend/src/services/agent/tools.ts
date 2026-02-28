@@ -11,6 +11,7 @@ import { PanchangService } from '../panchang/panchang-service.js';
 import { WebSearchService } from '../web/web-search-service.js';
 import { logger } from '../../lib/logger.js';
 import { env } from '../../config/env.js';
+import { NudgesService } from '../nudges/nudges-service.js';
 
 export interface ToolDeps {
   religiousRetriever: ReligiousRetriever;
@@ -23,6 +24,7 @@ export interface ToolDeps {
   youtubeStreamService: YoutubeStreamService;
   panchangService: PanchangService;
   webSearchService: WebSearchService;
+  nudgesService: NudgesService;
 }
 
 export interface AgentToolContext {
@@ -702,6 +704,53 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
     execute: async (_input, context) => {
       const reminders = await deps.reminderService.listByUser(context.userId);
       return { reminders };
+    }
+  };
+
+  const nudgePendingGet: AgentToolDefinition = {
+    name: 'nudge_pending_get',
+    description:
+      'Check whether there is a pending family nudge/message for the elder in this conversation.',
+    parameters: z.object({}),
+    timeoutMs: 1200,
+    execute: async (_input, context) => {
+      const pending = await deps.nudgesService.getPendingForElder(context.userId);
+      if (!pending) {
+        return { hasPending: false };
+      }
+
+      return {
+        hasPending: true,
+        nudge: pending
+      };
+    }
+  };
+
+  const nudgeMarkListened: AgentToolDefinition = {
+    name: 'nudge_mark_listened',
+    description:
+      'Mark a pending family nudge as listened/acknowledged, then return its content for playback in conversation.',
+    parameters: z.object({
+      nudgeId: z.string()
+    }),
+    timeoutMs: 1200,
+    execute: async (input, context) => {
+      const acknowledged = await deps.nudgesService.markListened(context.userId, input.nudgeId);
+      if (!acknowledged) {
+        return { ok: false, error: 'Nudge not found or already handled.' };
+      }
+
+      context.publishClientEvent?.({
+        type: 'nudge_playback_requested',
+        sourceTool: 'nudge_mark_listened',
+        requestId: acknowledged.nudgeId,
+        payload: acknowledged
+      });
+
+      return {
+        ok: true,
+        nudge: acknowledged
+      };
     }
   };
 
@@ -1698,6 +1747,8 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
     memoryGet,
     reminderCreate,
     reminderList,
+    nudgePendingGet,
+    nudgeMarkListened,
     newsRetrieve,
     webSearch,
     panchangGet,

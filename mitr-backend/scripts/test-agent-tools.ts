@@ -10,6 +10,7 @@ import { SessionDirectorService } from '../src/services/long-session/session-dir
 import { GeocodingService } from '../src/services/location/geocoding-service.js';
 import { PanchangService } from '../src/services/panchang/panchang-service.js';
 import { WebSearchService } from '../src/services/web/web-search-service.js';
+import { NudgesService } from '../src/services/nudges/nudges-service.js';
 
 const reminderService = new ReminderService();
 const religiousRetriever = new ReligiousRetriever();
@@ -25,7 +26,8 @@ const tools = createToolDefinitions({
   sessionDirector: new SessionDirectorService(),
   youtubeStreamService: new YoutubeStreamService(),
   panchangService: new PanchangService(geocodingService),
-  webSearchService: new WebSearchService()
+  webSearchService: new WebSearchService(),
+  nudgesService: new NudgesService()
 });
 
 console.log(`Loaded ${tools.length} tools`);

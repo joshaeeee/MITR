@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   alerts,
@@ -447,6 +447,42 @@ export class FamilyRepository {
       .orderBy(desc(nudges.createdAt));
 
     return rows.map(toNudgeRecord);
+  }
+
+  async getNextPendingNudge(userId: string): Promise<NudgeRecord | null> {
+    const elder = await this.getElderByUser(userId);
+    if (!elder) return null;
+
+    const [row] = await db
+      .select()
+      .from(nudges)
+      .where(
+        and(
+          eq(nudges.elderId, elder.id),
+          inArray(nudges.deliveryState, ['queued', 'delivering', 'delivered']),
+          lte(nudges.scheduledAt, new Date())
+        )
+      )
+      .orderBy(asc(nudges.scheduledAt), asc(nudges.createdAt))
+      .limit(1);
+
+    return row ? toNudgeRecord(row) : null;
+  }
+
+  async acknowledgeNudge(userId: string, nudgeId: string): Promise<NudgeRecord | null> {
+    const elder = await this.getElderByUser(userId);
+    if (!elder) return null;
+
+    const [updated] = await db
+      .update(nudges)
+      .set({
+        deliveryState: 'acknowledged',
+        updatedAt: new Date()
+      })
+      .where(and(eq(nudges.id, nudgeId), eq(nudges.elderId, elder.id)))
+      .returning();
+
+    return updated ? toNudgeRecord(updated) : null;
   }
 
   async getOrCreatePolicy(ownerUserId: string): Promise<EscalationPolicy> {

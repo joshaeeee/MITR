@@ -159,7 +159,7 @@
         <div class="grid">
           <div>
             <label for="host">API Host</label>
-            <input id="host" value="http://localhost:8080" />
+            <input id="host" value="http://16.16.162.185" />
           </div>
           <div>
             <label for="userId">User ID</label>
@@ -259,6 +259,12 @@
       let refreshToken = window.localStorage.getItem('mitr_websim_refresh_token') || null;
       const TEST_EMAIL = 'tester@gmail.com';
       const TEST_PASSWORD = '12345678910';
+      const HOST_STORAGE_KEY = 'mitr_websim_host';
+
+      const persistedHost = window.localStorage.getItem(HOST_STORAGE_KEY);
+      if (persistedHost) {
+        hostInput.value = persistedHost;
+      }
 
       const log = (event, payload = '') => {
         const ts = new Date().toISOString();
@@ -566,6 +572,32 @@
         }
       };
 
+      const playNudgeAudio = async ({ voiceUrl, text, fromName }) => {
+        if (voiceUrl) {
+          stopExternalMedia();
+          const audio = document.createElement('audio');
+          audio.autoplay = true;
+          audio.controls = false;
+          audio.style.display = 'none';
+          audio.src = voiceUrl;
+          audioContainer.appendChild(audio);
+          externalMediaAudio = audio;
+          try {
+            await audio.play();
+            log('nudge_voice_playback_started', {
+              fromName: fromName || 'family member',
+              hasVoiceUrl: true
+            });
+            return;
+          } catch (error) {
+            log('nudge_voice_playback_error', error?.message || String(error));
+          }
+        }
+        if (text) {
+          appendTranscript('family-nudge', `${fromName || 'Family'}: ${text}`, true);
+        }
+      };
+
       const handleToolEventPacket = async (packet) => {
         if (!packet || typeof packet !== 'object') return;
         const type = packet.type;
@@ -575,6 +607,10 @@
         }
         if (type === 'youtube_media_failed') {
           log('youtube_media_failed', packet.payload || {});
+          return;
+        }
+        if (type === 'nudge_playback_requested') {
+          await playNudgeAudio(packet.payload || {});
           return;
         }
         if (type === 'news_retrieve_ready') {
@@ -676,6 +712,8 @@
           log('error', 'host and userId are required');
           return;
         }
+
+        window.localStorage.setItem(HOST_STORAGE_KEY, host);
 
         await primeAmbienceAutoplay();
         connectBtn.disabled = true;
