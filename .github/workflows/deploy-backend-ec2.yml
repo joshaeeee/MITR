@@ -1,19 +1,30 @@
-name: Deploy MITR Backend to EC2
+name: MITR Backend CI/CD (EC2)
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "mitr-backend/**"
+      - ".github/workflows/deploy-backend-ec2.yml"
   push:
     branches: [main]
     paths:
       - "mitr-backend/**"
       - ".github/workflows/deploy-backend-ec2.yml"
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to EC2 after build"
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: deploy-backend-ec2
+  group: mitr-backend-cicd-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -22,15 +33,85 @@ env:
   AGENT_IMAGE_NAME: ${{ github.repository_owner }}/mitr-agent
 
 jobs:
-  build-api:
+  ci:
+    name: Backend CI (typecheck + unit tests + build)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mitr-backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mitr-backend/pnpm-lock.yaml
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.5
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Build
+        run: pnpm build
+
+  docker-smoke-pr:
+    name: Dockerfile smoke build (PR only)
+    runs-on: ubuntu-latest
+    needs: [ci]
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API Dockerfile (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mitr-backend/Dockerfile.api
+          push: false
+          load: false
+          cache-from: type=gha,scope=mitr-api-pr
+          cache-to: type=gha,mode=max,scope=mitr-api-pr
+
+      - name: Build Agent Dockerfile (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mitr-backend/Dockerfile.agent
+          push: false
+          load: false
+          cache-from: type=gha,scope=mitr-agent-pr
+          cache-to: type=gha,mode=max,scope=mitr-agent-pr
+
+  build-api:
+    name: Build + push API image
+    runs-on: ubuntu-latest
+    needs: [ci]
+    if: github.event_name != 'pull_request'
     outputs:
       image_ref: ${{ steps.out.outputs.image_ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
@@ -51,20 +132,24 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:prod-latest
           cache-from: type=gha,scope=mitr-api
           cache-to: type=gha,mode=max,scope=mitr-api
+          provenance: false
 
       - name: Set API output
         id: out
         run: echo "image_ref=${REGISTRY}/${API_IMAGE_NAME}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   build-agent:
+    name: Build + push agent image
     runs-on: ubuntu-latest
+    needs: [ci]
+    if: github.event_name != 'pull_request'
     outputs:
       image_ref: ${{ steps.out.outputs.image_ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
@@ -85,14 +170,24 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}:prod-latest
           cache-from: type=gha,scope=mitr-agent
           cache-to: type=gha,mode=max,scope=mitr-agent
+          provenance: false
 
       - name: Set agent output
         id: out
         run: echo "image_ref=${REGISTRY}/${AGENT_IMAGE_NAME}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   deploy:
+    name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: [build-api, build-agent]
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'push' || inputs.deploy == true) &&
+      secrets.EC2_HOST != '' &&
+      secrets.EC2_USER != '' &&
+      secrets.EC2_SSH_KEY != '' &&
+      secrets.GHCR_TOKEN != ''
+    timeout-minutes: 20
     steps:
       - name: Deploy on EC2 over SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -101,6 +196,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script_stop: true
+          command_timeout: 20m
           script: |
             set -euo pipefail
 
@@ -139,9 +235,39 @@ jobs:
             update_env "AGENT_IMAGE" "${{ needs.build-agent.outputs.image_ref }}"
             update_env "REMINDER_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
 
-            export GHCR_USERNAME="${{ github.actor }}"
+            GHCR_USER="${{ secrets.GHCR_USERNAME }}"
+            if [ -z "${GHCR_USER}" ]; then
+              GHCR_USER="${{ github.repository_owner }}"
+            fi
+            export GHCR_USERNAME="${GHCR_USER}"
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export HEALTH_BASE_URL="http://127.0.0.1"
 
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
             bash deploy/deploy.sh
+
+            # Guard against stale image restarts.
+            ACTUAL_API_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-api)"
+            ACTUAL_AGENT_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-agent-worker)"
+            if [ "${ACTUAL_API_IMAGE}" != "${{ needs.build-api.outputs.image_ref }}" ]; then
+              echo "API image mismatch. expected=${{ needs.build-api.outputs.image_ref }} actual=${ACTUAL_API_IMAGE}"
+              exit 1
+            fi
+            if [ "${ACTUAL_AGENT_IMAGE}" != "${{ needs.build-agent.outputs.image_ref }}" ]; then
+              echo "Agent image mismatch. expected=${{ needs.build-agent.outputs.image_ref }} actual=${ACTUAL_AGENT_IMAGE}"
+              exit 1
+            fi
+
+  smoke-public:
+    name: Public smoke check
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: needs.deploy.result == 'success'
+    timeout-minutes: 5
+    steps:
+      - name: Check public health endpoints
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 10 "http://${{ secrets.EC2_HOST }}/healthz" >/dev/null
+          curl -fsS --max-time 10 "http://${{ secrets.EC2_HOST }}/health/latency" >/dev/null
+          echo "Public smoke checks passed"

@@ -128,19 +128,35 @@ curl -fsS http://127.0.0.1/healthz
 curl -fsS http://127.0.0.1/health/latency
 ```
 
-### GitHub Actions auto-deploy
+### GitHub Actions CI/CD (auto deploy to EC2)
 Workflow:
 - `.github/workflows/deploy-backend-ec2.yml`
 
+Behavior:
+- Pull requests touching `mitr-backend/**` run CI gates:
+  - `pnpm typecheck`
+  - `pnpm test:unit`
+  - `pnpm build`
+  - Dockerfile smoke-build for API + agent (no push)
+- Pushes to `main` (backend paths) run:
+  - same CI gate
+  - build + push API/agent images to GHCR (`sha-*` + `prod-latest`)
+  - SSH deploy on EC2 via `deploy/deploy.sh`
+  - rollback if healthcheck fails
+  - public smoke check on `/healthz` and `/health/latency`
+
 Required repo secrets:
-- `EC2_HOST`
-- `EC2_USER`
+- `EC2_HOST` (public IP or DNS)
+- `EC2_USER` (`ubuntu` or `ec2-user`)
 - `EC2_SSH_KEY` (private key content)
 - `GHCR_TOKEN` (token with `read:packages` for EC2 pulls)
 
+Optional repo secret:
+- `GHCR_USERNAME` (defaults to repository owner if omitted)
+
 Notes:
-- Workflow builds and pushes API + agent images to GHCR with cache.
-- EC2 deploy is pull-only (`deploy.sh`) with healthcheck and rollback.
+- Deploy job rewrites `API_IMAGE`, `AGENT_IMAGE`, `REMINDER_IMAGE` in `deploy/.env.prod` to the new SHA-tagged images.
+- After deploy, it verifies running container image refs to prevent stale-image restarts.
 
 ## Ingestion / data utilities
 - Religious corpus:
