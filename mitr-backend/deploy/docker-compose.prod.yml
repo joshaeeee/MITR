@@ -1,4 +1,19 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: mitr-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru"]
+    cpus: 0.10
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - mitr-internal
+
   api:
     image: ${API_IMAGE}
     container_name: mitr-api
@@ -27,6 +42,9 @@ services:
         max-file: "3"
     networks:
       - mitr-internal
+    depends_on:
+      redis:
+        condition: service_started
 
   agent:
     image: ${AGENT_IMAGE}
@@ -41,6 +59,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_started
     cpus: 1.0
     mem_limit: 900m
     logging:
@@ -64,6 +84,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_started
     cpus: 0.25
     mem_limit: 256m
     logging:
