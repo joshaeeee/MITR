@@ -61,7 +61,16 @@ const bootstrap = async (): Promise<void> => {
   const corsOrigins = env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean);
 
   await app.register(cors, {
-    origin: corsOrigins.length > 0 ? corsOrigins : true,
+    origin: (origin, callback) => {
+      // Native mobile requests often have no Origin header.
+      if (!origin) return callback(null, true);
+      if (corsOrigins.length === 0) return callback(null, true);
+      if (corsOrigins.includes('*')) return callback(null, true);
+      if (corsOrigins.includes(origin)) return callback(null, true);
+      // Expo dev clients can send exp:// origins.
+      if (origin.startsWith('exp://')) return callback(null, true);
+      return callback(new Error('CORS origin not allowed'), false);
+    },
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
   });
 
