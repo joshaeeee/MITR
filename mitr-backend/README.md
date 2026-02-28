@@ -98,6 +98,50 @@ Deploy as two services:
 
 Keep both connected to the same Postgres/Redis/Qdrant/Mem0 services.
 
+## EC2 deployment (Docker Compose + Nginx, test)
+
+Files added under `mitr-backend/deploy/`:
+- `docker-compose.prod.yml`
+- `nginx.conf`
+- `.env.prod.template`
+- `deploy.sh`
+- `healthcheck.sh`
+- `bootstrap-ec2.sh`
+
+### One-time EC2 bootstrap
+```bash
+sudo bash /opt/mitr/MITR/mitr-backend/deploy/bootstrap-ec2.sh
+```
+
+### Deploy on EC2
+```bash
+cd /opt/mitr/MITR/mitr-backend
+cp deploy/.env.prod.template deploy/.env.prod
+# edit deploy/.env.prod with real values
+bash deploy/deploy.sh
+```
+
+### Verify
+```bash
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod ps
+curl -fsS http://127.0.0.1/healthz
+curl -fsS http://127.0.0.1/health/latency
+```
+
+### GitHub Actions auto-deploy
+Workflow:
+- `.github/workflows/deploy-backend-ec2.yml`
+
+Required repo secrets:
+- `EC2_HOST`
+- `EC2_USER`
+- `EC2_SSH_KEY` (private key content)
+- `GHCR_TOKEN` (token with `read:packages` for EC2 pulls)
+
+Notes:
+- Workflow builds and pushes API + agent images to GHCR with cache.
+- EC2 deploy is pull-only (`deploy.sh`) with healthcheck and rollback.
+
 ## Ingestion / data utilities
 - Religious corpus:
 ```bash

@@ -1,0 +1,147 @@
+name: Deploy MITR Backend to EC2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mitr-backend/**"
+      - ".github/workflows/deploy-backend-ec2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-backend-ec2
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE_NAME: ${{ github.repository_owner }}/mitr-api
+  AGENT_IMAGE_NAME: ${{ github.repository_owner }}/mitr-agent
+
+jobs:
+  build-api:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.out.outputs.image_ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mitr-backend/Dockerfile.api
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:sha-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:prod-latest
+          cache-from: type=gha,scope=mitr-api
+          cache-to: type=gha,mode=max,scope=mitr-api
+
+      - name: Set API output
+        id: out
+        run: echo "image_ref=${REGISTRY}/${API_IMAGE_NAME}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+  build-agent:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.out.outputs.image_ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mitr-backend/Dockerfile.agent
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}:sha-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}:prod-latest
+          cache-from: type=gha,scope=mitr-agent
+          cache-to: type=gha,mode=max,scope=mitr-agent
+
+      - name: Set agent output
+        id: out
+        run: echo "image_ref=${REGISTRY}/${AGENT_IMAGE_NAME}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build-api, build-agent]
+    steps:
+      - name: Deploy on EC2 over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            BASE_DIR="/opt/mitr"
+            REPO_DIR="${BASE_DIR}/MITR"
+            APP_DIR="${REPO_DIR}/mitr-backend"
+
+            mkdir -p "${BASE_DIR}"
+            if [ ! -d "${REPO_DIR}/.git" ]; then
+              git clone https://github.com/${{ github.repository }}.git "${REPO_DIR}"
+            fi
+
+            cd "${REPO_DIR}"
+            git fetch origin main
+            git checkout main
+            git reset --hard origin/main
+
+            cd "${APP_DIR}"
+            if [ ! -f "deploy/.env.prod" ]; then
+              echo "Missing ${APP_DIR}/deploy/.env.prod. Create it from deploy/.env.prod.template"
+              exit 1
+            fi
+
+            update_env() {
+              key="$1"
+              value="$2"
+              if grep -qE "^${key}=" deploy/.env.prod; then
+                sed -i.bak "s#^${key}=.*#${key}=${value}#g" deploy/.env.prod
+              else
+                echo "${key}=${value}" >> deploy/.env.prod
+              fi
+              rm -f deploy/.env.prod.bak
+            }
+
+            update_env "API_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
+            update_env "AGENT_IMAGE" "${{ needs.build-agent.outputs.image_ref }}"
+            update_env "REMINDER_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
+
+            export GHCR_USERNAME="${{ github.actor }}"
+            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
+            export HEALTH_BASE_URL="http://127.0.0.1"
+
+            chmod +x deploy/deploy.sh deploy/healthcheck.sh
+            bash deploy/deploy.sh

@@ -4,7 +4,9 @@
 # IDE
 .vscode/
 .idea/
-
+mitr-backend.pem
+mitr.pem
+*.pem
 # Logs
 *.log
 npm-debug.log*

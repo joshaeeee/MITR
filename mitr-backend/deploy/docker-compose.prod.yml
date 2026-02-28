@@ -1,0 +1,100 @@
+services:
+  api:
+    image: ${API_IMAGE}
+    container_name: mitr-api
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      NODE_OPTIONS: --max-old-space-size=384
+    command: ["node", "dist/src/index.js"]
+    expose:
+      - "8080"
+    cpus: 0.75
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - mitr-internal
+
+  agent:
+    image: ${AGENT_IMAGE}
+    container_name: mitr-agent-worker
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=640
+    command: ["node", "dist/src/agent-worker/main.js", "start"]
+    depends_on:
+      api:
+        condition: service_healthy
+    cpus: 1.0
+    mem_limit: 900m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - mitr-internal
+
+  reminder-worker:
+    image: ${REMINDER_IMAGE}
+    container_name: mitr-reminder-worker
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=192
+    command: ["node", "dist/src/workers/reminder-worker.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+    cpus: 0.25
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - mitr-internal
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: mitr-nginx
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    cpus: 0.10
+    mem_limit: 96m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - mitr-internal
+
+networks:
+  mitr-internal:
+    driver: bridge
