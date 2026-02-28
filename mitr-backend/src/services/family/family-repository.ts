@@ -535,6 +535,31 @@ export class FamilyRepository {
     return updated ? toNudgeRecord(updated) : null;
   }
 
+  async markNudgesDelivered(userId: string, nudgeIds: string[]): Promise<NudgeRecord[]> {
+    const elder = await this.getElderByUser(userId);
+    if (!elder) return [];
+
+    const dedupedIds = [...new Set(nudgeIds.map((id) => id.trim()).filter(Boolean))];
+    if (dedupedIds.length === 0) return [];
+
+    const updated = await db
+      .update(nudges)
+      .set({
+        deliveryState: 'delivered',
+        updatedAt: new Date()
+      })
+      .where(
+        and(
+          inArray(nudges.id, dedupedIds),
+          eq(nudges.elderId, elder.id),
+          inArray(nudges.deliveryState, ['queued', 'delivering'])
+        )
+      )
+      .returning();
+
+    return updated.map(toNudgeRecord);
+  }
+
   async getOrCreatePolicy(ownerUserId: string): Promise<EscalationPolicy> {
     const elder = await this.getElderByUser(ownerUserId);
     if (!elder) throw new Error('Elder profile not found');

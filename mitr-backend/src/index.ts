@@ -13,6 +13,7 @@ import { registerAlertsRoutes } from './routes/alerts.js';
 import { registerCareRoutes } from './routes/care.js';
 import { registerDeviceRoutes } from './routes/device.js';
 import { registerAgentRoutes } from './routes/agent.js';
+import { registerHomeRoutes } from './routes/home.js';
 import { ProfileService } from './services/profile/profile-service.js';
 import { SessionStore } from './services/session-store.js';
 import { SessionRecoveryService } from './services/long-session/session-recovery-service.js';
@@ -21,8 +22,10 @@ import { sql } from 'drizzle-orm';
 import { closeReminderQueue } from './services/reminders/queue.js';
 import { closeRedisConnections } from './lib/redis.js';
 import { AuthService } from './services/auth/auth-service.js';
+import { DataRetentionService } from './services/maintenance/data-retention-service.js';
 
 let appRef: FastifyInstance | null = null;
+let retentionRef: DataRetentionService | null = null;
 let shutdownInProgress = false;
 
 const shutdown = async (signal: string): Promise<void> => {
@@ -41,6 +44,7 @@ const shutdown = async (signal: string): Promise<void> => {
     if (appRef) {
       await appRef.close();
     }
+    retentionRef?.stop();
     await closeReminderQueue();
     await closeRedisConnections();
     await pgPool.end();
@@ -68,7 +72,7 @@ const bootstrap = async (): Promise<void> => {
       if (corsOrigins.includes('*')) return callback(null, true);
       if (corsOrigins.includes(origin)) return callback(null, true);
       // Expo dev clients can send exp:// origins.
-      if (origin.startsWith('exp://')) return callback(null, true);
+      if (env.NODE_ENV === 'development' && origin.startsWith('exp://')) return callback(null, true);
       return callback(new Error('CORS origin not allowed'), false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
@@ -83,11 +87,15 @@ const bootstrap = async (): Promise<void> => {
   registerCareRoutes(app, auth);
   registerDeviceRoutes(app, auth);
   registerAgentRoutes(app, auth);
+  registerHomeRoutes(app, auth);
   registerSessionRoutes(app, store, profiles, auth);
 
   await db.execute(sql`select 1`);
   const recovery = new SessionRecoveryService();
   await recovery.recoverAtStartup();
+  const retention = new DataRetentionService();
+  retention.start();
+  retentionRef = retention;
 
   await app.listen({ host: '0.0.0.0', port: env.PORT });
   logger.info(`Mitr API listening on :${env.PORT}`);

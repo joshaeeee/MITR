@@ -97,6 +97,25 @@ export class NudgesService {
     const pendingRows = await this.repo.getPendingNudges(userId, limit);
     if (pendingRows.length === 0) return null;
 
+    const deliverableIds = pendingRows
+      .filter((row) => row.deliveryState === 'queued' || row.deliveryState === 'delivering')
+      .map((row) => row.id);
+    const deliveredRows = await this.repo.markNudgesDelivered(userId, deliverableIds);
+    const deliveredById = new Map(deliveredRows.map((row) => [row.id, row]));
+
+    for (const delivered of deliveredRows) {
+      await this.store.pushUserEvent(userId, {
+        type: 'family_nudge_delivered',
+        payload: {
+          nudgeId: delivered.id,
+          type: delivered.type,
+          text: delivered.text,
+          voiceUrl: delivered.voiceUrl,
+          priority: delivered.priority
+        }
+      });
+    }
+
     const normalized: Array<{
       nudgeId: string;
       nudgeShortId: string;
@@ -112,23 +131,7 @@ export class NudgesService {
     }> = [];
 
     for (const row of pendingRows) {
-      let pending = row;
-      if (pending.deliveryState === 'queued' || pending.deliveryState === 'delivering') {
-        const delivered = await this.repo.markNudgeDelivered(userId, pending.id);
-        if (delivered) {
-          pending = delivered;
-          await this.store.pushUserEvent(userId, {
-            type: 'family_nudge_delivered',
-            payload: {
-              nudgeId: delivered.id,
-              type: delivered.type,
-              text: delivered.text,
-              voiceUrl: delivered.voiceUrl,
-              priority: delivered.priority
-            }
-          });
-        }
-      }
+      const pending = deliveredById.get(row.id) ?? row;
 
       normalized.push({
         nudgeId: pending.id,

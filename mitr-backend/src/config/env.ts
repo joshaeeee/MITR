@@ -33,6 +33,8 @@ const envSchema = z.object({
   AUTH_SESSION_TTL_SEC: z.coerce.number().default(3600),
   AUTH_REFRESH_TTL_SEC: z.coerce.number().default(60 * 60 * 24 * 30),
   AUTH_OTP_TTL_SEC: z.coerce.number().default(300),
+  AUTH_REVOKED_SESSION_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 7),
+  AUTH_OTP_CONSUMED_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24),
   AUTH_DEV_OTP_BYPASS: envBoolean(true),
   AUTH_DEV_OTP_CODE: z.string().default('123456'),
 
@@ -90,7 +92,9 @@ const envSchema = z.object({
   YTDLP_SEARCH_TIMEOUT_MS: z.coerce.number().default(7_000),
   YTDLP_STREAM_TIMEOUT_MS: z.coerce.number().default(8_000),
   YOUTUBE_MEDIA_TIMEOUT_MS: z.coerce.number().default(12_000),
-  LONG_SESSION_STALE_MS: z.coerce.number().default(45_000)
+  LONG_SESSION_STALE_MS: z.coerce.number().default(45_000),
+  MAINTENANCE_CLEANUP_INTERVAL_SEC: z.coerce.number().default(900),
+  USER_EVENT_STREAM_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 14)
 });
 
 export type Env = z.infer<typeof envSchema>;
