@@ -710,7 +710,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const nudgePendingGet: AgentToolDefinition = {
     name: 'nudge_pending_get',
     description:
-      'Get all unheard family nudges/messages for the elder in priority+queue order.',
+      'Get all unheard family nudges/messages for the elder in priority+queue order. Returns both nudgeId and nudgeShortId.',
     parameters: z.object({}),
     timeoutMs: 3000,
     execute: async (_input, context) => {
@@ -740,22 +740,72 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const nudgeMarkListened: AgentToolDefinition = {
     name: 'nudge_mark_listened',
     description:
-      'Mark one or more pending family nudges as listened/acknowledged, then return contents for playback in conversation.',
+      'Mark one or more pending family nudges as listened/acknowledged, then return contents for playback in conversation. Accepts either full nudge IDs or short IDs from nudge_pending_get.',
     parameters: z.object({
-      nudgeId: z.string().optional(),
-      nudgeIds: z.array(z.string()).min(1).max(20).optional()
+      nudgeId: z.preprocess((value) => (value == null ? undefined : value), z.string().optional()),
+      nudgeIds: z.preprocess(
+        (value) => {
+          if (value == null) return undefined;
+          if (Array.isArray(value)) return value;
+          if (typeof value === 'string') return [value];
+          return undefined;
+        },
+        z.array(z.string()).min(1).max(20).optional()
+      ),
+      nudgeShortId: z.preprocess((value) => (value == null ? undefined : value), z.string().optional()),
+      nudgeShortIds: z.preprocess(
+        (value) => {
+          if (value == null) return undefined;
+          if (Array.isArray(value)) return value;
+          if (typeof value === 'string') return [value];
+          return undefined;
+        },
+        z.array(z.string()).min(1).max(20).optional()
+      ),
+      nudgeOrdinal: z.preprocess(
+        (value) => (value == null || value === '' ? undefined : value),
+        z.coerce.number().int().min(1).max(100).optional()
+      )
     }),
     timeoutMs: 3000,
     execute: async (input, context) => {
-      const ids = input.nudgeIds?.length
-        ? input.nudgeIds
-        : input.nudgeId
-          ? [input.nudgeId]
-          : [];
-      if (ids.length === 0) {
-        return { ok: false, error: 'Provide nudgeId or nudgeIds.' };
+      const pendingSnapshot = await deps.nudgesService.getPendingForElder(context.userId, 100);
+      const byShortId = new Map<string, string>();
+      const orderedIds: string[] = [];
+      for (const nudge of pendingSnapshot?.nudges ?? []) {
+        byShortId.set(nudge.nudgeShortId.toLowerCase(), nudge.nudgeId);
+        orderedIds.push(nudge.nudgeId);
       }
-      const acknowledged = await deps.nudgesService.markListened(context.userId, ids);
+
+      const rawIds = [
+        ...(input.nudgeIds ?? []),
+        ...(input.nudgeId ? [input.nudgeId] : [])
+      ];
+      const rawShortIds = [
+        ...(input.nudgeShortIds ?? []),
+        ...(input.nudgeShortId ? [input.nudgeShortId] : [])
+      ];
+
+      const ids: string[] = [];
+      for (const id of rawIds) {
+        const normalized = String(id).trim();
+        if (normalized.length > 0) ids.push(normalized);
+      }
+      for (const shortId of rawShortIds) {
+        const normalized = String(shortId).trim().toLowerCase();
+        if (!normalized) continue;
+        const mapped = byShortId.get(normalized);
+        if (mapped) ids.push(mapped);
+      }
+      if (input.nudgeOrdinal && orderedIds.length >= input.nudgeOrdinal) {
+        ids.push(orderedIds[input.nudgeOrdinal - 1]);
+      }
+
+      const dedupedIds = [...new Set(ids)];
+      if (dedupedIds.length === 0) {
+        return { ok: false, error: 'Provide nudgeId/nudgeIds/nudgeShortId/nudgeShortIds/nudgeOrdinal.' };
+      }
+      const acknowledged = await deps.nudgesService.markListened(context.userId, dedupedIds);
       if (acknowledged.length === 0) {
         return { ok: false, error: 'Nudge not found or already handled.' };
       }

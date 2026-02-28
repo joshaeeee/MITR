@@ -5,6 +5,11 @@ import { SessionStore } from '../session-store.js';
 export class NudgesService {
   private readonly repo = getFamilyRepository();
   private readonly store = new SessionStore();
+  private readonly shortIdLength = 8;
+
+  private toNudgeShortId(nudgeId: string): string {
+    return nudgeId.replace(/-/g, '').slice(0, this.shortIdLength).toLowerCase();
+  }
 
   private toPreviewText(nudge: {
     type: 'text' | 'voice';
@@ -31,6 +36,7 @@ export class NudgesService {
     const sender = await this.repo.getMemberByUser(nudge.createdByUserId);
     return {
       nudgeId: nudge.id,
+      nudgeShortId: this.toNudgeShortId(nudge.id),
       type: nudge.type,
       text: nudge.text,
       voiceUrl: nudge.voiceUrl,
@@ -93,6 +99,7 @@ export class NudgesService {
 
     const normalized: Array<{
       nudgeId: string;
+      nudgeShortId: string;
       type: 'text' | 'voice';
       text?: string;
       voiceUrl?: string;
@@ -125,6 +132,7 @@ export class NudgesService {
 
       normalized.push({
         nudgeId: pending.id,
+        nudgeShortId: this.toNudgeShortId(pending.id),
         type: pending.type,
         text: pending.text,
         voiceUrl: pending.voiceUrl,
@@ -147,6 +155,7 @@ export class NudgesService {
     const dedupedIds = [...new Set(nudgeIds)].filter((id) => id.trim().length > 0);
     const acknowledged: Array<{
       nudgeId: string;
+      nudgeShortId: string;
       type: 'text' | 'voice';
       text?: string;
       voiceUrl?: string;
