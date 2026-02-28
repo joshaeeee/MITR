@@ -712,7 +712,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
     description:
       'Check whether there is a pending family nudge/message for the elder in this conversation.',
     parameters: z.object({}),
-    timeoutMs: 1200,
+    timeoutMs: 3000,
     execute: async (_input, context) => {
       const pending = await deps.nudgesService.getPendingForElder(context.userId);
       if (!pending) {
@@ -733,7 +733,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
     parameters: z.object({
       nudgeId: z.string()
     }),
-    timeoutMs: 1200,
+    timeoutMs: 3000,
     execute: async (input, context) => {
       const acknowledged = await deps.nudgesService.markListened(context.userId, input.nudgeId);
       if (!acknowledged) {

@@ -77,7 +77,18 @@ export class NudgesService {
   async getPendingForElder(userId: string) {
     const pending = await this.repo.getNextPendingNudge(userId);
     if (!pending) return null;
-    return this.toAgentNudgePayload(pending);
+    return {
+      nudgeId: pending.id,
+      type: pending.type,
+      text: pending.text,
+      voiceUrl: pending.voiceUrl,
+      priority: pending.priority,
+      fromUserId: pending.createdByUserId,
+      // Avoid extra DB lookup on pending check to keep first response fast.
+      fromName: 'family member',
+      createdAt: pending.createdAt,
+      scheduledFor: pending.scheduledFor
+    };
   }
 
   async markListened(userId: string, nudgeId: string) {
