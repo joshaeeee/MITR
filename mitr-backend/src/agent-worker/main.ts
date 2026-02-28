@@ -60,7 +60,8 @@ type FlowType = 'satsang' | 'story' | 'companion';
 const FLOW_STATE_TOPIC = 'mitr.flow_state';
 const TOOL_EVENT_TOPIC = 'mitr.tool_event';
 const NEWS_AUTO_FOLLOWUP_DELAY_MS = 300;
-const NUDGE_PLAYBACK_STATUS_TIMEOUT_MS = 120000;
+const NUDGE_PLAYBACK_STATUS_TIMEOUT_MS = 20000;
+const NUDGE_PLAYBACK_MAX_ATTEMPTS = 2;
 const AMBIENCE_SAMPLE_RATE = 48000;
 const AMBIENCE_CHANNELS = 1;
 const AMBIENCE_FRAME_MS = 20;
@@ -390,6 +391,7 @@ type QueuedNudgePlayback = {
   requestId: string;
   sourceTool: string;
   payload: Record<string, unknown>;
+  attempts: number;
 };
 
 type NudgePlaybackStatusPacket = {
@@ -806,19 +808,42 @@ export default defineAgent({
 
     };
 
-    const dispatchNextQueuedNudgePlayback = () => {
-      if (!canStartQueuedNudgePlayback()) return;
+    const dispatchNextQueuedNudgePlayback = (force = false) => {
+      if (!force && !canStartQueuedNudgePlayback()) return;
+      if (activeNudgePlayback !== null) return;
+      if (sessionRef === null) return;
+      if (latestUserState === 'speaking') return;
       const next = queuedNudgePlaybacks.shift();
       if (!next) return;
       activeNudgePlayback = next;
+      logger.info('Dispatching nudge voice playback request', {
+        sessionId,
+        requestId: next.requestId,
+        nudgeId: asNonEmptyString(next.payload?.nudgeId),
+        attempt: next.attempts + 1
+      });
       publishToolEventPacket(next);
       clearNudgePlaybackStatusTimer();
       nudgePlaybackStatusTimer = setTimeout(() => {
         if (!activeNudgePlayback || activeNudgePlayback.requestId !== next.requestId) return;
-        logger.warn('Timed out waiting for nudge voice playback status; releasing lock', {
+        const timedOut = activeNudgePlayback;
+        logger.warn('Timed out waiting for nudge voice playback status', {
           sessionId,
-          requestId: next.requestId
+          requestId: timedOut.requestId,
+          nudgeId: asNonEmptyString(timedOut.payload?.nudgeId),
+          attempt: timedOut.attempts + 1
         });
+        if (timedOut.attempts + 1 < NUDGE_PLAYBACK_MAX_ATTEMPTS) {
+          queuedNudgePlaybacks.unshift({
+            ...timedOut,
+            attempts: timedOut.attempts + 1
+          });
+          logger.info('Re-queued nudge voice playback after timeout', {
+            sessionId,
+            requestId: timedOut.requestId,
+            attempt: timedOut.attempts + 2
+          });
+        }
         activeNudgePlayback = null;
         clearNudgePlaybackStatusTimer();
         scheduleAutoAdvance(session);
@@ -838,7 +863,8 @@ export default defineAgent({
       if (status === 'started') {
         logger.info('Nudge voice playback started', {
           sessionId,
-          requestId: activeRequestId
+          requestId: activeRequestId,
+          nudgeId: asNonEmptyString(activeNudgePlayback.payload?.nudgeId)
         });
         return;
       }
@@ -874,8 +900,20 @@ export default defineAgent({
         logger.warn('Nudge voice playback failed', {
           sessionId,
           requestId: active.requestId,
-          nudgeId
+          nudgeId,
+          attempt: active.attempts + 1
         });
+        if (active.attempts + 1 < NUDGE_PLAYBACK_MAX_ATTEMPTS) {
+          queuedNudgePlaybacks.unshift({
+            ...active,
+            attempts: active.attempts + 1
+          });
+          logger.info('Re-queued failed nudge voice playback', {
+            sessionId,
+            requestId: active.requestId,
+            attempt: active.attempts + 2
+          });
+        }
       }
 
       scheduleAutoAdvance(session);
@@ -893,13 +931,27 @@ export default defineAgent({
         const eventPayload = payload.payload ?? {};
         const voiceUrl = asNonEmptyString(eventPayload.voiceUrl);
         if (voiceUrl) {
+          if (sessionRef && latestAgentState === 'speaking') {
+            try {
+              sessionRef.interrupt({ force: true });
+            } catch (error) {
+              logger.warn('Failed to interrupt agent before nudge voice playback', {
+                sessionId,
+                requestId: payload.requestId,
+                error: (error as Error).message
+              });
+            }
+          }
           queuedNudgePlaybacks.push({
             type: payload.type,
             sourceTool: payload.sourceTool,
             requestId: payload.requestId ?? asNonEmptyString(eventPayload.nudgeId) ?? `nudge_${Date.now().toString(36)}`,
-            payload: eventPayload
+            payload: eventPayload,
+            attempts: 0
           });
-          dispatchNextQueuedNudgePlayback();
+          setTimeout(() => {
+            dispatchNextQueuedNudgePlayback(true);
+          }, 150);
           return;
         }
       }
