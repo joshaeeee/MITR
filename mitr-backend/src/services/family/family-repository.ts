@@ -427,7 +427,8 @@ export class FamilyRepository {
         text: input.text,
         voiceUrl: input.voiceUrl,
         priority: input.priority,
-        deliveryState: input.scheduledFor > Date.now() ? 'queued' : 'delivered',
+        // Family sends always enter queue first; elder delivery is tracked separately.
+        deliveryState: 'queued',
         scheduledAt: new Date(input.scheduledFor),
         updatedAt: new Date()
       })
@@ -480,6 +481,28 @@ export class FamilyRepository {
         updatedAt: new Date()
       })
       .where(and(eq(nudges.id, nudgeId), eq(nudges.elderId, elder.id)))
+      .returning();
+
+    return updated ? toNudgeRecord(updated) : null;
+  }
+
+  async markNudgeDelivered(userId: string, nudgeId: string): Promise<NudgeRecord | null> {
+    const elder = await this.getElderByUser(userId);
+    if (!elder) return null;
+
+    const [updated] = await db
+      .update(nudges)
+      .set({
+        deliveryState: 'delivered',
+        updatedAt: new Date()
+      })
+      .where(
+        and(
+          eq(nudges.id, nudgeId),
+          eq(nudges.elderId, elder.id),
+          inArray(nudges.deliveryState, ['queued', 'delivering'])
+        )
+      )
       .returning();
 
     return updated ? toNudgeRecord(updated) : null;

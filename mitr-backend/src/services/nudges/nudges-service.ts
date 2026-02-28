@@ -43,7 +43,7 @@ export class NudgesService {
     });
 
     await this.store.pushUserEvent(userId, {
-      type: 'family_nudge_delivered',
+      type: 'family_nudge_queued',
       payload: {
         nudgeId: created.id,
         type: created.type,
@@ -75,8 +75,26 @@ export class NudgesService {
   }
 
   async getPendingForElder(userId: string) {
-    const pending = await this.repo.getNextPendingNudge(userId);
+    let pending = await this.repo.getNextPendingNudge(userId);
     if (!pending) return null;
+
+    if (pending.deliveryState === 'queued' || pending.deliveryState === 'delivering') {
+      const delivered = await this.repo.markNudgeDelivered(userId, pending.id);
+      if (delivered) {
+        pending = delivered;
+        await this.store.pushUserEvent(userId, {
+          type: 'family_nudge_delivered',
+          payload: {
+            nudgeId: delivered.id,
+            type: delivered.type,
+            text: delivered.text,
+            voiceUrl: delivered.voiceUrl,
+            priority: delivered.priority
+          }
+        });
+      }
+    }
+
     return {
       nudgeId: pending.id,
       type: pending.type,

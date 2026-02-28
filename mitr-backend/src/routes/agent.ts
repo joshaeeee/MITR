@@ -153,7 +153,10 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
       type: 'scheduled_nudge',
       title: item.text ?? item.voiceUrl ?? 'Nudge',
       when: new Date(item.scheduledFor).toISOString(),
-      status: item.deliveryState === 'queued' || item.deliveryState === 'delivering' ? 'pending' : 'done',
+      status:
+        item.deliveryState === 'acknowledged' || item.deliveryState === 'failed'
+          ? 'done'
+          : 'pending',
       recurrence: null
     }));
 
