@@ -710,7 +710,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const nudgePendingGet: AgentToolDefinition = {
     name: 'nudge_pending_get',
     description:
-      'Check whether there is a pending family nudge/message for the elder in this conversation.',
+      'Get all unheard family nudges/messages for the elder in priority+queue order.',
     parameters: z.object({}),
     timeoutMs: 3000,
     execute: async (_input, context) => {
@@ -721,7 +721,8 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
 
       return {
         hasPending: true,
-        nudge: pending
+        pendingCount: pending.pendingCount,
+        nudges: pending.nudges
       };
     }
   };
@@ -729,27 +730,38 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const nudgeMarkListened: AgentToolDefinition = {
     name: 'nudge_mark_listened',
     description:
-      'Mark a pending family nudge as listened/acknowledged, then return its content for playback in conversation.',
+      'Mark one or more pending family nudges as listened/acknowledged, then return contents for playback in conversation.',
     parameters: z.object({
-      nudgeId: z.string()
+      nudgeId: z.string().optional(),
+      nudgeIds: z.array(z.string()).min(1).max(20).optional()
     }),
     timeoutMs: 3000,
     execute: async (input, context) => {
-      const acknowledged = await deps.nudgesService.markListened(context.userId, input.nudgeId);
-      if (!acknowledged) {
+      const ids = input.nudgeIds?.length
+        ? input.nudgeIds
+        : input.nudgeId
+          ? [input.nudgeId]
+          : [];
+      if (ids.length === 0) {
+        return { ok: false, error: 'Provide nudgeId or nudgeIds.' };
+      }
+      const acknowledged = await deps.nudgesService.markListened(context.userId, ids);
+      if (acknowledged.length === 0) {
         return { ok: false, error: 'Nudge not found or already handled.' };
       }
 
-      context.publishClientEvent?.({
-        type: 'nudge_playback_requested',
-        sourceTool: 'nudge_mark_listened',
-        requestId: acknowledged.nudgeId,
-        payload: acknowledged
-      });
+      for (const item of acknowledged) {
+        context.publishClientEvent?.({
+          type: 'nudge_playback_requested',
+          sourceTool: 'nudge_mark_listened',
+          requestId: item.nudgeId,
+          payload: item
+        });
+      }
 
       return {
         ok: true,
-        nudge: acknowledged
+        nudges: acknowledged
       };
     }
   };

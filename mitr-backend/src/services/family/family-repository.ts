@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   alerts,
@@ -450,11 +450,11 @@ export class FamilyRepository {
     return rows.map(toNudgeRecord);
   }
 
-  async getNextPendingNudge(userId: string): Promise<NudgeRecord | null> {
+  async getPendingNudges(userId: string, limit = 25): Promise<NudgeRecord[]> {
     const elder = await this.getElderByUser(userId);
-    if (!elder) return null;
+    if (!elder) return [];
 
-    const [row] = await db
+    const rows = await db
       .select()
       .from(nudges)
       .where(
@@ -464,10 +464,24 @@ export class FamilyRepository {
           lte(nudges.scheduledAt, new Date())
         )
       )
-      .orderBy(asc(nudges.scheduledAt), asc(nudges.createdAt))
-      .limit(1);
+      .orderBy(
+        sql`case
+          when ${nudges.priority} = 'urgent' then 0
+          when ${nudges.priority} = 'important' then 1
+          when ${nudges.priority} = 'gentle' then 2
+          else 3
+        end`,
+        asc(nudges.scheduledAt),
+        asc(nudges.createdAt)
+      )
+      .limit(limit);
 
-    return row ? toNudgeRecord(row) : null;
+    return rows.map(toNudgeRecord);
+  }
+
+  async getNextPendingNudge(userId: string): Promise<NudgeRecord | null> {
+    const rows = await this.getPendingNudges(userId, 1);
+    return rows[0] ?? null;
   }
 
   async acknowledgeNudge(userId: string, nudgeId: string): Promise<NudgeRecord | null> {

@@ -6,6 +6,18 @@ export class NudgesService {
   private readonly repo = getFamilyRepository();
   private readonly store = new SessionStore();
 
+  private toPreviewText(nudge: {
+    type: 'text' | 'voice';
+    text?: string;
+    voiceUrl?: string;
+  }): string {
+    if (nudge.type === 'text') return nudge.text ?? 'You have a family message.';
+    if (nudge.voiceUrl && /^https?:\/\//i.test(nudge.voiceUrl)) {
+      return 'You have a voice message from family.';
+    }
+    return 'You have a voice message from family, but playback link is not available.';
+  }
+
   private async toAgentNudgePayload(nudge: {
     id: string;
     type: 'text' | 'voice';
@@ -25,6 +37,7 @@ export class NudgesService {
       priority: nudge.priority,
       fromUserId: nudge.createdByUserId,
       fromName: sender?.displayName ?? sender?.email ?? sender?.phone ?? 'family member',
+      previewText: this.toPreviewText(nudge),
       createdAt: nudge.createdAt,
       scheduledFor: nudge.scheduledFor
     };
@@ -75,52 +88,89 @@ export class NudgesService {
   }
 
   async getPendingForElder(userId: string) {
-    let pending = await this.repo.getNextPendingNudge(userId);
-    if (!pending) return null;
+    const pendingRows = await this.repo.getPendingNudges(userId);
+    if (pendingRows.length === 0) return null;
 
-    if (pending.deliveryState === 'queued' || pending.deliveryState === 'delivering') {
-      const delivered = await this.repo.markNudgeDelivered(userId, pending.id);
-      if (delivered) {
-        pending = delivered;
-        await this.store.pushUserEvent(userId, {
-          type: 'family_nudge_delivered',
-          payload: {
-            nudgeId: delivered.id,
-            type: delivered.type,
-            text: delivered.text,
-            voiceUrl: delivered.voiceUrl,
-            priority: delivered.priority
-          }
-        });
+    const normalized: Array<{
+      nudgeId: string;
+      type: 'text' | 'voice';
+      text?: string;
+      voiceUrl?: string;
+      priority: NudgePriority;
+      fromUserId: string;
+      fromName: string;
+      previewText: string;
+      createdAt: number;
+      scheduledFor: number;
+    }> = [];
+
+    for (const row of pendingRows) {
+      let pending = row;
+      if (pending.deliveryState === 'queued' || pending.deliveryState === 'delivering') {
+        const delivered = await this.repo.markNudgeDelivered(userId, pending.id);
+        if (delivered) {
+          pending = delivered;
+          await this.store.pushUserEvent(userId, {
+            type: 'family_nudge_delivered',
+            payload: {
+              nudgeId: delivered.id,
+              type: delivered.type,
+              text: delivered.text,
+              voiceUrl: delivered.voiceUrl,
+              priority: delivered.priority
+            }
+          });
+        }
       }
+
+      normalized.push({
+        nudgeId: pending.id,
+        type: pending.type,
+        text: pending.text,
+        voiceUrl: pending.voiceUrl,
+        priority: pending.priority,
+        fromUserId: pending.createdByUserId,
+        fromName: 'family member',
+        previewText: this.toPreviewText(pending),
+        createdAt: pending.createdAt,
+        scheduledFor: pending.scheduledFor
+      });
     }
 
     return {
-      nudgeId: pending.id,
-      type: pending.type,
-      text: pending.text,
-      voiceUrl: pending.voiceUrl,
-      priority: pending.priority,
-      fromUserId: pending.createdByUserId,
-      // Avoid extra DB lookup on pending check to keep first response fast.
-      fromName: 'family member',
-      createdAt: pending.createdAt,
-      scheduledFor: pending.scheduledFor
+      pendingCount: normalized.length,
+      nudges: normalized
     };
   }
 
-  async markListened(userId: string, nudgeId: string) {
-    const updated = await this.repo.acknowledgeNudge(userId, nudgeId);
-    if (!updated) return null;
-    const payload = await this.toAgentNudgePayload(updated);
+  async markListened(userId: string, nudgeIds: string[]) {
+    const dedupedIds = [...new Set(nudgeIds)].filter((id) => id.trim().length > 0);
+    const acknowledged: Array<{
+      nudgeId: string;
+      type: 'text' | 'voice';
+      text?: string;
+      voiceUrl?: string;
+      priority: NudgePriority;
+      fromUserId: string;
+      fromName: string;
+      previewText: string;
+      createdAt: number;
+      scheduledFor: number;
+    }> = [];
 
-    await this.store.pushUserEvent(userId, {
-      type: 'family_nudge_acknowledged',
-      payload: {
-        ...payload
-      }
-    });
+    for (const nudgeId of dedupedIds) {
+      const updated = await this.repo.acknowledgeNudge(userId, nudgeId);
+      if (!updated) continue;
+      const payload = await this.toAgentNudgePayload(updated);
+      await this.store.pushUserEvent(userId, {
+        type: 'family_nudge_acknowledged',
+        payload: {
+          ...payload
+        }
+      });
+      acknowledged.push(payload);
+    }
 
-    return payload;
+    return acknowledged;
   }
 }
