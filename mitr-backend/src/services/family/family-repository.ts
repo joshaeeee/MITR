@@ -415,6 +415,19 @@ export class FamilyRepository {
     priority: NudgePriority;
     scheduledFor: number;
   }): Promise<NudgeRecord> {
+    if (input.type === 'voice') {
+      if (!input.voiceUrl || input.voiceUrl.trim().length === 0) {
+        throw new Error('voiceUrl is required for voice nudges');
+      }
+      if (!/^https?:\/\//i.test(input.voiceUrl)) {
+        throw new Error('voiceUrl must be an http(s) URL');
+      }
+    }
+
+    if (input.type === 'text' && (!input.text || input.text.trim().length === 0)) {
+      throw new Error('text is required for text nudges');
+    }
+
     const elder = await this.getElderByUser(ownerUserId);
     if (!elder) throw new Error('Elder profile not found');
 
