@@ -11,13 +11,14 @@ Voice-first spiritual companion backend built on LiveKit + OpenAI Realtime, with
 
 ## Project Layout
 - `mitr-backend/` — API + Agent worker + tools/services
+- `mitr-mobile/` — iOS family caregiver app (Expo Router)
 - `stories_curated.jsonl` — curated story corpus data
 - `features.txt` — feature notes
 
 ## Quick Start
-1. Install deps
+1. Install deps (workspace)
 ```bash
-cd mitr-backend
+cd /path/to/Mitr
 pnpm install
 ```
 
@@ -37,8 +38,14 @@ pnpm dev:api
 pnpm dev:agent
 ```
 
-5. Optional web simulator
+5. Run iOS app (new terminal)
 ```bash
+pnpm dev:mobile
+```
+
+6. Optional web simulator
+```bash
+cd mitr-backend
 pnpm test:web
 ```
 
@@ -60,13 +67,13 @@ pnpm build
 ### 2) Start all local processes
 Terminal A:
 ```bash
-cd mitr-backend
+cd /path/to/Mitr
 pnpm dev:api
 ```
 
 Terminal B:
 ```bash
-cd mitr-backend
+cd /path/to/Mitr
 pnpm dev:agent
 ```
 
@@ -76,6 +83,12 @@ cd mitr-backend
 pnpm test:web
 ```
 Open `http://localhost:8787`.
+
+Terminal D (mobile app):
+```bash
+cd /path/to/Mitr
+pnpm dev:mobile
+```
 
 ### 3) Connect and run voice test
 In web simulator:
@@ -108,11 +121,11 @@ Look for these in `pnpm dev:agent` logs:
 
 ### 6) Optional direct API checks
 ```bash
-# health
-curl -s http://localhost:8787/healthz
+# auth me (replace token)
+curl -s -H "Authorization: Bearer <accessToken>" http://localhost:8080/auth/me
 
-# onboarding status (replace user)
-curl -s "http://localhost:8787/onboarding/status?userId=user-local-web-1"
+# elder status
+curl -s -H "Authorization: Bearer <accessToken>" http://localhost:8080/elder/device/status
 ```
 
 ### 7) If something fails

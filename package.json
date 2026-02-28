@@ -1,0 +1,11 @@
+{
+  "name": "mitr-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "dev:api": "pnpm --dir mitr-backend dev:api",
+    "dev:agent": "pnpm --dir mitr-backend dev:agent",
+    "dev:mobile": "pnpm --dir mitr-mobile start",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
