@@ -463,7 +463,7 @@ export class FamilyRepository {
     return rows.map(toNudgeRecord);
   }
 
-  async getPendingNudges(userId: string, limit = 25): Promise<NudgeRecord[]> {
+  async getPendingNudges(userId: string, limit = 100): Promise<NudgeRecord[]> {
     const elder = await this.getElderByUser(userId);
     if (!elder) return [];
 

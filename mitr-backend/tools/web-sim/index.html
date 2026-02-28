@@ -577,9 +577,23 @@
           stopExternalMedia();
           const audio = document.createElement('audio');
           audio.autoplay = true;
+          audio.loop = false;
           audio.controls = false;
           audio.style.display = 'none';
           audio.src = voiceUrl;
+          audio.onended = () => {
+            log('nudge_voice_playback_ended', {
+              fromName: fromName || 'family member'
+            });
+            stopExternalMedia();
+          };
+          audio.onerror = () => {
+            log('nudge_voice_playback_error', {
+              fromName: fromName || 'family member',
+              voiceUrl
+            });
+            stopExternalMedia();
+          };
           audioContainer.appendChild(audio);
           externalMediaAudio = audio;
           try {
@@ -591,6 +605,7 @@
             return;
           } catch (error) {
             log('nudge_voice_playback_error', error?.message || String(error));
+            stopExternalMedia();
           }
         }
         if (text) {

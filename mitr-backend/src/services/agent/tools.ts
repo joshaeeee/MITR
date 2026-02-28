@@ -719,10 +719,20 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
         return { hasPending: false };
       }
 
+      const urgentCount = pending.nudges.filter((nudge) => nudge.priority === 'urgent').length;
+      const importantCount = pending.nudges.filter((nudge) => nudge.priority === 'important').length;
+      const gentleCount = pending.nudges.filter((nudge) => nudge.priority === 'gentle').length;
+
       return {
         hasPending: true,
         pendingCount: pending.pendingCount,
-        nudges: pending.nudges
+        nudges: pending.nudges,
+        firstNudge: pending.nudges[0],
+        priorityCounts: {
+          urgent: urgentCount,
+          important: importantCount,
+          gentle: gentleCount
+        }
       };
     }
   };
@@ -759,9 +769,14 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
         });
       }
 
+      const remaining = await deps.nudgesService.getPendingForElder(context.userId);
+
       return {
         ok: true,
-        nudges: acknowledged
+        nudges: acknowledged,
+        playedCount: acknowledged.length,
+        remainingCount: remaining?.pendingCount ?? 0,
+        nextNudge: remaining?.nudges[0] ?? null
       };
     }
   };

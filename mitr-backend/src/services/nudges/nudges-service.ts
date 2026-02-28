@@ -87,8 +87,8 @@ export class NudgesService {
     return this.repo.getNudges(userId);
   }
 
-  async getPendingForElder(userId: string) {
-    const pendingRows = await this.repo.getPendingNudges(userId);
+  async getPendingForElder(userId: string, limit = 100) {
+    const pendingRows = await this.repo.getPendingNudges(userId, limit);
     if (pendingRows.length === 0) return null;
 
     const normalized: Array<{
