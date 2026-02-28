@@ -12,6 +12,7 @@ import {
   AudioFrame,
   AudioSource,
   LocalAudioTrack,
+  RoomEvent,
   TrackPublishOptions,
   TrackSource,
   type LocalParticipant
@@ -59,6 +60,7 @@ type FlowType = 'satsang' | 'story' | 'companion';
 const FLOW_STATE_TOPIC = 'mitr.flow_state';
 const TOOL_EVENT_TOPIC = 'mitr.tool_event';
 const NEWS_AUTO_FOLLOWUP_DELAY_MS = 300;
+const NUDGE_PLAYBACK_STATUS_TIMEOUT_MS = 120000;
 const AMBIENCE_SAMPLE_RATE = 48000;
 const AMBIENCE_CHANNELS = 1;
 const AMBIENCE_FRAME_MS = 20;
@@ -383,6 +385,20 @@ type StoryForFollowup = {
   moral: string | undefined;
 };
 
+type QueuedNudgePlayback = {
+  type: string;
+  requestId: string;
+  sourceTool: string;
+  payload: Record<string, unknown>;
+};
+
+type NudgePlaybackStatusPacket = {
+  type: 'nudge_voice_playback_status';
+  requestId?: string;
+  nudgeId?: string;
+  status?: 'started' | 'ended' | 'failed';
+};
+
 const toCitationsForFollowup = (value: unknown): CitationForFollowup[] => {
   if (!Array.isArray(value)) return [];
   return value
@@ -544,6 +560,9 @@ export default defineAgent({
     let latestUserState: voice.UserState = 'listening';
     let sessionRef: voice.AgentSession | null = null;
     let satsangAmbiencePublisher: SatsangAmbiencePublisher | null = null;
+    let nudgePlaybackStatusTimer: NodeJS.Timeout | null = null;
+    let activeNudgePlayback: QueuedNudgePlayback | null = null;
+    const queuedNudgePlaybacks: QueuedNudgePlayback[] = [];
     const conversations = new ConversationService();
     const pendingUserTurns: string[] = [];
 
@@ -692,8 +711,22 @@ export default defineAgent({
       ].join('\n');
     };
 
+    const clearNudgePlaybackStatusTimer = () => {
+      if (!nudgePlaybackStatusTimer) return;
+      clearTimeout(nudgePlaybackStatusTimer);
+      nudgePlaybackStatusTimer = null;
+    };
+
+    const canStartQueuedNudgePlayback = (): boolean =>
+      !autoFlowState.pendingAutoAdvance &&
+      latestUserState !== 'speaking' &&
+      (latestAgentState === 'idle' || latestAgentState === 'listening') &&
+      sessionRef !== null &&
+      activeNudgePlayback === null;
+
     const canFlushFollowups = (): boolean =>
       !autoFlowState.pendingAutoAdvance &&
+      activeNudgePlayback === null &&
       latestUserState !== 'speaking' &&
       (latestAgentState === 'idle' || latestAgentState === 'listening');
 
@@ -744,7 +777,7 @@ export default defineAgent({
         });
     };
 
-    const publishToolEvent = (payload: {
+    const publishToolEventPacket = (payload: {
       type: string;
       sourceTool: string;
       requestId?: string;
@@ -770,6 +803,108 @@ export default defineAgent({
             error: (error as Error).message
           });
         });
+
+    };
+
+    const dispatchNextQueuedNudgePlayback = () => {
+      if (!canStartQueuedNudgePlayback()) return;
+      const next = queuedNudgePlaybacks.shift();
+      if (!next) return;
+      activeNudgePlayback = next;
+      publishToolEventPacket(next);
+      clearNudgePlaybackStatusTimer();
+      nudgePlaybackStatusTimer = setTimeout(() => {
+        if (!activeNudgePlayback || activeNudgePlayback.requestId !== next.requestId) return;
+        logger.warn('Timed out waiting for nudge voice playback status; releasing lock', {
+          sessionId,
+          requestId: next.requestId
+        });
+        activeNudgePlayback = null;
+        clearNudgePlaybackStatusTimer();
+        scheduleAutoAdvance(session);
+        flushFollowups();
+        dispatchNextQueuedNudgePlayback();
+      }, NUDGE_PLAYBACK_STATUS_TIMEOUT_MS);
+    };
+
+    const handleNudgePlaybackStatus = async (packet: NudgePlaybackStatusPacket) => {
+      if (!activeNudgePlayback) return;
+      const status = packet.status;
+      if (status !== 'started' && status !== 'ended' && status !== 'failed') return;
+      const packetRequestId = asNonEmptyString(packet.requestId);
+      const activeRequestId = activeNudgePlayback.requestId;
+      if (packetRequestId && packetRequestId !== activeRequestId) return;
+
+      if (status === 'started') {
+        logger.info('Nudge voice playback started', {
+          sessionId,
+          requestId: activeRequestId
+        });
+        return;
+      }
+
+      const active = activeNudgePlayback;
+      activeNudgePlayback = null;
+      clearNudgePlaybackStatusTimer();
+
+      const nudgeId =
+        asNonEmptyString(packet.nudgeId) ??
+        asNonEmptyString(active.payload?.nudgeId) ??
+        asNonEmptyString(active.payload?.requestId) ??
+        active.requestId;
+
+      if (status === 'ended' && nudgeId) {
+        try {
+          const acknowledged = await deps.nudgesService.markListened(userId, [nudgeId]);
+          logger.info('Nudge voice playback acknowledged after completion', {
+            sessionId,
+            requestId: active.requestId,
+            nudgeId,
+            acknowledgedCount: acknowledged.length
+          });
+        } catch (error) {
+          logger.warn('Failed to acknowledge nudge after voice playback completion', {
+            sessionId,
+            requestId: active.requestId,
+            nudgeId,
+            error: (error as Error).message
+          });
+        }
+      } else if (status === 'failed') {
+        logger.warn('Nudge voice playback failed', {
+          sessionId,
+          requestId: active.requestId,
+          nudgeId
+        });
+      }
+
+      scheduleAutoAdvance(session);
+      flushFollowups();
+      dispatchNextQueuedNudgePlayback();
+    };
+
+    const publishToolEvent = (payload: {
+      type: string;
+      sourceTool: string;
+      requestId?: string;
+      payload?: Record<string, unknown>;
+    }) => {
+      if (payload.type === 'nudge_playback_requested') {
+        const eventPayload = payload.payload ?? {};
+        const voiceUrl = asNonEmptyString(eventPayload.voiceUrl);
+        if (voiceUrl) {
+          queuedNudgePlaybacks.push({
+            type: payload.type,
+            sourceTool: payload.sourceTool,
+            requestId: payload.requestId ?? asNonEmptyString(eventPayload.nudgeId) ?? `nudge_${Date.now().toString(36)}`,
+            payload: eventPayload
+          });
+          dispatchNextQueuedNudgePlayback();
+          return;
+        }
+      }
+
+      publishToolEventPacket(payload);
 
       if (payload.type === 'news_retrieve_ready') {
         followupManager.schedule({
@@ -923,6 +1058,7 @@ export default defineAgent({
     const scheduleAutoAdvance = (session: voice.AgentSession) => {
       if (autoAdvanceTimer || !autoFlowState.pendingAutoAdvance) return;
       if (autoFlowState.loopMode !== 'continuous') return;
+      if (activeNudgePlayback) return;
       if (latestUserState === 'speaking') return;
       if (latestAgentState !== 'idle' && latestAgentState !== 'listening') return;
       if (autoFlowState.autoTurnsRemaining <= 0) {
@@ -933,6 +1069,7 @@ export default defineAgent({
       autoAdvanceTimer = setTimeout(() => {
         autoAdvanceTimer = null;
         if (!autoFlowState.pendingAutoAdvance || autoFlowState.loopMode !== 'continuous') return;
+        if (activeNudgePlayback) return;
         if (latestUserState === 'speaking') return;
         if (latestAgentState !== 'idle' && latestAgentState !== 'listening') return;
         if (autoFlowState.autoTurnsRemaining <= 0) {
@@ -1157,6 +1294,7 @@ export default defineAgent({
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (event) => {
       latestAgentState = event.newState;
       if (event.newState === 'idle' || event.newState === 'listening') {
+        dispatchNextQueuedNudgePlayback();
         scheduleAutoAdvance(session);
         flushFollowups();
       }
@@ -1175,6 +1313,7 @@ export default defineAgent({
       }
 
       clearSpeechStuckTimer();
+      dispatchNextQueuedNudgePlayback();
       scheduleAutoAdvance(session);
       flushFollowups();
     });
@@ -1189,6 +1328,9 @@ export default defineAgent({
 
     session.on(voice.AgentSessionEventTypes.Close, (event) => {
       clearSpeechStuckTimer();
+      clearNudgePlaybackStatusTimer();
+      activeNudgePlayback = null;
+      queuedNudgePlaybacks.length = 0;
       followupManager.clear();
       void stopSatsangAmbience();
       if (autoAdvanceTimer) {
@@ -1205,6 +1347,22 @@ export default defineAgent({
     });
 
     await ctx.connect();
+    ctx.room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+      if (topic !== TOOL_EVENT_TOPIC) return;
+      if (participantIdentity && participant?.identity && participant.identity !== participantIdentity) return;
+      try {
+        const decoded = new TextDecoder().decode(payload);
+        const packet = JSON.parse(decoded) as NudgePlaybackStatusPacket;
+        if (packet?.type !== 'nudge_voice_playback_status') return;
+        void handleNudgePlaybackStatus(packet);
+      } catch (error) {
+        logger.debug('Failed to parse tool-event data packet from participant', {
+          sessionId,
+          error: (error as Error).message
+        });
+      }
+    });
+
     if (ctx.room.localParticipant) {
       satsangAmbiencePublisher = new SatsangAmbiencePublisher(ctx.room.localParticipant, sessionId);
     } else {

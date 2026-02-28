@@ -572,7 +572,34 @@
         }
       };
 
-      const playNudgeAudio = async ({ voiceUrl, text, fromName }) => {
+      const publishNudgePlaybackStatus = async ({ requestId, nudgeId, status }) => {
+        if (!room?.localParticipant) return;
+        try {
+          const body = new TextEncoder().encode(
+            JSON.stringify({
+              type: 'nudge_voice_playback_status',
+              requestId,
+              nudgeId,
+              status,
+              ts: Date.now()
+            })
+          );
+          await room.localParticipant.publishData(body, {
+            reliable: true,
+            topic: TOOL_EVENT_TOPIC
+          });
+        } catch (error) {
+          log('nudge_voice_status_publish_error', error?.message || String(error));
+        }
+      };
+
+      const playNudgeAudio = async (packet) => {
+        const payload = packet?.payload || {};
+        const requestId = packet?.requestId || payload?.nudgeId || null;
+        const nudgeId = payload?.nudgeId || requestId || null;
+        const voiceUrl = payload?.voiceUrl;
+        const text = payload?.text;
+        const fromName = payload?.fromName;
         if (voiceUrl) {
           stopExternalMedia();
           const audio = document.createElement('audio');
@@ -585,6 +612,11 @@
             log('nudge_voice_playback_ended', {
               fromName: fromName || 'family member'
             });
+            void publishNudgePlaybackStatus({
+              requestId,
+              nudgeId,
+              status: 'ended'
+            });
             stopExternalMedia();
           };
           audio.onerror = () => {
@@ -592,12 +624,22 @@
               fromName: fromName || 'family member',
               voiceUrl
             });
+            void publishNudgePlaybackStatus({
+              requestId,
+              nudgeId,
+              status: 'failed'
+            });
             stopExternalMedia();
           };
           audioContainer.appendChild(audio);
           externalMediaAudio = audio;
           try {
             await audio.play();
+            await publishNudgePlaybackStatus({
+              requestId,
+              nudgeId,
+              status: 'started'
+            });
             log('nudge_voice_playback_started', {
               fromName: fromName || 'family member',
               hasVoiceUrl: true
@@ -625,7 +667,7 @@
           return;
         }
         if (type === 'nudge_playback_requested') {
-          await playNudgeAudio(packet.payload || {});
+          await playNudgeAudio(packet);
           return;
         }
         if (type === 'news_retrieve_ready') {

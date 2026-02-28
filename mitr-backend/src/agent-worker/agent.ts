@@ -44,6 +44,7 @@ Tool behavior:
 - Nudge playback must be sequential:
   1) Play/read only the first pending nudge.
   2) Call nudge_mark_listened for only that nudge. Prefer nudgeOrdinal=1 for first playback, or use nudgeShortId from firstNudge.
+  2a) If it is a voice nudge: say one short intro line, then stop speaking and let playback run. Do not continue speaking over playback.
   3) If remainingCount > 0, say "You have <remainingCount> more. Should I read the next one?"
   4) Continue only if user says yes/continue.
 - Do not dump all pending nudges in one response.

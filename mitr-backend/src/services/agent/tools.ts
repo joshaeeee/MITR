@@ -770,11 +770,14 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
     timeoutMs: 3000,
     execute: async (input, context) => {
       const pendingSnapshot = await deps.nudgesService.getPendingForElder(context.userId, 100);
+      const pendingNudges = pendingSnapshot?.nudges ?? [];
       const byShortId = new Map<string, string>();
       const orderedIds: string[] = [];
-      for (const nudge of pendingSnapshot?.nudges ?? []) {
+      const pendingById = new Map<string, (typeof pendingNudges)[number]>();
+      for (const nudge of pendingNudges) {
         byShortId.set(nudge.nudgeShortId.toLowerCase(), nudge.nudgeId);
         orderedIds.push(nudge.nudgeId);
+        pendingById.set(nudge.nudgeId, nudge);
       }
 
       const rawIds = [
@@ -811,12 +814,20 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
       if (resolvedIds.length === 0) {
         return { ok: false, error: 'No pending nudges found to acknowledge.' };
       }
-      const acknowledged = await deps.nudgesService.markListened(context.userId, resolvedIds);
-      if (acknowledged.length === 0) {
+
+      const selectedNudges = resolvedIds
+        .map((id) => pendingById.get(id))
+        .filter((item): item is NonNullable<typeof item> => item !== undefined);
+      if (selectedNudges.length === 0) {
         return { ok: false, error: 'Nudge not found or already handled.' };
       }
 
-      for (const item of acknowledged) {
+      const selectedTextIds = selectedNudges.filter((item) => item.type !== 'voice').map((item) => item.nudgeId);
+      const selectedVoice = selectedNudges.filter((item) => item.type === 'voice');
+      const acknowledgedText =
+        selectedTextIds.length > 0 ? await deps.nudgesService.markListened(context.userId, selectedTextIds) : [];
+
+      for (const item of selectedVoice) {
         context.publishClientEvent?.({
           type: 'nudge_playback_requested',
           sourceTool: 'nudge_mark_listened',
@@ -825,15 +836,25 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
         });
       }
 
-      const remaining = await deps.nudgesService.getPendingForElder(context.userId);
+      const selectedSet = new Set(selectedNudges.map((item) => item.nudgeId));
+      const nextNudge = (pendingSnapshot?.nudges ?? []).find((item) => !selectedSet.has(item.nudgeId)) ?? null;
+      const remainingCount = Math.max((pendingSnapshot?.pendingCount ?? selectedNudges.length) - selectedNudges.length, 0);
 
       return {
         ok: true,
-        nudges: acknowledged,
-        playedCount: acknowledged.length,
+        nudges: [
+          ...acknowledgedText,
+          ...selectedVoice.map((item) => ({
+            ...item,
+            pendingVoiceAck: true
+          }))
+        ],
+        playedCount: selectedNudges.length,
+        voiceQueuedCount: selectedVoice.length,
+        textAcknowledgedCount: acknowledgedText.length,
         autoSelectedFirstPending: dedupedIds.length === 0,
-        remainingCount: remaining?.pendingCount ?? 0,
-        nextNudge: remaining?.nudges[0] ?? null
+        remainingCount,
+        nextNudge
       };
     }
   };
