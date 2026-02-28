@@ -118,6 +118,7 @@ sudo bash /opt/mitr/MITR/mitr-backend/deploy/bootstrap-ec2.sh
 cd /opt/mitr/MITR/mitr-backend
 cp deploy/.env.prod.template deploy/.env.prod
 # edit deploy/.env.prod with real values
+# set API_PUBLIC_BASE_URL to your public API host (e.g. http://16.16.162.185)
 bash deploy/deploy.sh
 ```
 

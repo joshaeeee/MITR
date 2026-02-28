@@ -71,7 +71,7 @@ const bootstrap = async (): Promise<void> => {
       if (origin.startsWith('exp://')) return callback(null, true);
       return callback(new Error('CORS origin not allowed'), false);
     },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   });
 
   registerAuthRoutes(app, auth);

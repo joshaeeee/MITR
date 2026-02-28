@@ -40,6 +40,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    volumes:
+      - voice_notes_data:/app/var/voice-notes
     networks:
       - mitr-internal
     depends_on:
@@ -120,3 +122,6 @@ services:
 networks:
   mitr-internal:
     driver: bridge
+
+volumes:
+  voice_notes_data:
