@@ -740,7 +740,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const nudgeMarkListened: AgentToolDefinition = {
     name: 'nudge_mark_listened',
     description:
-      'Mark one or more pending family nudges as listened/acknowledged, then return contents for playback in conversation. Accepts either full nudge IDs or short IDs from nudge_pending_get.',
+      'Mark one or more pending family nudges as listened/acknowledged, then return contents for playback in conversation. Accepts full IDs, short IDs, or nudgeOrdinal from nudge_pending_get. If omitted, defaults to first pending nudge.',
     parameters: z.object({
       nudgeId: z.preprocess((value) => (value == null ? undefined : value), z.string().optional()),
       nudgeIds: z.preprocess(
@@ -802,10 +802,16 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
       }
 
       const dedupedIds = [...new Set(ids)];
-      if (dedupedIds.length === 0) {
-        return { ok: false, error: 'Provide nudgeId/nudgeIds/nudgeShortId/nudgeShortIds/nudgeOrdinal.' };
+      const resolvedIds =
+        dedupedIds.length > 0
+          ? dedupedIds
+          : orderedIds.length > 0
+            ? [orderedIds[0]]
+            : [];
+      if (resolvedIds.length === 0) {
+        return { ok: false, error: 'No pending nudges found to acknowledge.' };
       }
-      const acknowledged = await deps.nudgesService.markListened(context.userId, dedupedIds);
+      const acknowledged = await deps.nudgesService.markListened(context.userId, resolvedIds);
       if (acknowledged.length === 0) {
         return { ok: false, error: 'Nudge not found or already handled.' };
       }
@@ -825,6 +831,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
         ok: true,
         nudges: acknowledged,
         playedCount: acknowledged.length,
+        autoSelectedFirstPending: dedupedIds.length === 0,
         remainingCount: remaining?.pendingCount ?? 0,
         nextNudge: remaining?.nudges[0] ?? null
       };
