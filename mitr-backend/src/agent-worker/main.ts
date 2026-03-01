@@ -89,6 +89,16 @@ const normalizeSarvamLanguageCode = (language: string): string => {
   return 'hi-IN';
 };
 
+const normalizeSarvamTtsModel = (model: string): sarvam.TTSModels => {
+  const normalized = model.trim().toLowerCase();
+  if (normalized === 'bulbul:v2') return 'bulbul:v2';
+  if (normalized === 'bulbul:v3' || normalized.startsWith('bulbul:v3')) return 'bulbul:v3';
+  logger.warn('Unknown SARVAM_TTS_MODEL; falling back to bulbul:v2', {
+    providedModel: model
+  });
+  return 'bulbul:v2';
+};
+
 class SatsangAmbiencePublisher {
   private source: AudioSource | null = null;
   private track: LocalAudioTrack | null = null;
@@ -1217,7 +1227,7 @@ export default defineAgent({
               model: env.OPENAI_CHAT_MODEL
             }),
             tts: new sarvam.TTS({
-              model: env.SARVAM_TTS_MODEL as sarvam.TTSModels,
+              model: normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL),
               speaker: env.SARVAM_TTS_SPEAKER,
               targetLanguageCode: normalizeSarvamLanguageCode(language),
               streaming: env.SARVAM_TTS_STREAMING
