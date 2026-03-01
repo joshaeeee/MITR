@@ -260,11 +260,22 @@
       const TEST_EMAIL = 'tester@gmail.com';
       const TEST_PASSWORD = '12345678910';
       const HOST_STORAGE_KEY = 'mitr_websim_host';
+      const DEFAULT_API_HOST = 'http://16.16.162.185';
 
-      const persistedHost = window.localStorage.getItem(HOST_STORAGE_KEY);
-      if (persistedHost) {
-        hostInput.value = persistedHost;
-      }
+      const readInitialHost = () => {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const fromQuery = (params.get('apiHost') || params.get('host') || '').trim();
+          if (fromQuery) return fromQuery.replace(/\/$/, '');
+        } catch (_) {}
+
+        const persistedHost = (window.localStorage.getItem(HOST_STORAGE_KEY) || '').trim();
+        if (persistedHost) return persistedHost.replace(/\/$/, '');
+
+        return DEFAULT_API_HOST;
+      };
+
+      hostInput.value = readInitialHost();
 
       const log = (event, payload = '') => {
         const ts = new Date().toISOString();
@@ -767,6 +778,10 @@
 
         if (!host || !userId) {
           log('error', 'host and userId are required');
+          return;
+        }
+        if (window.location.protocol === 'https:' && host.startsWith('http://')) {
+          log('error', 'HTTPS simulator cannot call HTTP backend. Use an HTTPS API host.');
           return;
         }
 
