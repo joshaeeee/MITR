@@ -431,7 +431,8 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
 
   const religiousRetrieve: AgentToolDefinition = {
     name: 'religious_retrieve',
-    description: 'Retrieve grounded religious/spiritual citations from curated corpus.',
+    description:
+      'Use for scripture/religious questions requiring grounded citations. Returns status=ready|pending with citations when ready. If pending, acknowledge briefly and continue without fabricating quotes.',
     parameters: z.object({
       query: z.string(),
       language: optionalStringArg(),
@@ -533,7 +534,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const storyRetrieve: AgentToolDefinition = {
     name: 'story_retrieve',
     description:
-      'Retrieve full Indian story passages from Qdrant RAG corpus (Panchatantra, Ramayana, Mahabharata, Akbar-Birbal, Jataka, folk tales).',
+      'Use for story requests. Retrieves grounded Indian story passages (Panchatantra/Ramayana/Mahabharata/Akbar-Birbal/Jataka/folk). Returns ready|pending; if pending, acknowledge briefly and continue naturally.',
     parameters: z.object({
       query: z.string(),
       language: optionalStringArg(),
@@ -674,7 +675,8 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
 
   const reminderCreate: AgentToolDefinition = {
     name: 'reminder_create',
-    description: 'Create an alarm/reminder for medicines, appointments, and routines.',
+    description:
+      'Create alarm/reminder items for medicine, appointments, routines, or schedule tasks only. Do not use this for family nudges/messages.',
     parameters: z.object({
       title: z.string(),
       datetimeISO: z.string(),
@@ -698,7 +700,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
 
   const reminderList: AgentToolDefinition = {
     name: 'reminder_list',
-    description: 'List reminders for the current user.',
+    description: 'List schedule/alarm reminders for the current user. Not for family message retrieval.',
     parameters: z.object({}),
     timeoutMs: 1000,
     execute: async (_input, context) => {
@@ -710,7 +712,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const nudgePendingGet: AgentToolDefinition = {
     name: 'nudge_pending_get',
     description:
-      'Get all unheard family nudges/messages for the elder in priority+queue order. Returns both nudgeId and nudgeShortId.',
+      'Get unheard family nudges/messages in playback order: urgent > important > gentle, then queue order. Call once at new session start before deep tools. Returns firstNudge, pendingCount, and both nudgeId+nudgeShortId.',
     parameters: z.object({}),
     timeoutMs: 3000,
     execute: async (_input, context) => {
@@ -740,7 +742,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const nudgeMarkListened: AgentToolDefinition = {
     name: 'nudge_mark_listened',
     description:
-      'Mark one or more pending family nudges as listened/acknowledged, then return contents for playback in conversation. Accepts full IDs, short IDs, or nudgeOrdinal from nudge_pending_get. If omitted, defaults to first pending nudge.',
+      'Mark only the nudge(s) just played/read as listened and return payload for conversation. Accepts full IDs, short IDs, or nudgeOrdinal from nudge_pending_get; omit args to auto-select first pending. For voice nudges, response may include pendingVoiceAck + voiceUrl for playback flow.',
     parameters: z.object({
       nudgeId: z.preprocess((value) => (value == null ? undefined : value), z.string().optional()),
       nudgeIds: z.preprocess(
@@ -890,7 +892,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const newsRetrieve: AgentToolDefinition = {
     name: 'news_retrieve',
     description:
-      'Retrieve fresh, detailed regional current-affairs coverage from trusted feeds. Set freshness based on user request: latest, recent, or general.',
+      'Retrieve current-affairs news (regional or global). Use freshness=latest for today/latest requests. If region is unclear for local news, ask location first; for global topics (e.g., World Cup) call directly. When ready, summarize with headline + source + why it matters + one concrete detail.',
     parameters: z.object({
       query: z.string(),
       freshness: z.enum(['latest', 'recent', 'general']).nullish(),
@@ -1014,7 +1016,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const webSearch: AgentToolDefinition = {
     name: 'web_search',
     description:
-      'Search the internet for current information and useful websites. Returns source links and concise summaries.',
+      'General internet search for facts/websites/comparisons/research links. Prefer this for broad web lookups; use news_retrieve for news briefings. Returns ready|pending with source links/summaries.',
     parameters: z.object({
       query: z.string(),
       numResults: z.number().int().min(1).max(8).nullish(),
@@ -1127,7 +1129,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const panchangGet: AgentToolDefinition = {
     name: 'panchang_get',
     description:
-      'Get Panchang for a city using grounded astrology API data. Supports today snapshot plus future tithi queries like "ashtami kab hai".',
+      'Get grounded Panchang for India by city. Confirm city each session before call. Supports queryType: today_snapshot, next_tithi, upcoming_tithi_dates, tithi_on_date. Festival date questions must use this tool. If response is needs_city/needs_confirmation, ask concise follow-up.',
     parameters: z.object({
       city: optionalStringArg(),
       stateOrRegion: optionalStringArg(),
@@ -1724,7 +1726,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const flowStart: AgentToolDefinition = {
     name: 'flow_start',
     description:
-      'Start or resume a structured flow (satsang/story/companion). Returns flow + nextStep for the immediate spoken response.',
+      'Start/resume structured flow (satsang/story/companion). Returns flow.nextStep; treat nextStep as source of truth for immediate spoken response.',
     parameters: z.object({
       flowType: z.enum(['satsang', 'story', 'companion']).nullish(),
       topic: z.string().nullish(),
@@ -1743,7 +1745,7 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
   const flowNext: AgentToolDefinition = {
     name: 'flow_next',
     description:
-      'Advance active structured flow and return nextStep to speak. Use auto=true for hands-free progression in continuous mode.',
+      'Advance active flow and return nextStep to speak now. If nextStep.fixedText exists, recite faithfully first. Use auto=true for hands-free progression in continuous mode.',
     parameters: z.object({
       flowId: z.string().nullish(),
       action: z.enum(['continue', 'reflect', 'question', 'summarize', 'close', 'new_text']).nullish(),
