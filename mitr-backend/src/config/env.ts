@@ -93,6 +93,11 @@ const envSchema = z.object({
   YTDLP_STREAM_TIMEOUT_MS: z.coerce.number().default(8_000),
   YOUTUBE_MEDIA_TIMEOUT_MS: z.coerce.number().default(12_000),
   LONG_SESSION_STALE_MS: z.coerce.number().default(45_000),
+  INSIGHTS_REALTIME_POLL_SEC: z.coerce.number().default(60),
+  DIGEST_JOB_CRON_UTC: z.string().default('* * * * *'),
+  DIGEST_DEFAULT_HOUR: z.coerce.number().min(0).max(23).default(20),
+  DIGEST_DEFAULT_MINUTE: z.coerce.number().min(0).max(59).default(30),
+  EXPO_ACCESS_TOKEN: z.string().optional(),
   MAINTENANCE_CLEANUP_INTERVAL_SEC: z.coerce.number().default(900),
   USER_EVENT_STREAM_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 14)
 });

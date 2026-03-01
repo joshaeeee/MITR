@@ -412,7 +412,7 @@ export const insightRecommendations = pgTable('insight_recommendations', {
   title: text('title').notNull(),
   whyText: text('why_text').notNull(),
   actionText: text('action_text').notNull(),
-  status: text('status').$type<'active' | 'acted' | 'dismissed'>().default('active').notNull(),
+  status: text('status').$type<'active' | 'accepted' | 'dismissed' | 'completed'>().default('active').notNull(),
   scoreBand: text('score_band').$type<'stable' | 'watch' | 'concern'>().notNull(),
   confidence: integer('confidence').notNull(),
   cooldownUntil: timestamp('cooldown_until', { withTimezone: true }),
@@ -486,4 +486,76 @@ export const insightPipelineRuns = pgTable('insight_pipeline_runs', {
 }, (table) => ({
   elderStartedIdx: index('insight_pipeline_runs_elder_started_idx').on(table.elderId, table.startedAt),
   statusStartedIdx: index('insight_pipeline_runs_status_started_idx').on(table.status, table.startedAt)
+}));
+
+export const insightDailyDigests = pgTable('insight_daily_digests', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  dateKey: text('date_key').notNull(),
+  summaryJson: jsonb('summary_json').$type<Record<string, unknown>>().default({}).notNull(),
+  scoreBand: text('score_band').$type<'stable' | 'watch' | 'concern'>().notNull(),
+  confidence: integer('confidence').notNull(),
+  dataSufficiency: integer('data_sufficiency').notNull(),
+  generatedAt: timestamp('generated_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderDateUnique: uniqueIndex('insight_daily_digests_elder_date_uq').on(table.elderId, table.dateKey),
+  elderGeneratedIdx: index('insight_daily_digests_elder_generated_idx').on(table.elderId, table.generatedAt)
+}));
+
+export const insightRecommendationFeedback = pgTable('insight_recommendation_feedback', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  recommendationId: uuid('recommendation_id').notNull(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  action: text('action').$type<'accepted' | 'dismissed' | 'completed'>().notNull(),
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  recommendationCreatedIdx: index('insight_reco_feedback_reco_created_idx').on(table.recommendationId, table.createdAt),
+  elderCreatedIdx: index('insight_reco_feedback_elder_created_idx').on(table.elderId, table.createdAt)
+}));
+
+export const caregiverNotificationPreferences = pgTable('caregiver_notification_preferences', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  familyId: uuid('family_id').notNull(),
+  digestEnabled: boolean('digest_enabled').default(true).notNull(),
+  digestHourLocal: integer('digest_hour_local').default(20).notNull(),
+  digestMinuteLocal: integer('digest_minute_local').default(30).notNull(),
+  timezone: text('timezone').default('Asia/Kolkata').notNull(),
+  realtimeEnabled: boolean('realtime_enabled').default(true).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  userUnique: uniqueIndex('caregiver_notif_prefs_user_uq').on(table.userId),
+  familyDigestIdx: index('caregiver_notif_prefs_family_digest_idx').on(table.familyId, table.digestEnabled)
+}));
+
+export const caregiverPushTokens = pgTable('caregiver_push_tokens', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  expoPushToken: text('expo_push_token').notNull(),
+  platform: text('platform').$type<'ios' | 'android' | 'unknown'>().default('unknown').notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  tokenUnique: uniqueIndex('caregiver_push_tokens_token_uq').on(table.expoPushToken),
+  userActiveIdx: index('caregiver_push_tokens_user_active_idx').on(table.userId, table.isActive)
+}));
+
+export const digestDeliveryLogs = pgTable('digest_delivery_logs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  digestId: uuid('digest_id').notNull(),
+  userId: text('user_id').notNull(),
+  deliveryChannel: text('delivery_channel').$type<'expo_push' | 'in_app'>().notNull(),
+  status: text('status').$type<'sent' | 'failed' | 'skipped'>().notNull(),
+  providerMessageId: text('provider_message_id'),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  dedupeUnique: uniqueIndex('digest_delivery_logs_dedupe_uq').on(table.digestId, table.userId, table.deliveryChannel),
+  userCreatedIdx: index('digest_delivery_logs_user_created_idx').on(table.userId, table.createdAt)
 }));

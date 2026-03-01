@@ -14,6 +14,7 @@ import { registerCareRoutes } from './routes/care.js';
 import { registerDeviceRoutes } from './routes/device.js';
 import { registerAgentRoutes } from './routes/agent.js';
 import { registerHomeRoutes } from './routes/home.js';
+import { registerNotificationsRoutes } from './routes/notifications.js';
 import { ProfileService } from './services/profile/profile-service.js';
 import { SessionStore } from './services/session-store.js';
 import { SessionRecoveryService } from './services/long-session/session-recovery-service.js';
@@ -21,6 +22,7 @@ import { db, pgPool } from './db/client.js';
 import { sql } from 'drizzle-orm';
 import { closeReminderQueue } from './services/reminders/queue.js';
 import { closeInsightsQueue } from './services/insights/queue.js';
+import { closeDigestQueue } from './services/insights/digest-queue.js';
 import { closeRedisConnections } from './lib/redis.js';
 import { AuthService } from './services/auth/auth-service.js';
 import { DataRetentionService } from './services/maintenance/data-retention-service.js';
@@ -48,6 +50,7 @@ const shutdown = async (signal: string): Promise<void> => {
     retentionRef?.stop();
     await closeReminderQueue();
     await closeInsightsQueue();
+    await closeDigestQueue();
     await closeRedisConnections();
     await pgPool.end();
     logger.info('Shutdown complete', { signal });
@@ -90,6 +93,7 @@ const bootstrap = async (): Promise<void> => {
   registerDeviceRoutes(app, auth);
   registerAgentRoutes(app, auth);
   registerHomeRoutes(app, auth);
+  registerNotificationsRoutes(app, auth);
   registerSessionRoutes(app, store, profiles, auth);
 
   await db.execute(sql`select 1`);

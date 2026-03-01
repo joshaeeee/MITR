@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   concernSignals,
@@ -10,6 +10,7 @@ import {
   insightRecommendations,
   insightSignalEvents,
   insightSnapshots,
+  insightRecommendationFeedback,
   userInputTranscripts
 } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
@@ -31,6 +32,13 @@ import type { InsightIngestJobPayload } from './queue.js';
 
 const ACTIVE_MODEL_KEY = 'wellness_v1';
 const ACTIVE_MODEL_VERSION = '2026.02.research.v1';
+const RECOMMENDATION_MIN_CONFIDENCE = 45;
+const RECOMMENDATION_MIN_DATA_SUFFICIENCY = 35;
+const RECOMMENDATION_MAX_ACTIVE = 3;
+const RECOMMENDATION_DAILY_NEW_CAP = 2;
+const RECOMMENDATION_TYPE_COOLDOWN_HOURS = 18;
+const DISMISSED_SUPPRESSION_HOURS = 24;
+const COMPLETED_SUPPRESSION_HOURS = 48;
 
 type DailyAggregate = {
   id: string;
@@ -541,7 +549,8 @@ export class InsightsPipelineService {
     transcriptId: string,
     eventTs: Date
   ): Promise<string[]> {
-    if (daily.confidence < 40) return [];
+    if (daily.confidence < RECOMMENDATION_MIN_CONFIDENCE) return [];
+    if (daily.dataSufficiency < RECOMMENDATION_MIN_DATA_SUFFICIENCY) return [];
 
     const rules: Array<{ type: string; enabled: boolean }> = [
       { type: 'distress_followup', enabled: daily.distressScore >= 68 && daily.confidence >= 50 },
@@ -552,9 +561,31 @@ export class InsightsPipelineService {
 
     const now = new Date();
     const createdIds: string[] = [];
+    const typeCooldownBoundary = new Date(now.getTime() - RECOMMENDATION_TYPE_COOLDOWN_HOURS * 60 * 60 * 1000);
+
+    const [activeRows, createdTodayRows] = await Promise.all([
+      db
+        .select({ id: insightRecommendations.id })
+        .from(insightRecommendations)
+        .where(
+          and(
+            eq(insightRecommendations.elderId, elderId),
+            inArray(insightRecommendations.status, ['active', 'accepted'])
+          )
+        ),
+      db
+        .select({ id: insightRecommendations.id })
+        .from(insightRecommendations)
+        .where(and(eq(insightRecommendations.elderId, elderId), eq(insightRecommendations.dateKey, dateKey)))
+    ]);
+
+    let activeCount = activeRows.length;
+    let createdTodayCount = createdTodayRows.length;
 
     for (const rule of rules) {
       if (!rule.enabled) continue;
+      if (activeCount >= RECOMMENDATION_MAX_ACTIVE) break;
+      if (createdTodayCount >= RECOMMENDATION_DAILY_NEW_CAP) break;
 
       const [existingActive] = await db
         .select({ id: insightRecommendations.id })
@@ -563,13 +594,53 @@ export class InsightsPipelineService {
           and(
             eq(insightRecommendations.elderId, elderId),
             eq(insightRecommendations.recommendationType, rule.type),
-            eq(insightRecommendations.status, 'active'),
+            inArray(insightRecommendations.status, ['active', 'accepted']),
             sql`${insightRecommendations.cooldownUntil} IS NULL OR ${insightRecommendations.cooldownUntil} > now()`
           )
         )
         .limit(1);
 
       if (existingActive) continue;
+
+      const [recentByType] = await db
+        .select({ createdAt: insightRecommendations.createdAt })
+        .from(insightRecommendations)
+        .where(
+          and(
+            eq(insightRecommendations.elderId, elderId),
+            eq(insightRecommendations.recommendationType, rule.type),
+            gte(insightRecommendations.createdAt, typeCooldownBoundary)
+          )
+        )
+        .orderBy(desc(insightRecommendations.createdAt))
+        .limit(1);
+
+      if (recentByType) continue;
+
+      const [recentFeedback] = await db
+        .select({
+          action: insightRecommendationFeedback.action,
+          createdAt: insightRecommendationFeedback.createdAt
+        })
+        .from(insightRecommendationFeedback)
+        .innerJoin(
+          insightRecommendations,
+          eq(insightRecommendations.id, insightRecommendationFeedback.recommendationId)
+        )
+        .where(
+          and(
+            eq(insightRecommendationFeedback.elderId, elderId),
+            eq(insightRecommendations.recommendationType, rule.type)
+          )
+        )
+        .orderBy(desc(insightRecommendationFeedback.createdAt))
+        .limit(1);
+
+      if (recentFeedback) {
+        const hoursSinceFeedback = (now.getTime() - recentFeedback.createdAt.getTime()) / (60 * 60 * 1000);
+        if (recentFeedback.action === 'dismissed' && hoursSinceFeedback < DISMISSED_SUPPRESSION_HOURS) continue;
+        if (recentFeedback.action === 'completed' && hoursSinceFeedback < COMPLETED_SUPPRESSION_HOURS) continue;
+      }
 
       const recommendation = buildRecommendationAction(rule.type);
 
@@ -594,6 +665,8 @@ export class InsightsPipelineService {
         .returning({ id: insightRecommendations.id });
 
       createdIds.push(created.id);
+      activeCount += 1;
+      createdTodayCount += 1;
 
       await db.insert(insightEvidenceSpans).values({
         elderId,
@@ -638,7 +711,12 @@ export class InsightsPipelineService {
       db
         .select()
         .from(insightRecommendations)
-        .where(and(eq(insightRecommendations.elderId, elderId), eq(insightRecommendations.status, 'active')))
+        .where(
+          and(
+            eq(insightRecommendations.elderId, elderId),
+            inArray(insightRecommendations.status, ['active', 'accepted'])
+          )
+        )
         .orderBy(desc(insightRecommendations.createdAt))
         .limit(6),
       db

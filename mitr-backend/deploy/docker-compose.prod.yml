@@ -123,6 +123,31 @@ services:
     networks:
       - mitr-internal
 
+  digest-worker:
+    image: ${API_IMAGE}
+    container_name: mitr-digest-worker
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=256
+    command: ["node", "dist/src/workers/digest-worker.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    cpus: 0.20
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - mitr-internal
+
   nginx:
     image: nginx:1.27-alpine
     container_name: mitr-nginx

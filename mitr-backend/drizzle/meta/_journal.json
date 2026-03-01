@@ -43,6 +43,13 @@
       "when": 1772326200000,
       "tag": "0005_insights_pipeline",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1772329800000,
+      "tag": "0006_daily_digest_and_feedback",
+      "breakpoints": true
     }
   ]
 }
