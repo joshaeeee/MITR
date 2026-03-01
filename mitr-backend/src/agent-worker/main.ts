@@ -9,6 +9,7 @@ import {
 } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as sarvam from '@livekit/agents-plugin-sarvam';
+import * as silero from '@livekit/agents-plugin-silero';
 import {
   AudioFrame,
   AudioSource,
@@ -76,6 +77,7 @@ const AMBIENCE_TRACK_PATHS = [
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/water_on_rocks.ogg'),
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/rain_woods_0757.mp3')
 ];
+const SILERO_VAD_USERDATA_KEY = 'silero_vad';
 
 const normalizeSarvamLanguageCode = (language: string): string => {
   const trimmed = language.trim();
@@ -541,6 +543,12 @@ const buildToolDeps = (): ToolDeps => {
 };
 
 export default defineAgent({
+  prewarm: async (proc) => {
+    if (env.AGENT_VOICE_PIPELINE !== 'sarvam_stt_llm_tts') return;
+    if (env.SARVAM_STT_STREAMING) return;
+    if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
+    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
+  },
   entry: async (ctx: JobContext) => {
     if (!env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY is required for mitr-agent-worker');
@@ -548,9 +556,13 @@ export default defineAgent({
     if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_API_KEY) {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
     }
-    if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_STT_STREAMING) {
+    if (
+      env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' &&
+      !env.SARVAM_STT_STREAMING &&
+      !ctx.proc.userData[SILERO_VAD_USERDATA_KEY]
+    ) {
       throw new Error(
-        'SARVAM_STT_STREAMING=false requires VAD integration for AgentSession. Set SARVAM_STT_STREAMING=true or add a VAD model.'
+        'SARVAM_STT_STREAMING=false requires VAD integration for AgentSession, but no prewarmed VAD model was found.'
       );
     }
 
@@ -1185,10 +1197,16 @@ export default defineAgent({
       tools: toolMap as Record<string, any>
     });
 
+    const sarvamNonStreamingStt = env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_STT_STREAMING;
+    const prewarmedVad = sarvamNonStreamingStt
+      ? (ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined)
+      : undefined;
+
     const session =
       env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts'
         ? new voice.AgentSession({
-            turnDetection: 'stt',
+            turnDetection: sarvamNonStreamingStt ? 'vad' : 'stt',
+            vad: prewarmedVad,
             stt: new sarvam.STT({
               model: env.SARVAM_STT_MODEL as sarvam.STTModels,
               languageCode: normalizeSarvamLanguageCode(language),

@@ -14,16 +14,16 @@ importers:
         specifier: ^11.2.0
         version: 11.2.0
       '@livekit/agents':
-        specifier: 1.x
+        specifier: ~1.0.48
         version: 1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76)
       '@livekit/agents-plugin-openai':
-        specifier: 1.x
+        specifier: ~1.0.48
         version: 1.0.48(@livekit/agents@1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76))(@livekit/rtc-node@0.13.24)(zod@3.25.76)
       '@livekit/agents-plugin-sarvam':
-        specifier: 1.x
+        specifier: ~1.0.48
         version: 1.0.48(@livekit/agents@1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76))(@livekit/rtc-node@0.13.24)
       '@livekit/agents-plugin-silero':
-        specifier: 1.x
+        specifier: ~1.0.48
         version: 1.0.48(@livekit/agents@1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76))(@livekit/rtc-node@0.13.24)
       '@livekit/protocol':
         specifier: ^1.44.0
