@@ -9,7 +9,6 @@ import {
 } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as sarvam from '@livekit/agents-plugin-sarvam';
-import * as silero from '@livekit/agents-plugin-silero';
 import {
   AudioFrame,
   AudioSource,
@@ -86,14 +85,6 @@ const normalizeSarvamLanguageCode = (language: string): string => {
   const normalized = trimmed.replace('_', '-');
   if (/^[a-z]{2}$/.test(normalized)) return `${normalized}-IN`;
   return 'hi-IN';
-};
-
-let sharedVadPromise: Promise<silero.VAD> | null = null;
-const getSharedVad = (): Promise<silero.VAD> => {
-  if (!sharedVadPromise) {
-    sharedVadPromise = silero.VAD.load();
-  }
-  return sharedVadPromise;
 };
 
 class SatsangAmbiencePublisher {
@@ -1192,8 +1183,7 @@ export default defineAgent({
     const session =
       env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts'
         ? new voice.AgentSession({
-            turnDetection: 'vad',
-            vad: await getSharedVad(),
+            turnDetection: 'stt',
             stt: new sarvam.STT({
               model: env.SARVAM_STT_MODEL as sarvam.STTModels,
               languageCode: normalizeSarvamLanguageCode(language),
