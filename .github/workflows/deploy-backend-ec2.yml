@@ -185,8 +185,7 @@ jobs:
       (github.event_name == 'push' || inputs.deploy == true) &&
       secrets.EC2_HOST != '' &&
       secrets.EC2_USER != '' &&
-      secrets.EC2_SSH_KEY != '' &&
-      secrets.GHCR_TOKEN != ''
+      secrets.EC2_SSH_KEY != ''
     timeout-minutes: 20
     steps:
       - name: Deploy on EC2 over SSH
@@ -237,10 +236,14 @@ jobs:
 
             GHCR_USER="${{ secrets.GHCR_USERNAME }}"
             if [ -z "${GHCR_USER}" ]; then
-              GHCR_USER="${{ github.repository_owner }}"
+              GHCR_USER="${{ github.actor }}"
+            fi
+            GHCR_TOKEN_VALUE="${{ secrets.GHCR_TOKEN }}"
+            if [ -z "${GHCR_TOKEN_VALUE}" ]; then
+              GHCR_TOKEN_VALUE="${{ github.token }}"
             fi
             export GHCR_USERNAME="${GHCR_USER}"
-            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
+            export GHCR_TOKEN="${GHCR_TOKEN_VALUE}"
             export HEALTH_BASE_URL="http://127.0.0.1"
 
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
