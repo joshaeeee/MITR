@@ -11,7 +11,7 @@ import {
   escalationPolicies,
   familyAccounts,
   familyMembers,
-  insightSnapshots,
+  insightDailyScores,
   nudges
 } from '../../db/schema.js';
 import type {
@@ -23,7 +23,6 @@ import type {
   EscalationPolicy,
   FamilyMember,
   FamilyRole,
-  InsightOverviewResponse,
   NudgeDeliveryState,
   NudgePriority
 } from './family-types.js';
@@ -393,6 +392,14 @@ export class FamilyRepository {
       ? await db.select().from(elderDevices).where(eq(elderDevices.elderId, elder.id)).limit(1)
       : [undefined];
     const device = deviceRow ? toDeviceRecord(deviceRow) : null;
+    const [latestDaily] = elder
+      ? await db
+          .select()
+          .from(insightDailyScores)
+          .where(eq(insightDailyScores.elderId, elder.id))
+          .orderBy(desc(insightDailyScores.dateKey))
+          .limit(1)
+      : [undefined];
 
     return {
       elder,
@@ -401,8 +408,8 @@ export class FamilyRepository {
         elderId: elder?.id ?? 'unknown',
         onlineState: device ? 'online' : 'offline',
         lastInteractionAt: Date.now() - 15 * 60 * 1000,
-        latestMoodScore: 0.72,
-        latestEngagementScore: 0.68,
+        latestMoodScore: latestDaily ? latestDaily.emotionalToneScore / 100 : undefined,
+        latestEngagementScore: latestDaily ? latestDaily.engagementScore / 100 : undefined,
         updatedAt: Date.now()
       }
     };
@@ -673,63 +680,6 @@ export class FamilyRepository {
       .orderBy(desc(concernSignals.createdAt));
 
     return rows.map(toConcernSignal);
-  }
-
-  async ensureSyntheticInsights(ownerUserId: string): Promise<InsightOverviewResponse> {
-    const elder = await this.getElderByUser(ownerUserId);
-    if (!elder) throw new Error('Elder profile not found');
-
-    const [existing] = await db
-      .select()
-      .from(insightSnapshots)
-      .where(eq(insightSnapshots.elderId, elder.id))
-      .orderBy(desc(insightSnapshots.ts))
-      .limit(1);
-
-    if (existing) {
-      return existing.payload as unknown as InsightOverviewResponse;
-    }
-
-    const generated: InsightOverviewResponse = {
-      elderId: elder.id,
-      generatedAt: Date.now(),
-      moodTrend: Array.from({ length: 7 }, (_, idx) => ({
-        ts: Date.now() - (6 - idx) * 24 * 60 * 60 * 1000,
-        score: Math.max(0, Math.min(1, 0.55 + idx * 0.03))
-      })),
-      engagementTrend: Array.from({ length: 7 }, (_, idx) => ({
-        ts: Date.now() - (6 - idx) * 24 * 60 * 60 * 1000,
-        score: Math.max(0, Math.min(1, 0.48 + idx * 0.04))
-      })),
-      concernSignals: [],
-      keyTopics: [
-        { topic: 'spiritual_reflection', score: 0.81 },
-        { topic: 'family_connection', score: 0.74 },
-        { topic: 'health_routine', score: 0.62 }
-      ],
-      recommendations: [
-        {
-          id: randomUUID(),
-          title: 'Send a warm evening nudge',
-          action: 'Ask about today’s satsang reflection in one line.',
-          confidence: 'high'
-        },
-        {
-          id: randomUUID(),
-          title: 'Reinforce medication routine',
-          action: 'Add a 7:30 PM gentle reminder for this week.',
-          confidence: 'medium'
-        }
-      ]
-    };
-
-    await db.insert(insightSnapshots).values({
-      elderId: elder.id,
-      payload: generated as unknown as Record<string, unknown>,
-      ts: new Date()
-    });
-
-    return generated;
   }
 
   async getOrCreateRoutines(ownerUserId: string): Promise<RoutineRecord[]> {

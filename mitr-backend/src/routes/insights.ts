@@ -20,6 +20,19 @@ const sessionsQuerySchema = z.object({
   cursor: z.string().optional()
 });
 
+const explanationsQuerySchema = z.object({
+  signalId: z.string().min(1)
+});
+
+const checkinBodySchema = z.object({
+  moodLabel: z.enum(['better', 'same', 'worse']),
+  engagementLabel: z.enum(['better', 'same', 'worse']),
+  socialLabel: z.enum(['better', 'same', 'worse']),
+  concernLevel: z.enum(['none', 'low', 'medium', 'high']).optional(),
+  notes: z.string().max(1200).optional(),
+  weekStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
 export const registerInsightsRoutes = (app: FastifyInstance, auth: AuthService): void => {
   const insights = new InsightsService();
   const guard = requireAuth(auth);
@@ -50,5 +63,21 @@ export const registerInsightsRoutes = (app: FastifyInstance, auth: AuthService):
     const parsed = sessionsQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
     return reply.send(await insights.sessions(request.auth!.user.id, parsed.data.cursor));
+  });
+
+  app.get('/insights/explanations', { preHandler: guard }, async (request, reply) => {
+    const parsed = explanationsQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    return reply.send(await insights.explanations(request.auth!.user.id, parsed.data.signalId));
+  });
+
+  app.post('/insights/checkin', { preHandler: guard }, async (request, reply) => {
+    const parsed = checkinBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    return reply.send(await insights.checkin(request.auth!.user.id, parsed.data));
+  });
+
+  app.get('/insights/pipeline/health', { preHandler: guard }, async (request, reply) => {
+    return reply.send(await insights.pipelineHealth(request.auth!.user.id));
   });
 };

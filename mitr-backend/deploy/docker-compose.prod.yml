@@ -98,6 +98,31 @@ services:
     networks:
       - mitr-internal
 
+  insights-worker:
+    image: ${API_IMAGE}
+    container_name: mitr-insights-worker
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=320
+    command: ["node", "dist/src/workers/insights-worker.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    cpus: 0.30
+    mem_limit: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - mitr-internal
+
   nginx:
     image: nginx:1.27-alpine
     container_name: mitr-nginx

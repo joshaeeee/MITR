@@ -37,6 +37,7 @@ import { GeocodingService } from '../services/location/geocoding-service.js';
 import { PanchangService } from '../services/panchang/panchang-service.js';
 import { WebSearchService } from '../services/web/web-search-service.js';
 import { ConversationService } from '../services/conversations/conversation-service.js';
+import { UserTranscriptService } from '../services/conversations/user-transcript-service.js';
 import { NudgesService } from '../services/nudges/nudges-service.js';
 import {
   AgentToolContext,
@@ -566,6 +567,7 @@ export default defineAgent({
     let activeNudgePlayback: QueuedNudgePlayback | null = null;
     const queuedNudgePlaybacks: QueuedNudgePlayback[] = [];
     const conversations = new ConversationService();
+    const userTranscripts = new UserTranscriptService();
     const pendingUserTurns: string[] = [];
 
     const buildNewsFollowupInstructions = (payload: Record<string, unknown>): string => {
@@ -1210,6 +1212,23 @@ export default defineAgent({
         language: event.language,
         transcript: sanitizeForLog(transcript)
       });
+
+      if (transcript.length > 0) {
+        void userTranscripts
+          .appendFinalUserTranscript({
+            sessionId,
+            userId,
+            transcript,
+            language: event.language
+          })
+          .catch((error) => {
+            logger.warn('Failed to persist final user transcript', {
+              sessionId,
+              userId,
+              error: (error as Error).message
+            });
+          });
+      }
     });
 
     session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (event) => {

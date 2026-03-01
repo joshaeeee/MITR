@@ -43,6 +43,19 @@ export const conversationTurns = pgTable('conversation_turns', {
   userCreatedIdx: index('conversation_turns_user_created_idx').on(table.userId, table.createdAt)
 }));
 
+export const userInputTranscripts = pgTable('user_input_transcripts', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  sessionId: text('session_id').notNull(),
+  userId: text('user_id').notNull(),
+  transcript: text('transcript').notNull(),
+  language: text('language'),
+  source: text('source').default('openai_realtime').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  userCreatedIdx: index('user_input_transcripts_user_created_idx').on(table.userId, table.createdAt),
+  sessionCreatedIdx: index('user_input_transcripts_session_created_idx').on(table.sessionId, table.createdAt)
+}));
+
 export const longSessions = pgTable('long_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: text('user_id').notNull(),
@@ -339,4 +352,138 @@ export const userEventStream = pgTable('user_event_stream', {
 }, (table) => ({
   userCreatedIdx: index('user_event_stream_user_created_idx').on(table.userId, table.createdAt),
   userIdIdIdx: index('user_event_stream_user_id_idx').on(table.userId, table.id)
+}));
+
+export const insightSignalEvents = pgTable('insight_signal_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  sessionId: text('session_id').notNull(),
+  transcriptId: uuid('transcript_id'),
+  dateKey: text('date_key').notNull(),
+  sourceLanguage: text('source_language'),
+  normalizedLanguage: text('normalized_language').default('en').notNull(),
+  transcriptOriginal: text('transcript_original').notNull(),
+  transcriptNormalized: text('transcript_normalized').notNull(),
+  engagementScore: integer('engagement_score').notNull(),
+  emotionalToneScore: integer('emotional_tone_score').notNull(),
+  socialConnectionScore: integer('social_connection_score').notNull(),
+  adherenceScore: integer('adherence_score').notNull(),
+  distressScore: integer('distress_score').notNull(),
+  overallScore: integer('overall_score').notNull(),
+  scoreBand: text('score_band').$type<'stable' | 'watch' | 'concern'>().notNull(),
+  confidence: integer('confidence').notNull(),
+  dataSufficiency: integer('data_sufficiency').notNull(),
+  featuresJson: jsonb('features_json').$type<Record<string, unknown>>().default({}).notNull(),
+  eventTs: timestamp('event_ts', { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderDateIdx: index('insight_signal_events_elder_date_idx').on(table.elderId, table.dateKey, table.eventTs),
+  userCreatedIdx: index('insight_signal_events_user_created_idx').on(table.userId, table.createdAt)
+}));
+
+export const insightDailyScores = pgTable('insight_daily_scores', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  dateKey: text('date_key').notNull(),
+  engagementScore: integer('engagement_score').notNull(),
+  emotionalToneScore: integer('emotional_tone_score').notNull(),
+  socialConnectionScore: integer('social_connection_score').notNull(),
+  adherenceScore: integer('adherence_score').notNull(),
+  distressScore: integer('distress_score').notNull(),
+  overallScore: integer('overall_score').notNull(),
+  scoreBand: text('score_band').$type<'stable' | 'watch' | 'concern'>().notNull(),
+  confidence: integer('confidence').notNull(),
+  dataSufficiency: integer('data_sufficiency').notNull(),
+  metricsJson: jsonb('metrics_json').$type<Record<string, unknown>>().default({}).notNull(),
+  lastComputedAt: timestamp('last_computed_at', { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderDateUnique: uniqueIndex('insight_daily_scores_elder_date_uq').on(table.elderId, table.dateKey),
+  elderComputedIdx: index('insight_daily_scores_elder_computed_idx').on(table.elderId, table.lastComputedAt)
+}));
+
+export const insightRecommendations = pgTable('insight_recommendations', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  dateKey: text('date_key').notNull(),
+  recommendationType: text('recommendation_type').notNull(),
+  title: text('title').notNull(),
+  whyText: text('why_text').notNull(),
+  actionText: text('action_text').notNull(),
+  status: text('status').$type<'active' | 'acted' | 'dismissed'>().default('active').notNull(),
+  scoreBand: text('score_band').$type<'stable' | 'watch' | 'concern'>().notNull(),
+  confidence: integer('confidence').notNull(),
+  cooldownUntil: timestamp('cooldown_until', { withTimezone: true }),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderStatusCreatedIdx: index('insight_recommendations_elder_status_created_idx').on(
+    table.elderId,
+    table.status,
+    table.createdAt
+  )
+}));
+
+export const insightEvidenceSpans = pgTable('insight_evidence_spans', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  signalEventId: uuid('signal_event_id'),
+  recommendationId: uuid('recommendation_id'),
+  concernSignalId: uuid('concern_signal_id'),
+  transcriptId: uuid('transcript_id'),
+  snippet: text('snippet').notNull(),
+  rationale: text('rationale').notNull(),
+  weight: integer('weight').default(50).notNull(),
+  eventTs: timestamp('event_ts', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderCreatedIdx: index('insight_evidence_spans_elder_created_idx').on(table.elderId, table.createdAt),
+  signalIdx: index('insight_evidence_spans_signal_idx').on(table.signalEventId)
+}));
+
+export const insightCheckins = pgTable('insight_checkins', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  createdByUserId: text('created_by_user_id').notNull(),
+  weekStartDate: text('week_start_date').notNull(),
+  moodLabel: text('mood_label').$type<'better' | 'same' | 'worse'>().notNull(),
+  engagementLabel: text('engagement_label').$type<'better' | 'same' | 'worse'>().notNull(),
+  socialLabel: text('social_label').$type<'better' | 'same' | 'worse'>().notNull(),
+  concernLevel: text('concern_level').$type<'none' | 'low' | 'medium' | 'high'>().default('none').notNull(),
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderWeekIdx: index('insight_checkins_elder_week_idx').on(table.elderId, table.weekStartDate, table.createdAt)
+}));
+
+export const insightModelVersions = pgTable('insight_model_versions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  key: text('key').notNull(),
+  version: text('version').notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  configJson: jsonb('config_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  keyVersionUnique: uniqueIndex('insight_model_versions_key_version_uq').on(table.key, table.version),
+  keyActiveIdx: index('insight_model_versions_key_active_idx').on(table.key, table.isActive, table.createdAt)
+}));
+
+export const insightPipelineRuns = pgTable('insight_pipeline_runs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id'),
+  userId: text('user_id'),
+  runType: text('run_type').notNull(),
+  status: text('status').$type<'started' | 'completed' | 'failed'>().notNull(),
+  inputCount: integer('input_count').default(1).notNull(),
+  queueLagMs: integer('queue_lag_ms'),
+  errorMessage: text('error_message'),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true })
+}, (table) => ({
+  elderStartedIdx: index('insight_pipeline_runs_elder_started_idx').on(table.elderId, table.startedAt),
+  statusStartedIdx: index('insight_pipeline_runs_status_started_idx').on(table.status, table.startedAt)
 }));

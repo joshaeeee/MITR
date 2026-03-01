@@ -20,6 +20,7 @@ import { SessionRecoveryService } from './services/long-session/session-recovery
 import { db, pgPool } from './db/client.js';
 import { sql } from 'drizzle-orm';
 import { closeReminderQueue } from './services/reminders/queue.js';
+import { closeInsightsQueue } from './services/insights/queue.js';
 import { closeRedisConnections } from './lib/redis.js';
 import { AuthService } from './services/auth/auth-service.js';
 import { DataRetentionService } from './services/maintenance/data-retention-service.js';
@@ -46,6 +47,7 @@ const shutdown = async (signal: string): Promise<void> => {
     }
     retentionRef?.stop();
     await closeReminderQueue();
+    await closeInsightsQueue();
     await closeRedisConnections();
     await pgPool.end();
     logger.info('Shutdown complete', { signal });
