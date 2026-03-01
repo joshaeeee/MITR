@@ -548,6 +548,11 @@ export default defineAgent({
     if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_API_KEY) {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
     }
+    if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_STT_STREAMING) {
+      throw new Error(
+        'SARVAM_STT_STREAMING=false requires VAD integration for AgentSession. Set SARVAM_STT_STREAMING=true or add a VAD model.'
+      );
+    }
 
     const metadata = parseDispatchMetadata((ctx.job as { metadata?: string }).metadata);
     const participantIdentity = (ctx.job as { participant?: { identity?: string } }).participant?.identity;
