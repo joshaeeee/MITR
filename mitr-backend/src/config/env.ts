@@ -27,8 +27,18 @@ const envSchema = z.object({
   LIVEKIT_TOKEN_TTL_SEC: z.coerce.number().default(3600),
 
   OPENAI_API_KEY: z.string().optional(),
+  OPENAI_CHAT_MODEL: z.string().default('gpt-4.1-mini'),
   OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime'),
   OPENAI_REALTIME_VOICE: z.string().default('alloy'),
+  AGENT_VOICE_PIPELINE: z.enum(['openai_realtime', 'sarvam_stt_llm_tts']).default('sarvam_stt_llm_tts'),
+
+  SARVAM_API_KEY: z.string().optional(),
+  SARVAM_STT_MODEL: z.string().default('saaras:v3'),
+  SARVAM_STT_MODE: z.string().default('transcribe'),
+  SARVAM_STT_STREAMING: envBoolean(false),
+  SARVAM_TTS_MODEL: z.string().default('bulbul:v2'),
+  SARVAM_TTS_SPEAKER: z.string().default('anushka'),
+  SARVAM_TTS_STREAMING: envBoolean(false),
 
   AUTH_SESSION_TTL_SEC: z.coerce.number().default(3600),
   AUTH_REFRESH_TTL_SEC: z.coerce.number().default(60 * 60 * 24 * 30),

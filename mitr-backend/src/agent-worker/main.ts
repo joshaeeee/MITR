@@ -8,6 +8,8 @@ import {
   voice
 } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
+import * as sarvam from '@livekit/agents-plugin-sarvam';
+import * as silero from '@livekit/agents-plugin-silero';
 import {
   AudioFrame,
   AudioSource,
@@ -75,6 +77,24 @@ const AMBIENCE_TRACK_PATHS = [
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/water_on_rocks.ogg'),
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/rain_woods_0757.mp3')
 ];
+
+const normalizeSarvamLanguageCode = (language: string): string => {
+  const trimmed = language.trim();
+  if (!trimmed) return 'hi-IN';
+  const exact = /^[a-z]{2}-[A-Z]{2}$/.test(trimmed);
+  if (exact) return trimmed;
+  const normalized = trimmed.replace('_', '-');
+  if (/^[a-z]{2}$/.test(normalized)) return `${normalized}-IN`;
+  return 'hi-IN';
+};
+
+let sharedVadPromise: Promise<silero.VAD> | null = null;
+const getSharedVad = (): Promise<silero.VAD> => {
+  if (!sharedVadPromise) {
+    sharedVadPromise = silero.VAD.load();
+  }
+  return sharedVadPromise;
+};
 
 class SatsangAmbiencePublisher {
   private source: AudioSource | null = null;
@@ -533,6 +553,9 @@ export default defineAgent({
   entry: async (ctx: JobContext) => {
     if (!env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY is required for mitr-agent-worker');
+    }
+    if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_API_KEY) {
+      throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
     }
 
     const metadata = parseDispatchMetadata((ctx.job as { metadata?: string }).metadata);
@@ -1166,18 +1189,50 @@ export default defineAgent({
       tools: toolMap as Record<string, any>
     });
 
-    const session = new voice.AgentSession({
-      llm: new openai.realtime.RealtimeModel({
-        model: env.OPENAI_REALTIME_MODEL,
-        voice: env.OPENAI_REALTIME_VOICE,
-        modalities: ['text', 'audio']
-      }),
-      voiceOptions: {
-        maxToolSteps: 3,
-        preemptiveGeneration: true,
-        minInterruptionDuration: 0.6,
-        minInterruptionWords: 2
-      }
+    const session =
+      env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts'
+        ? new voice.AgentSession({
+            turnDetection: 'vad',
+            vad: await getSharedVad(),
+            stt: new sarvam.STT({
+              model: env.SARVAM_STT_MODEL as sarvam.STTModels,
+              languageCode: normalizeSarvamLanguageCode(language),
+              mode: env.SARVAM_STT_MODE as sarvam.STTModes,
+              streaming: env.SARVAM_STT_STREAMING
+            }),
+            llm: new openai.LLM({
+              model: env.OPENAI_CHAT_MODEL
+            }),
+            tts: new sarvam.TTS({
+              model: env.SARVAM_TTS_MODEL as sarvam.TTSModels,
+              speaker: env.SARVAM_TTS_SPEAKER,
+              targetLanguageCode: normalizeSarvamLanguageCode(language),
+              streaming: env.SARVAM_TTS_STREAMING
+            }),
+            voiceOptions: {
+              maxToolSteps: 3,
+              preemptiveGeneration: true,
+              minInterruptionDuration: 600,
+              minInterruptionWords: 2
+            }
+          })
+        : new voice.AgentSession({
+            llm: new openai.realtime.RealtimeModel({
+              model: env.OPENAI_REALTIME_MODEL,
+              voice: env.OPENAI_REALTIME_VOICE,
+              modalities: ['text', 'audio']
+            }),
+            voiceOptions: {
+              maxToolSteps: 3,
+              preemptiveGeneration: true,
+              minInterruptionDuration: 0.6,
+              minInterruptionWords: 2
+            }
+          });
+    logger.info('Voice pipeline selected', {
+      sessionId,
+      pipeline: env.AGENT_VOICE_PIPELINE,
+      language
     });
     sessionRef = session;
 
