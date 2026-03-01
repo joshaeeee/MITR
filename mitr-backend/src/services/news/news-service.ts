@@ -266,27 +266,23 @@ export class NewsService {
     const recencyDays = Math.min(Math.max(options.recencyDays ?? env.EXA_DEFAULT_RECENCY_DAYS ?? 3, 1), 30);
     const freshness = resolveFreshness(query, options);
     const latestIntent = freshness === 'latest';
+    const genericIntent = isGenericNewsQuery(query);
+    const useLocalityBias = genericIntent && Boolean(options.stateOrCity);
 
     const includeDomains = (env.EXA_INCLUDE_DOMAINS ?? '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
 
-    const baseQuery = isGenericNewsQuery(query)
-      ? options.stateOrCity
+    const baseQuery = genericIntent
+      ? useLocalityBias && options.stateOrCity
         ? `${options.stateOrCity} news`
         : `${regionCode} news`
-      : query;
-    const queryIntentHint =
-      freshness === 'latest'
-        ? 'latest developments updates'
-        : freshness === 'recent'
-          ? 'recent developments updates'
-          : 'news updates';
-    const effectiveQuery = [baseQuery, options.stateOrCity, regionCode === 'IN' ? 'India' : undefined, queryIntentHint]
-      .filter(Boolean)
-      .join(' ');
-    const localTokens = localityTokens(options.stateOrCity);
+      : compactWhitespace(query);
+    const effectiveQuery = genericIntent
+      ? [baseQuery, useLocalityBias && regionCode === 'IN' ? 'India' : undefined].filter(Boolean).join(' ')
+      : baseQuery;
+    const localTokens = useLocalityBias ? localityTokens(options.stateOrCity) : [];
     const cacheKey = JSON.stringify({
       query: effectiveQuery,
       regionCode,
@@ -300,8 +296,18 @@ export class NewsService {
       return cached.items;
     }
 
-    const primaryMaxAgeHours = freshness === 'latest' ? 1 : freshness === 'recent' ? 6 : 12;
-    const fallbackMaxAgeHours = freshness === 'latest' ? 6 : freshness === 'recent' ? 24 : 48;
+    const primaryMaxAgeHours =
+      freshness === 'latest'
+        ? Math.min(recencyDays * 24, 6)
+        : freshness === 'recent'
+          ? Math.min(recencyDays * 24, 24)
+          : Math.min(recencyDays * 24, 48);
+    const fallbackMaxAgeHours =
+      freshness === 'latest'
+        ? Math.min(recencyDays * 24, 24)
+        : freshness === 'recent'
+          ? Math.min(recencyDays * 24, 72)
+          : Math.min(recencyDays * 24, 120);
     const textMaxChars = Math.min(Math.max(env.EXA_NEWS_TEXT_MAX_CHARS, 800), 4000);
     const highlightSentences = Math.min(Math.max(env.EXA_NEWS_HIGHLIGHT_SENTENCES, 1), 8);
     const highlightsPerUrl = Math.min(Math.max(env.EXA_NEWS_HIGHLIGHTS_PER_URL, 1), 6);
@@ -407,6 +413,8 @@ export class NewsService {
       logger.info('Exa search success', {
         query: requestBody.query,
         freshness,
+        genericIntent,
+        useLocalityBias,
         requestedMaxAgeHours: typeof requestBody.maxAgeHours === 'number' ? requestBody.maxAgeHours : null,
         results: finalItems.length,
         filteredListings: items.length - withoutListings.length,
@@ -418,13 +426,14 @@ export class NewsService {
 
     const narrowStart = latestIntent ? isoDateDaysAgo(Math.min(recencyDays, 2)) : isoDateDaysAgo(recencyDays);
     const wideStart = isoDateDaysAgo(recencyDays);
+    const strictLatestQuality = latestIntent && genericIntent;
     try {
       const primaryMinResults = latestIntent ? 1 : Math.min(3, numResults);
       const primaryBody = buildBody(primaryMaxAgeHours, narrowStart);
       const primary = await runSearch(primaryBody);
       if (
         primary.length >= primaryMinResults &&
-        !(latestIntent && (allListings(primary) || !hasPublishedDates(primary)))
+        !(strictLatestQuality && (allListings(primary) || !hasPublishedDates(primary)))
       ) {
         this.cache.set(cacheKey, { items: primary, expiresAt: Date.now() + NewsService.CACHE_TTL_MS });
         return primary;
@@ -443,7 +452,7 @@ export class NewsService {
       const fallback = await runSearch(fallbackBody);
       if (
         fallback.length > 0 &&
-        !(latestIntent && (allListings(fallback) || !hasPublishedDates(fallback)))
+        !(strictLatestQuality && (allListings(fallback) || !hasPublishedDates(fallback)))
       ) {
         this.cache.set(cacheKey, { items: fallback, expiresAt: Date.now() + NewsService.CACHE_TTL_MS });
         return fallback;
@@ -453,6 +462,15 @@ export class NewsService {
       if (rssFallback.length > 0) {
         this.cache.set(cacheKey, { items: rssFallback, expiresAt: Date.now() + NewsService.CACHE_TTL_MS });
         return rssFallback;
+      }
+
+      if (effectiveQuery !== compactWhitespace(query)) {
+        const rawQuery = compactWhitespace(query);
+        const rawFallback = await runSearch(buildBody(fallbackMaxAgeHours, wideStart), rawQuery);
+        if (rawFallback.length > 0) {
+          this.cache.set(cacheKey, { items: rawFallback, expiresAt: Date.now() + NewsService.CACHE_TTL_MS });
+          return rawFallback;
+        }
       }
       this.cache.set(cacheKey, { items: primary, expiresAt: Date.now() + NewsService.CACHE_TTL_MS });
       return primary;
