@@ -7,6 +7,8 @@ import {
   metrics,
   voice
 } from '@livekit/agents';
+import { Modality } from '@google/genai';
+import * as google from '@livekit/agents-plugin-google';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as sarvam from '@livekit/agents-plugin-sarvam';
 import * as silero from '@livekit/agents-plugin-silero';
@@ -560,11 +562,27 @@ export default defineAgent({
     proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
   },
   entry: async (ctx: JobContext) => {
-    if (!env.OPENAI_API_KEY) {
+    const needsOpenAiKey =
+      env.AGENT_VOICE_PIPELINE === 'openai_realtime' || env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts';
+    if (needsOpenAiKey && !env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY is required for mitr-agent-worker');
+    }
+    if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' && !env.GOOGLE_API_KEY) {
+      throw new Error('GOOGLE_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
     }
     if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_API_KEY) {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
+    }
+    if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' && !env.SARVAM_API_KEY) {
+      throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
+    }
+    if (
+      env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
+      env.GOOGLE_REALTIME_MODEL.toLowerCase().includes('native-audio')
+    ) {
+      throw new Error(
+        'GOOGLE_REALTIME_MODEL must be non-native-audio for half-cascade mode. Set a non-native model such as gemini-2.5-flash.'
+      );
     }
     if (
       env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' &&
@@ -1212,46 +1230,67 @@ export default defineAgent({
       ? (ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined)
       : undefined;
 
-    const session =
-      env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts'
-        ? new voice.AgentSession({
-            turnDetection: sarvamNonStreamingStt ? 'vad' : 'stt',
-            vad: prewarmedVad,
-            stt: new sarvam.STT({
-              model: env.SARVAM_STT_MODEL as sarvam.STTModels,
-              languageCode: normalizeSarvamLanguageCode(language),
-              mode: env.SARVAM_STT_MODE as sarvam.STTModes,
-              streaming: env.SARVAM_STT_STREAMING
-            }),
-            llm: new openai.LLM({
-              model: env.OPENAI_CHAT_MODEL
-            }),
-            tts: new sarvam.TTS({
-              model: normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL),
-              speaker: env.SARVAM_TTS_SPEAKER,
-              targetLanguageCode: normalizeSarvamLanguageCode(language),
-              streaming: env.SARVAM_TTS_STREAMING
-            }),
-            voiceOptions: {
-              maxToolSteps: 3,
-              preemptiveGeneration: true,
-              minInterruptionDuration: 600,
-              minInterruptionWords: 2
-            }
-          })
-        : new voice.AgentSession({
-            llm: new openai.realtime.RealtimeModel({
-              model: env.OPENAI_REALTIME_MODEL,
-              voice: env.OPENAI_REALTIME_VOICE,
-              modalities: ['text', 'audio']
-            }),
-            voiceOptions: {
-              maxToolSteps: 3,
-              preemptiveGeneration: true,
-              minInterruptionDuration: 0.6,
-              minInterruptionWords: 2
-            }
-          });
+    let session: voice.AgentSession;
+    if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts') {
+      session = new voice.AgentSession({
+        turnDetection: sarvamNonStreamingStt ? 'vad' : 'stt',
+        vad: prewarmedVad,
+        stt: new sarvam.STT({
+          model: env.SARVAM_STT_MODEL as sarvam.STTModels,
+          languageCode: normalizeSarvamLanguageCode(language),
+          mode: env.SARVAM_STT_MODE as sarvam.STTModes,
+          streaming: env.SARVAM_STT_STREAMING
+        }),
+        llm: new openai.LLM({
+          model: env.OPENAI_CHAT_MODEL
+        }),
+        tts: new sarvam.TTS({
+          model: normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL),
+          speaker: env.SARVAM_TTS_SPEAKER,
+          targetLanguageCode: normalizeSarvamLanguageCode(language),
+          streaming: env.SARVAM_TTS_STREAMING
+        }),
+        voiceOptions: {
+          maxToolSteps: 3,
+          preemptiveGeneration: true,
+          minInterruptionDuration: 600,
+          minInterruptionWords: 2
+        }
+      });
+    } else if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts') {
+      session = new voice.AgentSession({
+        llm: new google.beta.realtime.RealtimeModel({
+          model: env.GOOGLE_REALTIME_MODEL,
+          modalities: [Modality.TEXT]
+        }),
+        tts: new sarvam.TTS({
+          model: normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL),
+          speaker: env.SARVAM_TTS_SPEAKER,
+          targetLanguageCode: normalizeSarvamLanguageCode(language),
+          streaming: env.SARVAM_TTS_STREAMING
+        }),
+        voiceOptions: {
+          maxToolSteps: 3,
+          preemptiveGeneration: true,
+          minInterruptionDuration: 0.6,
+          minInterruptionWords: 2
+        }
+      });
+    } else {
+      session = new voice.AgentSession({
+        llm: new openai.realtime.RealtimeModel({
+          model: env.OPENAI_REALTIME_MODEL,
+          voice: env.OPENAI_REALTIME_VOICE,
+          modalities: ['text', 'audio']
+        }),
+        voiceOptions: {
+          maxToolSteps: 3,
+          preemptiveGeneration: true,
+          minInterruptionDuration: 0.6,
+          minInterruptionWords: 2
+        }
+      });
+    }
     logger.info('Voice pipeline selected', {
       sessionId,
       pipeline: env.AGENT_VOICE_PIPELINE,
