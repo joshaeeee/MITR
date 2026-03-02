@@ -562,6 +562,22 @@ export default defineAgent({
     proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
   },
   entry: async (ctx: JobContext) => {
+    const googleRealtimeModel =
+      env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
+      env.GOOGLE_REALTIME_MODEL.toLowerCase().includes('native-audio')
+        ? 'gemini-2.5-flash'
+        : env.GOOGLE_REALTIME_MODEL;
+
+    if (
+      env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
+      env.GOOGLE_REALTIME_MODEL.toLowerCase().includes('native-audio')
+    ) {
+      logger.warn('GOOGLE_REALTIME_MODEL is native-audio in half-cascade mode; falling back to non-native model', {
+        configuredModel: env.GOOGLE_REALTIME_MODEL,
+        fallbackModel: googleRealtimeModel
+      });
+    }
+
     const needsOpenAiKey =
       env.AGENT_VOICE_PIPELINE === 'openai_realtime' || env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts';
     if (needsOpenAiKey && !env.OPENAI_API_KEY) {
@@ -575,14 +591,6 @@ export default defineAgent({
     }
     if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' && !env.SARVAM_API_KEY) {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
-    }
-    if (
-      env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
-      env.GOOGLE_REALTIME_MODEL.toLowerCase().includes('native-audio')
-    ) {
-      throw new Error(
-        'GOOGLE_REALTIME_MODEL must be non-native-audio for half-cascade mode. Set a non-native model such as gemini-2.5-flash.'
-      );
     }
     if (
       env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' &&
@@ -1260,7 +1268,7 @@ export default defineAgent({
     } else if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts') {
       session = new voice.AgentSession({
         llm: new google.beta.realtime.RealtimeModel({
-          model: env.GOOGLE_REALTIME_MODEL,
+          model: googleRealtimeModel,
           modalities: [Modality.TEXT]
         }),
         tts: new sarvam.TTS({
