@@ -38,7 +38,7 @@ const envSchema = z.object({
   SARVAM_STT_STREAMING: envBoolean(true),
   SARVAM_TTS_MODEL: z.string().default('bulbul:v2'),
   SARVAM_TTS_SPEAKER: z.string().default('anushka'),
-  SARVAM_TTS_STREAMING: envBoolean(false),
+  SARVAM_TTS_STREAMING: envBoolean(true),
 
   AUTH_SESSION_TTL_SEC: z.coerce.number().default(3600),
   AUTH_REFRESH_TTL_SEC: z.coerce.number().default(60 * 60 * 24 * 30),
