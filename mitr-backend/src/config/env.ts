@@ -34,7 +34,7 @@ const envSchema = z.object({
     .enum(['openai_realtime', 'sarvam_stt_llm_tts', 'gemini_realtime_text_sarvam_tts'])
     .default('sarvam_stt_llm_tts'),
   GOOGLE_API_KEY: z.string().optional(),
-  GOOGLE_REALTIME_MODEL: z.string().default('gemini-2.5-flash'),
+  GOOGLE_REALTIME_MODEL: z.string().default('gemini-2.0-flash-exp'),
 
   SARVAM_API_KEY: z.string().optional(),
   SARVAM_STT_MODEL: z.string().default('saaras:v3'),

@@ -562,19 +562,28 @@ export default defineAgent({
     proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
   },
   entry: async (ctx: JobContext) => {
+    const configuredGoogleRealtimeModel = env.GOOGLE_REALTIME_MODEL.trim()
+      .replace(/^models\//i, '')
+      .replace(/^google\//i, '');
     const googleRealtimeModel =
       env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
-      env.GOOGLE_REALTIME_MODEL.toLowerCase().includes('native-audio')
-        ? 'gemini-2.5-flash'
-        : env.GOOGLE_REALTIME_MODEL;
+      configuredGoogleRealtimeModel.toLowerCase().includes('native-audio')
+        ? 'gemini-2.0-flash-exp'
+        : configuredGoogleRealtimeModel;
 
     if (
       env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
       env.GOOGLE_REALTIME_MODEL.toLowerCase().includes('native-audio')
     ) {
       logger.warn('GOOGLE_REALTIME_MODEL is native-audio in half-cascade mode; falling back to non-native model', {
-        configuredModel: env.GOOGLE_REALTIME_MODEL,
+        configuredModel: configuredGoogleRealtimeModel,
         fallbackModel: googleRealtimeModel
+      });
+    }
+    if (configuredGoogleRealtimeModel !== env.GOOGLE_REALTIME_MODEL) {
+      logger.warn('Normalized GOOGLE_REALTIME_MODEL by stripping unsupported provider prefix', {
+        configuredModel: env.GOOGLE_REALTIME_MODEL,
+        normalizedModel: configuredGoogleRealtimeModel
       });
     }
 
