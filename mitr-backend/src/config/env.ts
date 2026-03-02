@@ -35,7 +35,7 @@ const envSchema = z.object({
   SARVAM_API_KEY: z.string().optional(),
   SARVAM_STT_MODEL: z.string().default('saaras:v3'),
   SARVAM_STT_MODE: z.string().default('transcribe'),
-  SARVAM_STT_STREAMING: envBoolean(false),
+  SARVAM_STT_STREAMING: envBoolean(true),
   SARVAM_TTS_MODEL: z.string().default('bulbul:v2'),
   SARVAM_TTS_SPEAKER: z.string().default('anushka'),
   SARVAM_TTS_STREAMING: envBoolean(false),
