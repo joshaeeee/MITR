@@ -19,6 +19,9 @@ importers:
       '@livekit/agents':
         specifier: ~1.0.48
         version: 1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76)
+      '@livekit/agents-plugin-cartesia':
+        specifier: ~1.0.48
+        version: 1.0.48(@livekit/agents@1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76))(@livekit/rtc-node@0.13.24)(zod@3.25.76)
       '@livekit/agents-plugin-google':
         specifier: ~1.0.48
         version: 1.0.48(@livekit/agents@1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76))(@livekit/rtc-node@0.13.24)
@@ -1772,6 +1775,13 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@livekit/agents-plugin-cartesia@1.0.48':
+    resolution: {integrity: sha512-4+zDO+5SObdooC/K59VvYj5SITGyL/m1XihGMBWlJa8J17ydUMwRYeG3fjno9PGUZPaOPbwzVzV4SHi7N2ml5A==}
+    peerDependencies:
+      '@livekit/agents': 1.0.48
+      '@livekit/rtc-node': ^0.13.24
+      zod: ^3.25.76 || ^4.1.8
 
   '@livekit/agents-plugin-google@1.0.48':
     resolution: {integrity: sha512-pdA/SV1kZI6CCpkdsg3cV27IblJJCENVujSlWtTC5mzG2XkEfc7Kgw2gft8JESDTxGQaqBHq4bfhl/DmRxyqKw==}
@@ -8244,6 +8254,16 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@livekit/agents-plugin-cartesia@1.0.48(@livekit/agents@1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76))(@livekit/rtc-node@0.13.24)(zod@3.25.76)':
+    dependencies:
+      '@livekit/agents': 1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76)
+      '@livekit/rtc-node': 0.13.24
+      ws: 8.19.0
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@livekit/agents-plugin-google@1.0.48(@livekit/agents@1.0.48(@livekit/rtc-node@0.13.24)(zod@3.25.76))(@livekit/rtc-node@0.13.24)':
     dependencies:

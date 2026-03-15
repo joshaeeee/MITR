@@ -7,11 +7,6 @@ import {
   metrics,
   voice
 } from '@livekit/agents';
-import { Modality } from '@google/genai';
-import * as google from '@livekit/agents-plugin-google';
-import * as openai from '@livekit/agents-plugin-openai';
-import * as sarvam from '@livekit/agents-plugin-sarvam';
-import * as silero from '@livekit/agents-plugin-silero';
 import {
   AudioFrame,
   AudioSource,
@@ -51,6 +46,7 @@ import {
 } from '../services/agent/tools.js';
 import { AsyncFollowupManager } from './async-followup-manager.js';
 import { buildSystemPrompt } from './agent.js';
+import { createVoiceSession, prewarmVoicePipeline, validateVoicePipeline } from './pipelines/index.js';
 
 dotenv.config({ path: '.env.local' });
 
@@ -68,38 +64,19 @@ const NEWS_AUTO_FOLLOWUP_DELAY_MS = 300;
 const NUDGE_PLAYBACK_STATUS_TIMEOUT_MS = 20000;
 const NUDGE_PLAYBACK_MAX_ATTEMPTS = 2;
 const AMBIENCE_SAMPLE_RATE = 48000;
-const AMBIENCE_CHANNELS = 1;
+const AMBIENCE_CHANNELS = 2;
 const AMBIENCE_FRAME_MS = 20;
 const AMBIENCE_VOLUME_GAIN = 0.6;
 const AMBIENCE_SAMPLES_PER_FRAME = (AMBIENCE_SAMPLE_RATE / 1000) * AMBIENCE_FRAME_MS;
 const AMBIENCE_BYTES_PER_FRAME = AMBIENCE_SAMPLES_PER_FRAME * AMBIENCE_CHANNELS * 2;
+const AMBIENCE_PREBUFFER_MS = 600;
+const AMBIENCE_PREBUFFER_BYTES = (AMBIENCE_SAMPLE_RATE / 1000) * AMBIENCE_PREBUFFER_MS * AMBIENCE_CHANNELS * 2;
 const AMBIENCE_TRACK_PATHS = [
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/birds_rain_woods.mp3'),
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/rain_light.ogg'),
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/water_on_rocks.ogg'),
   resolve(process.cwd(), 'tools/web-sim/assets/ambience/rain_woods_0757.mp3')
 ];
-const SILERO_VAD_USERDATA_KEY = 'silero_vad';
-
-const normalizeSarvamLanguageCode = (language: string): string => {
-  const trimmed = language.trim();
-  if (!trimmed) return 'hi-IN';
-  const exact = /^[a-z]{2}-[A-Z]{2}$/.test(trimmed);
-  if (exact) return trimmed;
-  const normalized = trimmed.replace('_', '-');
-  if (/^[a-z]{2}$/.test(normalized)) return `${normalized}-IN`;
-  return 'hi-IN';
-};
-
-const normalizeSarvamTtsModel = (model: string): sarvam.TTSModels => {
-  const normalized = model.trim().toLowerCase();
-  if (normalized === 'bulbul:v2') return 'bulbul:v2';
-  if (normalized === 'bulbul:v3' || normalized.startsWith('bulbul:v3')) return 'bulbul:v3';
-  logger.warn('Unknown SARVAM_TTS_MODEL; falling back to bulbul:v2', {
-    providedModel: model
-  });
-  return 'bulbul:v2';
-};
 
 class SatsangAmbiencePublisher {
   private source: AudioSource | null = null;
@@ -110,6 +87,8 @@ class SatsangAmbiencePublisher {
   private pcmBuffer = Buffer.alloc(0);
   private running = false;
   private lastTrackPath: string | null = null;
+  private ambiencePrimed = false;
+  private lastFrameBytes = Buffer.alloc(AMBIENCE_BYTES_PER_FRAME);
 
   constructor(
     private readonly participant: LocalParticipant,
@@ -134,7 +113,6 @@ class SatsangAmbiencePublisher {
       'error',
       '-stream_loop',
       '-1',
-      '-re',
       '-i',
       trackPath,
       '-vn',
@@ -156,6 +134,8 @@ class SatsangAmbiencePublisher {
     });
     this.ffmpeg = proc;
     this.pcmBuffer = Buffer.alloc(0);
+    this.ambiencePrimed = false;
+    this.lastFrameBytes = Buffer.alloc(AMBIENCE_BYTES_PER_FRAME);
 
     proc.stdout.on('data', (chunk: Buffer) => {
       if (!this.running) return;
@@ -204,16 +184,17 @@ class SatsangAmbiencePublisher {
     if (this.frameTimer) return;
     this.frameTimer = setInterval(() => {
       if (!this.running || !this.source) return;
+      if (!this.ambiencePrimed) {
+        if (this.pcmBuffer.length < AMBIENCE_PREBUFFER_BYTES) return;
+        this.ambiencePrimed = true;
+      }
       let frameBytes: Buffer;
       if (this.pcmBuffer.length >= AMBIENCE_BYTES_PER_FRAME) {
         frameBytes = this.pcmBuffer.subarray(0, AMBIENCE_BYTES_PER_FRAME);
         this.pcmBuffer = this.pcmBuffer.subarray(AMBIENCE_BYTES_PER_FRAME);
+        this.lastFrameBytes = Buffer.from(frameBytes);
       } else {
-        frameBytes = Buffer.alloc(AMBIENCE_BYTES_PER_FRAME);
-        if (this.pcmBuffer.length > 0) {
-          this.pcmBuffer.copy(frameBytes, 0, 0, this.pcmBuffer.length);
-          this.pcmBuffer = Buffer.alloc(0);
-        }
+        frameBytes = this.lastFrameBytes;
       }
 
       const samples = new Int16Array(
@@ -270,6 +251,8 @@ class SatsangAmbiencePublisher {
       clearInterval(this.frameTimer);
       this.frameTimer = null;
     }
+    this.ambiencePrimed = false;
+    this.lastFrameBytes = Buffer.alloc(AMBIENCE_BYTES_PER_FRAME);
 
     if (this.ffmpeg) {
       try {
@@ -330,14 +313,6 @@ const parseDispatchMetadata = (raw: string | undefined): DispatchMetadata => {
   }
 };
 
-type NewsItemForFollowup = {
-  title: string;
-  summary: string;
-  source: string;
-  url: string;
-  publishedAt: string;
-};
-
 type WebItemForFollowup = {
   title: string;
   summary: string;
@@ -362,22 +337,17 @@ const truncate = (value: string, max: number): string => {
   return `${value.slice(0, max)}...`;
 };
 
-const toNewsItemsForFollowup = (value: unknown): NewsItemForFollowup[] => {
+const toNewsSummariesForFollowup = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
   return value
-    .slice(0, 5)
     .map((entry) => {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-      const item = entry as Record<string, unknown>;
-      return {
-        title: asNonEmptyString(item.title) ?? '',
-        summary: truncate(asNonEmptyString(item.summary) ?? '', 420),
-        source: asNonEmptyString(item.source) ?? '',
-        url: asNonEmptyString(item.url) ?? '',
-        publishedAt: asNonEmptyString(item.publishedAt) ?? ''
-      };
+      if (typeof entry === 'string') return truncate(entry.trim(), 520);
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return '';
+      const summary = asNonEmptyString((entry as Record<string, unknown>).summary);
+      return summary ? truncate(summary, 520) : '';
     })
-    .filter((item): item is NewsItemForFollowup => item !== null);
+    .filter((entry) => entry.length > 0)
+    .slice(0, 5);
 };
 
 const toWebItemsForFollowup = (value: unknown): WebItemForFollowup[] => {
@@ -425,6 +395,26 @@ type NudgePlaybackStatusPacket = {
   requestId?: string;
   nudgeId?: string;
   status?: 'started' | 'ended' | 'failed';
+};
+
+type TurnLatencyTrace = {
+  turnId: number;
+  startedAt: number;
+  transcriptChars: number;
+  userSpeechStoppedAt: number | null;
+  sttFinalizeMs: number | null;
+  speechCreatedAt: number | null;
+  thinkingAt: number | null;
+  firstToolStartAt: number | null;
+  firstToolEndAt: number | null;
+  toolCount: number;
+  toolNames: string[];
+  totalToolMs: number;
+  firstAssistantTextAt: number | null;
+  firstAudioAt: number | null;
+  firstMetricsAt: number | null;
+  modelTtftMs: number | null;
+  closed: boolean;
 };
 
 const toCitationsForFollowup = (value: unknown): CitationForFollowup[] => {
@@ -483,6 +473,12 @@ const toLivekitTool = <TSchema extends z.ZodTypeAny>(
     description: definition.description,
     parameters: definition.parameters,
     execute: async (input: z.infer<TSchema>) => {
+      const startedAt = Date.now();
+      context.onToolExecutionStart?.({
+        name: definition.name,
+        startedAt,
+        payload: input
+      });
       logger.info('Agent tool event', {
         sessionId: context.sessionId,
         userId: context.userId,
@@ -490,30 +486,44 @@ const toLivekitTool = <TSchema extends z.ZodTypeAny>(
         status: 'start',
         payload: sanitizeForLog(input)
       });
-      const startedAt = Date.now();
       try {
         const result = await withTimeout(
           definition.execute(input, context),
           definition.timeoutMs,
           definition.name
         );
+        const endedAt = Date.now();
+        context.onToolExecutionEnd?.({
+          name: definition.name,
+          startedAt,
+          endedAt,
+          ok: true
+        });
         logger.info('Agent tool event', {
           sessionId: context.sessionId,
           userId: context.userId,
           name: definition.name,
           status: 'end',
-          elapsedMs: Date.now() - startedAt,
+          elapsedMs: endedAt - startedAt,
           payload: sanitizeForLog(result)
         });
         return { ok: true, result };
       } catch (error) {
         const message = (error as Error).message;
+        const endedAt = Date.now();
+        context.onToolExecutionEnd?.({
+          name: definition.name,
+          startedAt,
+          endedAt,
+          ok: false,
+          error: message
+        });
         logger.warn('Agent tool event', {
           sessionId: context.sessionId,
           userId: context.userId,
           name: definition.name,
           status: 'end',
-          elapsedMs: Date.now() - startedAt,
+          elapsedMs: endedAt - startedAt,
           payload: { ok: false, error: message }
         });
         return { ok: false, error: message };
@@ -556,65 +566,23 @@ const buildToolDeps = (): ToolDeps => {
 
 export default defineAgent({
   prewarm: async (proc) => {
-    if (env.AGENT_VOICE_PIPELINE !== 'sarvam_stt_llm_tts') return;
-    if (env.SARVAM_STT_STREAMING) return;
-    if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
-    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
+    await prewarmVoicePipeline({
+      env,
+      logger,
+      proc
+    });
   },
   entry: async (ctx: JobContext) => {
-    const configuredGoogleRealtimeModel = env.GOOGLE_REALTIME_MODEL.trim()
-      .replace(/^models\//i, '')
-      .replace(/^google\//i, '');
-    const googleRealtimeModel =
-      env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
-      configuredGoogleRealtimeModel.toLowerCase().includes('native-audio')
-        ? 'gemini-2.0-flash-exp'
-        : configuredGoogleRealtimeModel;
-
-    if (
-      env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' &&
-      env.GOOGLE_REALTIME_MODEL.toLowerCase().includes('native-audio')
-    ) {
-      logger.warn('GOOGLE_REALTIME_MODEL is native-audio in half-cascade mode; falling back to non-native model', {
-        configuredModel: configuredGoogleRealtimeModel,
-        fallbackModel: googleRealtimeModel
-      });
-    }
-    if (configuredGoogleRealtimeModel !== env.GOOGLE_REALTIME_MODEL) {
-      logger.warn('Normalized GOOGLE_REALTIME_MODEL by stripping unsupported provider prefix', {
-        configuredModel: env.GOOGLE_REALTIME_MODEL,
-        normalizedModel: configuredGoogleRealtimeModel
-      });
-    }
-
-    const needsOpenAiKey =
-      env.AGENT_VOICE_PIPELINE === 'openai_realtime' || env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts';
-    if (needsOpenAiKey && !env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY is required for mitr-agent-worker');
-    }
-    if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' && !env.GOOGLE_API_KEY) {
-      throw new Error('GOOGLE_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
-    }
-    if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_API_KEY) {
-      throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
-    }
-    if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts' && !env.SARVAM_API_KEY) {
-      throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
-    }
-    if (
-      env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' &&
-      !env.SARVAM_STT_STREAMING &&
-      !ctx.proc.userData[SILERO_VAD_USERDATA_KEY]
-    ) {
-      throw new Error(
-        'SARVAM_STT_STREAMING=false requires VAD integration for AgentSession, but no prewarmed VAD model was found.'
-      );
-    }
-
     const metadata = parseDispatchMetadata((ctx.job as { metadata?: string }).metadata);
     const participantIdentity = (ctx.job as { participant?: { identity?: string } }).participant?.identity;
     const userId = metadata.user_id ?? participantIdentity ?? 'anonymous-user';
     const language = metadata.language ?? 'hi-IN';
+    validateVoicePipeline({
+      env,
+      logger,
+      language,
+      ctx
+    });
     const roomNameFromJob = (ctx.job as { room?: { name?: string } }).room?.name;
     const roomName = roomNameFromJob ?? (ctx.room as { name?: string } | undefined)?.name ?? 'unknown-room';
     const sessionId = `${roomName}:${userId}`;
@@ -645,43 +613,123 @@ export default defineAgent({
     const conversations = new ConversationService();
     const userTranscripts = new UserTranscriptService();
     const pendingUserTurns: string[] = [];
+    let turnSeq = 0;
+    let activeTurnId: number | null = null;
+    let lastUserSpeechStoppedAt: number | null = null;
+    const turnLatencyById = new Map<number, TurnLatencyTrace>();
+    const speechToTurnId = new Map<string, number>();
+
+    const resolveTurnForTimestamp = (timestamp: number): TurnLatencyTrace | null => {
+      const active = activeTurnId ? turnLatencyById.get(activeTurnId) ?? null : null;
+      if (active && !active.closed && active.startedAt <= timestamp) return active;
+
+      let candidate: TurnLatencyTrace | null = null;
+      for (const turn of turnLatencyById.values()) {
+        if (turn.closed) continue;
+        if (turn.startedAt > timestamp) continue;
+        if (!candidate || turn.turnId > candidate.turnId) {
+          candidate = turn;
+        }
+      }
+      return candidate;
+    };
+
+    const logTurnMarker = (
+      turn: TurnLatencyTrace,
+      marker: string,
+      markerAt: number,
+      extra?: Record<string, unknown>
+    ): void => {
+      logger.info('Turn latency marker', {
+        sessionId,
+        turnId: turn.turnId,
+        marker,
+        sinceTurnStartMs: Math.max(0, markerAt - turn.startedAt),
+        ...extra
+      });
+    };
+
+    const cleanupLatencyTraces = (): void => {
+      if (turnLatencyById.size <= 40) return;
+      for (const [turnId, turn] of turnLatencyById) {
+        if (turn.closed && activeTurnId !== turnId) {
+          turnLatencyById.delete(turnId);
+        }
+        if (turnLatencyById.size <= 30) break;
+      }
+    };
+
+    const closeTurnTrace = (turn: TurnLatencyTrace, endedAt: number): void => {
+      if (turn.closed) return;
+      turn.closed = true;
+      if (activeTurnId === turn.turnId) {
+        activeTurnId = null;
+      }
+      logger.info('Turn latency summary', {
+        sessionId,
+        turnId: turn.turnId,
+        transcriptChars: turn.transcriptChars,
+        totalMs: Math.max(0, endedAt - turn.startedAt),
+        sttFinalizeMs: turn.sttFinalizeMs,
+        generationStartMs: turn.speechCreatedAt ? Math.max(0, turn.speechCreatedAt - turn.startedAt) : null,
+        thinkingStartMs: turn.thinkingAt ? Math.max(0, turn.thinkingAt - turn.startedAt) : null,
+        firstToolStartMs: turn.firstToolStartAt ? Math.max(0, turn.firstToolStartAt - turn.startedAt) : null,
+        firstToolEndMs: turn.firstToolEndAt ? Math.max(0, turn.firstToolEndAt - turn.startedAt) : null,
+        firstAudioMs: turn.firstAudioAt ? Math.max(0, turn.firstAudioAt - turn.startedAt) : null,
+        firstAssistantTextMs: turn.firstAssistantTextAt
+          ? Math.max(0, turn.firstAssistantTextAt - turn.startedAt)
+          : null,
+        modelTtftMs: turn.modelTtftMs,
+        toolCount: turn.toolCount,
+        toolNames: turn.toolNames,
+        totalToolMs: turn.totalToolMs
+      });
+      cleanupLatencyTraces();
+    };
 
     const buildNewsFollowupInstructions = (payload: Record<string, unknown>): string => {
-      const items = toNewsItemsForFollowup(payload.items);
-      const quality =
-        payload.quality && typeof payload.quality === 'object' && !Array.isArray(payload.quality)
-          ? (payload.quality as Record<string, unknown>)
-          : {};
+      const summaries = toNewsSummariesForFollowup(payload.summaries);
+      const fallbackSummaries = summaries.length > 0 ? summaries : toNewsSummariesForFollowup(payload.items);
       const query = asNonEmptyString(payload.query) ?? 'latest news';
-      const stateOrCity = asNonEmptyString(payload.stateOrCity) ?? '';
-      const regionCode = asNonEmptyString(payload.regionCode) ?? '';
-      const confidence = asNonEmptyString(quality.confidence) ?? 'unknown';
-      const hasPublishedDates = quality.hasPublishedDates === true;
-
-      const compactItems = items.map((item) => ({
-        title: item.title,
-        summary: item.summary,
-        source: item.source,
-        publishedAt: item.publishedAt,
-        url: item.url
-      }));
 
       return [
         'The background news retrieval is complete.',
         `Reply in ${language}.`,
-        'Give a useful spoken news update based only on the provided tool data.',
-        'Include 2-4 items when available, each with source and freshness caveat if date is missing.',
-        'If confidence is low, explicitly mention low confidence and suggest broadening region/topic.',
+        'Give a concise spoken news update based only on the provided summary lines.',
+        'Do not mention URLs, source metadata, or identifiers.',
+        'Cover up to 3 key items unless user explicitly asks for more.',
+        'Do not ask a new question at the end unless there are zero usable summaries.',
         'Do not call any tool in this turn.',
         `ToolData=${JSON.stringify({
           query,
-          stateOrCity,
-          regionCode,
-          confidence,
-          hasPublishedDates,
-          items: compactItems
+          itemCount: fallbackSummaries.length,
+          summaries: fallbackSummaries
         })}`
       ].join('\n');
+    };
+
+    const buildNewsFollowupSpeech = (payload: Record<string, unknown>): string | null => {
+      const summaries = toNewsSummariesForFollowup(payload.summaries);
+      const fallbackSummaries = summaries.length > 0 ? summaries : toNewsSummariesForFollowup(payload.items);
+      const compact = fallbackSummaries
+        .map((line) => line.replace(/\s+/g, ' ').trim())
+        .filter((line) => line.length > 0)
+        .slice(0, 3);
+
+      const isHindi = language.toLowerCase().startsWith('hi');
+      if (compact.length === 0) {
+        return isHindi
+          ? 'मुझे अभी भरोसेमंद खबरें नहीं मिलीं। मैं थोड़ी देर में फिर कोशिश कर सकता हूँ।'
+          : 'I could not fetch reliable news updates right now. I can try again shortly.';
+      }
+
+      if (isHindi) {
+        const stitched = compact.map((line, i) => `खबर ${i + 1}: ${line}`).join(' ');
+        return `मैंने ताज़ा अपडेट निकाल लिए हैं। ${stitched}`;
+      }
+
+      const stitched = compact.map((line, i) => `Update ${i + 1}: ${line}`).join(' ');
+      return `I found the latest updates. ${stitched}`;
     };
 
     const buildWebSearchFollowupInstructions = (payload: Record<string, unknown>): string => {
@@ -789,6 +837,35 @@ export default defineAgent({
           hits
         })}`
       ].join('\n');
+    };
+
+    const buildStoryFollowupSpeech = (payload: Record<string, unknown>): string | null => {
+      const hits = toStoriesForFollowup(payload.hits);
+      const isHindi = language.toLowerCase().startsWith('hi');
+
+      if (hits.length === 0) {
+        return isHindi
+          ? 'मुझे अभी कोई सही लोक कथा नहीं मिली। आप चाहें तो परंपरा बताइए, जैसे पंचतंत्र, अकबर बीरबल, या क्षेत्र, फिर मैं तुरंत सुनाता हूँ।'
+          : 'I could not find a strong story match right now. If you share a tradition or region, I can fetch one immediately.';
+      }
+
+      const first = hits[0]!;
+      const passage = first.passage.replace(/\s+/g, ' ').trim();
+      const storyPart = truncate(passage, 700);
+      const moralPart = first.moral ? ` ${isHindi ? 'सीख:' : 'Moral:'} ${first.moral}` : '';
+
+      if (isHindi) {
+        return `ठीक है, एक लोक कथा सुनिए। ${storyPart}${moralPart}`;
+      }
+      return `Alright, here is a story. ${storyPart}${moralPart}`;
+    };
+
+    const buildYoutubeFailureSpeech = (payload: Record<string, unknown>): string => {
+      const query = asNonEmptyString(payload.searchQuery) ?? asNonEmptyString(payload.query) ?? 'media';
+      const isHindi = language.toLowerCase().startsWith('hi');
+      return isHindi
+        ? `माफ़ कीजिए, मैं अभी ${query} के लिए playable भजन या media resolve नहीं कर पाया। मैं चाहें तो दोबारा कोशिश कर सकता हूँ।`
+        : `Sorry, I could not resolve playable media for ${query} right now. I can try again.`;
     };
 
     const clearNudgePlaybackStatusTimer = () => {
@@ -1036,79 +1113,156 @@ export default defineAgent({
 
       publishToolEventPacket(payload);
 
+      const isLegacyAsyncAlias =
+        payload.type.endsWith('_ready') || payload.type.endsWith('_failed');
+      if (env.ASYNC_TOOL_RUNTIME_V2 && isLegacyAsyncAlias && !payload.type.startsWith('tool_async_')) {
+        return;
+      }
+
+      const scheduleAsyncFollowup = (
+        toolName: string,
+        status: 'ready' | 'failed',
+        requestId: string,
+        eventPayload: Record<string, unknown>
+      ) => {
+        if (status === 'failed') {
+          if (toolName === 'youtube_media_get') {
+            followupManager.schedule({
+              type: `youtube:${requestId}:failed`,
+              requestId,
+              payload: eventPayload,
+              buildInstructions: () => '',
+              buildSpeech: buildYoutubeFailureSpeech
+            });
+            flushFollowups();
+          }
+          if (toolName === 'web_search') followupManager.clear('web');
+          if (toolName === 'panchang_get') followupManager.clear('panchang');
+          if (toolName === 'religious_retrieve') followupManager.clear('religious');
+          if (toolName === 'story_retrieve') followupManager.clear('story');
+          return;
+        }
+
+        if (toolName === 'news_retrieve') {
+          followupManager.schedule({
+            type: `news:${requestId}`,
+            requestId,
+            payload: eventPayload,
+            buildInstructions: buildNewsFollowupInstructions,
+            buildSpeech: buildNewsFollowupSpeech
+          });
+          flushFollowups();
+          return;
+        }
+
+        if (toolName === 'web_search') {
+          followupManager.schedule({
+            type: 'web',
+            requestId,
+            payload: eventPayload,
+            buildInstructions: buildWebSearchFollowupInstructions
+          });
+          flushFollowups();
+          return;
+        }
+
+        if (toolName === 'panchang_get') {
+          followupManager.schedule({
+            type: 'panchang',
+            requestId,
+            payload: eventPayload,
+            buildInstructions: buildPanchangFollowupInstructions
+          });
+          flushFollowups();
+          return;
+        }
+
+        if (toolName === 'religious_retrieve') {
+          followupManager.schedule({
+            type: 'religious',
+            requestId,
+            payload: eventPayload,
+            buildInstructions: buildReligiousFollowupInstructions
+          });
+          flushFollowups();
+          return;
+        }
+
+        if (toolName === 'story_retrieve') {
+          followupManager.schedule({
+            type: 'story',
+            requestId,
+            payload: eventPayload,
+            buildInstructions: buildStoryFollowupInstructions,
+            buildSpeech: buildStoryFollowupSpeech
+          });
+          flushFollowups();
+          return;
+        }
+
+      };
+
+      if (payload.type === 'tool_async_ready' || payload.type === 'tool_async_failed') {
+        const envelope = asRecord(payload.payload) ?? {};
+        const toolName = asNonEmptyString(envelope.tool) ?? payload.sourceTool;
+        const requestId =
+          asNonEmptyString(envelope.requestId) ??
+          payload.requestId ??
+          `${toolName}_${Date.now().toString(36)}`;
+        const eventPayload = asRecord(envelope.payload) ?? {};
+        scheduleAsyncFollowup(toolName, payload.type === 'tool_async_ready' ? 'ready' : 'failed', requestId, eventPayload);
+        return;
+      }
+
       if (payload.type === 'news_retrieve_ready') {
-        followupManager.schedule({
-          type: 'news',
-          requestId: payload.requestId ?? `news_${Date.now().toString(36)}`,
-          payload: payload.payload ?? {},
-          buildInstructions: buildNewsFollowupInstructions
-        });
-        flushFollowups();
+        const requestId = payload.requestId ?? `news_${Date.now().toString(36)}`;
+        scheduleAsyncFollowup('news_retrieve', 'ready', requestId, payload.payload ?? {});
         return;
       }
 
       if (payload.type === 'news_retrieve_failed') {
-        followupManager.clear('news');
+        scheduleAsyncFollowup('news_retrieve', 'failed', payload.requestId ?? `news_${Date.now().toString(36)}`, payload.payload ?? {});
+        return;
       }
 
       if (payload.type === 'web_search_ready') {
-        followupManager.schedule({
-          type: 'web',
-          requestId: payload.requestId ?? `web_${Date.now().toString(36)}`,
-          payload: payload.payload ?? {},
-          buildInstructions: buildWebSearchFollowupInstructions
-        });
-        flushFollowups();
+        const requestId = payload.requestId ?? `web_${Date.now().toString(36)}`;
+        scheduleAsyncFollowup('web_search', 'ready', requestId, payload.payload ?? {});
         return;
       }
 
       if (payload.type === 'web_search_failed') {
-        followupManager.clear('web');
+        scheduleAsyncFollowup('web_search', 'failed', payload.requestId ?? `web_${Date.now().toString(36)}`, payload.payload ?? {});
       }
 
       if (payload.type === 'panchang_get_ready') {
-        followupManager.schedule({
-          type: 'panchang',
-          requestId: payload.requestId ?? `panchang_${Date.now().toString(36)}`,
-          payload: payload.payload ?? {},
-          buildInstructions: buildPanchangFollowupInstructions
-        });
-        flushFollowups();
+        const requestId = payload.requestId ?? `panchang_${Date.now().toString(36)}`;
+        scheduleAsyncFollowup('panchang_get', 'ready', requestId, payload.payload ?? {});
         return;
       }
 
       if (payload.type === 'panchang_get_failed') {
-        followupManager.clear('panchang');
+        scheduleAsyncFollowup('panchang_get', 'failed', payload.requestId ?? `panchang_${Date.now().toString(36)}`, payload.payload ?? {});
       }
 
       if (payload.type === 'religious_retrieve_ready') {
-        followupManager.schedule({
-          type: 'religious',
-          requestId: payload.requestId ?? `rr_${Date.now().toString(36)}`,
-          payload: payload.payload ?? {},
-          buildInstructions: buildReligiousFollowupInstructions
-        });
-        flushFollowups();
+        const requestId = payload.requestId ?? `rr_${Date.now().toString(36)}`;
+        scheduleAsyncFollowup('religious_retrieve', 'ready', requestId, payload.payload ?? {});
         return;
       }
 
       if (payload.type === 'religious_retrieve_failed') {
-        followupManager.clear('religious');
+        scheduleAsyncFollowup('religious_retrieve', 'failed', payload.requestId ?? `rr_${Date.now().toString(36)}`, payload.payload ?? {});
       }
 
       if (payload.type === 'story_retrieve_ready') {
-        followupManager.schedule({
-          type: 'story',
-          requestId: payload.requestId ?? `story_${Date.now().toString(36)}`,
-          payload: payload.payload ?? {},
-          buildInstructions: buildStoryFollowupInstructions
-        });
-        flushFollowups();
+        const requestId = payload.requestId ?? `story_${Date.now().toString(36)}`;
+        scheduleAsyncFollowup('story_retrieve', 'ready', requestId, payload.payload ?? {});
         return;
       }
 
       if (payload.type === 'story_retrieve_failed') {
-        followupManager.clear('story');
+        scheduleAsyncFollowup('story_retrieve', 'failed', payload.requestId ?? `story_${Date.now().toString(36)}`, payload.payload ?? {});
       }
     };
 
@@ -1121,6 +1275,7 @@ export default defineAgent({
     };
 
     const startSatsangAmbience = async () => {
+      if (!env.SATSANG_AMBIENCE_ENABLED) return;
       if (!satsangAmbiencePublisher) return;
       try {
         await satsangAmbiencePublisher.start();
@@ -1226,6 +1381,31 @@ export default defineAgent({
       language,
       sessionId,
       getLastUserTranscript: () => lastFinalTranscript,
+      onToolExecutionStart: ({ name, startedAt }) => {
+        const turn = resolveTurnForTimestamp(startedAt);
+        if (!turn) return;
+        turn.toolCount += 1;
+        if (!turn.toolNames.includes(name)) {
+          turn.toolNames.push(name);
+        }
+        if (!turn.firstToolStartAt) {
+          turn.firstToolStartAt = startedAt;
+          logTurnMarker(turn, 'first_tool_start', startedAt, { tool: name });
+        }
+      },
+      onToolExecutionEnd: ({ name, startedAt, endedAt, ok, error }) => {
+        const turn = resolveTurnForTimestamp(endedAt);
+        if (!turn) return;
+        turn.totalToolMs += Math.max(0, endedAt - startedAt);
+        if (!turn.firstToolEndAt) {
+          turn.firstToolEndAt = endedAt;
+          logTurnMarker(turn, 'first_tool_end', endedAt, {
+            tool: name,
+            ok,
+            error
+          });
+        }
+      },
       publishClientEvent: publishToolEvent
     };
 
@@ -1237,77 +1417,18 @@ export default defineAgent({
       instructions: buildSystemPrompt({
         userId,
         language,
-        profileAnswers: metadata.profile_answers ?? null
+        profileAnswers: metadata.profile_answers ?? null,
+        voicePipeline: env.AGENT_VOICE_PIPELINE
       }),
       tools: toolMap as Record<string, any>
     });
 
-    const sarvamNonStreamingStt = env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts' && !env.SARVAM_STT_STREAMING;
-    const prewarmedVad = sarvamNonStreamingStt
-      ? (ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined)
-      : undefined;
-
-    let session: voice.AgentSession;
-    if (env.AGENT_VOICE_PIPELINE === 'sarvam_stt_llm_tts') {
-      session = new voice.AgentSession({
-        turnDetection: sarvamNonStreamingStt ? 'vad' : 'stt',
-        vad: prewarmedVad,
-        stt: new sarvam.STT({
-          model: env.SARVAM_STT_MODEL as sarvam.STTModels,
-          languageCode: normalizeSarvamLanguageCode(language),
-          mode: env.SARVAM_STT_MODE as sarvam.STTModes,
-          streaming: env.SARVAM_STT_STREAMING
-        }),
-        llm: new openai.LLM({
-          model: env.OPENAI_CHAT_MODEL
-        }),
-        tts: new sarvam.TTS({
-          model: normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL),
-          speaker: env.SARVAM_TTS_SPEAKER,
-          targetLanguageCode: normalizeSarvamLanguageCode(language),
-          streaming: env.SARVAM_TTS_STREAMING
-        }),
-        voiceOptions: {
-          maxToolSteps: 3,
-          preemptiveGeneration: true,
-          minInterruptionDuration: 600,
-          minInterruptionWords: 2
-        }
-      });
-    } else if (env.AGENT_VOICE_PIPELINE === 'gemini_realtime_text_sarvam_tts') {
-      session = new voice.AgentSession({
-        llm: new google.beta.realtime.RealtimeModel({
-          model: googleRealtimeModel,
-          modalities: [Modality.TEXT]
-        }),
-        tts: new sarvam.TTS({
-          model: normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL),
-          speaker: env.SARVAM_TTS_SPEAKER,
-          targetLanguageCode: normalizeSarvamLanguageCode(language),
-          streaming: env.SARVAM_TTS_STREAMING
-        }),
-        voiceOptions: {
-          maxToolSteps: 3,
-          preemptiveGeneration: true,
-          minInterruptionDuration: 0.6,
-          minInterruptionWords: 2
-        }
-      });
-    } else {
-      session = new voice.AgentSession({
-        llm: new openai.realtime.RealtimeModel({
-          model: env.OPENAI_REALTIME_MODEL,
-          voice: env.OPENAI_REALTIME_VOICE,
-          modalities: ['text', 'audio']
-        }),
-        voiceOptions: {
-          maxToolSteps: 3,
-          preemptiveGeneration: true,
-          minInterruptionDuration: 0.6,
-          minInterruptionWords: 2
-        }
-      });
-    }
+    const session = createVoiceSession({
+      env,
+      logger,
+      language,
+      ctx
+    });
     logger.info('Voice pipeline selected', {
       sessionId,
       pipeline: env.AGENT_VOICE_PIPELINE,
@@ -1322,6 +1443,44 @@ export default defineAgent({
       logger.debug('Agent metrics', {
         sessionId,
         metrics: event.metrics
+      });
+
+      const turn = resolveTurnForTimestamp(event.createdAt);
+      if (!turn) return;
+      if (!turn.firstMetricsAt) {
+        turn.firstMetricsAt = event.createdAt;
+        const metricsRecord = event.metrics as Record<string, unknown>;
+        const ttftMs = typeof metricsRecord.ttftMs === 'number' ? metricsRecord.ttftMs : null;
+        if (ttftMs !== null && ttftMs >= 0) {
+          turn.modelTtftMs = ttftMs;
+        }
+        logTurnMarker(turn, 'first_metrics', event.createdAt, {
+          metricsType: typeof metricsRecord.type === 'string' ? metricsRecord.type : undefined,
+          modelTtftMs: turn.modelTtftMs
+        });
+      }
+    });
+
+    session.on(voice.AgentSessionEventTypes.SpeechCreated, (event) => {
+      if (event.source !== 'generate_reply' && event.source !== 'tool_response') return;
+      const turn = resolveTurnForTimestamp(event.createdAt);
+      if (!turn) return;
+
+      if (!turn.speechCreatedAt) {
+        turn.speechCreatedAt = event.createdAt;
+        logTurnMarker(turn, 'speech_created', event.createdAt, {
+          source: event.source,
+          userInitiated: event.userInitiated
+        });
+      }
+
+      speechToTurnId.set(event.speechHandle.id, turn.turnId);
+      event.speechHandle.addDoneCallback((speechHandle) => {
+        const turnId = speechToTurnId.get(speechHandle.id) ?? turn.turnId;
+        speechToTurnId.delete(speechHandle.id);
+        const doneTurn = turnLatencyById.get(turnId);
+        if (!doneTurn) return;
+        closeTurnTrace(doneTurn, Date.now());
       });
     });
 
@@ -1346,6 +1505,37 @@ export default defineAgent({
         language: event.language,
         transcript: sanitizeForLog(transcript)
       });
+
+      if (transcript.length > 0) {
+        const turnId = ++turnSeq;
+        const sttFinalizeMs =
+          lastUserSpeechStoppedAt !== null ? Math.max(0, event.createdAt - lastUserSpeechStoppedAt) : null;
+        const turn: TurnLatencyTrace = {
+          turnId,
+          startedAt: event.createdAt,
+          transcriptChars: transcript.length,
+          userSpeechStoppedAt: lastUserSpeechStoppedAt,
+          sttFinalizeMs,
+          speechCreatedAt: null,
+          thinkingAt: null,
+          firstToolStartAt: null,
+          firstToolEndAt: null,
+          toolCount: 0,
+          toolNames: [],
+          totalToolMs: 0,
+          firstAssistantTextAt: null,
+          firstAudioAt: null,
+          firstMetricsAt: null,
+          modelTtftMs: null,
+          closed: false
+        };
+        activeTurnId = turnId;
+        turnLatencyById.set(turnId, turn);
+        logTurnMarker(turn, 'user_final_transcript', event.createdAt, {
+          transcriptChars: transcript.length,
+          sttFinalizeMs
+        });
+      }
 
       if (transcript.length > 0) {
         void userTranscripts
@@ -1378,6 +1568,12 @@ export default defineAgent({
 
       const userText = pendingUserTurns.shift() ?? '';
       if (!userText) return;
+
+      const turn = resolveTurnForTimestamp(event.createdAt);
+      if (turn && !turn.firstAssistantTextAt) {
+        turn.firstAssistantTextAt = event.createdAt;
+        logTurnMarker(turn, 'first_assistant_text_item', event.createdAt);
+      }
 
       void conversations
         .appendTurn({
@@ -1498,6 +1694,15 @@ export default defineAgent({
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (event) => {
       latestAgentState = event.newState;
+      const turn = resolveTurnForTimestamp(event.createdAt);
+      if (turn && event.newState === 'thinking' && !turn.thinkingAt) {
+        turn.thinkingAt = event.createdAt;
+        logTurnMarker(turn, 'agent_thinking_started', event.createdAt);
+      }
+      if (turn && event.newState === 'speaking' && !turn.firstAudioAt) {
+        turn.firstAudioAt = event.createdAt;
+        logTurnMarker(turn, 'first_audio_playback_started', event.createdAt);
+      }
       if (event.newState === 'idle' || event.newState === 'listening') {
         dispatchNextQueuedNudgePlayback();
         scheduleAutoAdvance(session);
@@ -1507,6 +1712,9 @@ export default defineAgent({
 
     session.on(voice.AgentSessionEventTypes.UserStateChanged, (event) => {
       latestUserState = event.newState;
+      if (event.oldState === 'speaking' && event.newState !== 'speaking') {
+        lastUserSpeechStoppedAt = event.createdAt;
+      }
       if (event.newState === 'speaking') {
         clearSpeechStuckTimer();
         speechStuckTimer = setTimeout(() => {
@@ -1536,6 +1744,12 @@ export default defineAgent({
       clearNudgePlaybackStatusTimer();
       activeNudgePlayback = null;
       queuedNudgePlaybacks.length = 0;
+      for (const turn of turnLatencyById.values()) {
+        if (!turn.closed) {
+          closeTurnTrace(turn, event.createdAt);
+        }
+      }
+      speechToTurnId.clear();
       followupManager.clear();
       void stopSatsangAmbience();
       if (autoAdvanceTimer) {

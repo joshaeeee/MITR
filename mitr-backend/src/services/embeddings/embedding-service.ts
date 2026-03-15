@@ -1,5 +1,7 @@
 import { env } from '../../config/env.js';
 
+const defaultEmbeddingProviderUrl = (): string => `${env.OPENROUTER_BASE_URL.replace(/\/$/, '')}/embeddings`;
+
 export class EmbeddingService {
   private cache = new Map<string, { vector: number[]; expiresAt: number }>();
   private static readonly CACHE_TTL_MS = 30 * 60 * 1000;
@@ -8,18 +10,16 @@ export class EmbeddingService {
   private static readonly MAX_BATCH_SIZE = Number(env.EMBEDDING_MAX_BATCH_SIZE ?? 64);
 
   async embed(texts: string[]): Promise<number[][]> {
-    if (!env.EMBEDDING_PROVIDER_URL) {
-      throw new Error('EMBEDDING_PROVIDER_URL is required for embedding generation');
-    }
+    const providerUrl = env.EMBEDDING_PROVIDER_URL ?? defaultEmbeddingProviderUrl();
     const headers: Record<string, string> = {
       'content-type': 'application/json'
     };
 
     if (env.EMBEDDING_AUTH_TYPE !== 'none') {
-      const apiKey = env.EMBEDDING_API_KEY ?? env.OPENAI_API_KEY;
+      const apiKey = env.EMBEDDING_API_KEY ?? env.OPENROUTER_API_KEY ?? env.OPENAI_API_KEY;
       if (!apiKey) {
         throw new Error(
-          'Embedding provider auth is enabled but no key found. Set EMBEDDING_API_KEY (or OPENAI_API_KEY for OpenAI embeddings).'
+          'Embedding provider auth is enabled but no key found. Set EMBEDDING_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY.'
         );
       }
       if (env.EMBEDDING_AUTH_TYPE === 'bearer') {
@@ -48,7 +48,7 @@ export class EmbeddingService {
       for (let start = 0; start < missing.length; start += batchSize) {
         const batch = missing.slice(start, start + batchSize);
 
-        const response = await fetch(env.EMBEDDING_PROVIDER_URL, {
+        const response = await fetch(providerUrl, {
           method: 'POST',
           headers,
           body: JSON.stringify({ model: env.EMBEDDING_MODEL, input: batch.map((m) => m.text) })

@@ -98,6 +98,28 @@ export interface LongSessionBlock {
 export class SessionDirectorService {
   private static readonly DEFAULT_TARGET_SEC = 1800;
   private static readonly RESUME_MAX_IDLE_MS = 30 * 60 * 1000;
+  private static readonly SATSANG_SPEED_RATIO = '0.6';
+
+  private applySatsangVoiceStyle(blocks: LongSessionBlockPayload[]): LongSessionBlockPayload[] {
+    const speedTag = `<speed ratio="${SessionDirectorService.SATSANG_SPEED_RATIO}"/>`;
+
+    return blocks.map((block) => {
+      if (block.type !== 'speak_text') return block;
+      const fixedText = block.fixedText?.trim();
+      const prompt = block.prompt?.trim();
+
+      return {
+        ...block,
+        fixedText:
+          fixedText && !fixedText.startsWith('<speed ratio=')
+            ? `${speedTag}${fixedText}`
+            : block.fixedText,
+        prompt: prompt
+          ? `Speak in a calm satsang tone at slow pace. Use ${speedTag} for the spoken response. ${prompt}`
+          : block.prompt
+      };
+    });
+  }
 
   async start(input: LongSessionStartInput): Promise<{ session: LongSessionSnapshot; nextBlock: LongSessionBlock }> {
     const targetDurationSec = Math.max(300, Math.min(input.targetDurationSec ?? SessionDirectorService.DEFAULT_TARGET_SEC, 7200));
@@ -745,18 +767,20 @@ export class SessionDirectorService {
     if (input.mode === 'satsang_long') {
       const satsang = input.metadata.satsang ?? { paceMode: 'interactive', targetShlokaCount: 3, completedShlokas: 0 };
       if (satsang.paceMode === 'continuous') {
-        return this.buildSatsangCycleBlocks({
-          language: input.language,
-          topic: input.topic,
-          metadata: input.metadata,
-          askQuestion: false,
-          includeMiniRecap: false,
-          bundleMode: 'continuous',
-          includeInvocationLine: true
-        });
+        return this.applySatsangVoiceStyle(
+          this.buildSatsangCycleBlocks({
+            language: input.language,
+            topic: input.topic,
+            metadata: input.metadata,
+            askQuestion: false,
+            includeMiniRecap: false,
+            bundleMode: 'continuous',
+            includeInvocationLine: true
+          })
+        );
       }
 
-      return [
+      return this.applySatsangVoiceStyle([
         {
           type: 'speak_text',
           durationHintSec: 25,
@@ -777,7 +801,7 @@ export class SessionDirectorService {
           bundleMode: 'interactive',
           includeInvocationLine: false
         })
-      ];
+      ]);
     }
 
     return [
@@ -892,15 +916,17 @@ export class SessionDirectorService {
 
     if (session.mode === 'satsang_long') {
       const satsang = metadata.satsang ?? { paceMode: 'interactive', targetShlokaCount: 3, completedShlokas: 0 };
-      return this.buildSatsangCycleBlocks({
-        language: session.language,
-        topic: session.topic,
-        metadata,
-        askQuestion: satsang.paceMode === 'interactive',
-        includeMiniRecap: false,
-        bundleMode: satsang.paceMode,
-        includeInvocationLine: false
-      });
+      return this.applySatsangVoiceStyle(
+        this.buildSatsangCycleBlocks({
+          language: session.language,
+          topic: session.topic,
+          metadata,
+          askQuestion: satsang.paceMode === 'interactive',
+          includeMiniRecap: false,
+          bundleMode: satsang.paceMode,
+          includeInvocationLine: false
+        })
+      );
     }
 
     return [

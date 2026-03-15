@@ -1,5 +1,6 @@
 export interface FollowupSession {
   generateReply(input: { instructions: string }): void;
+  say?(text: string): void;
 }
 
 export interface AsyncFollowupEntry {
@@ -7,6 +8,7 @@ export interface AsyncFollowupEntry {
   requestId: string;
   payload: Record<string, unknown>;
   buildInstructions: (payload: Record<string, unknown>) => string;
+  buildSpeech?: (payload: Record<string, unknown>) => string | null;
 }
 
 export interface AsyncFollowupManagerOptions {
@@ -62,6 +64,11 @@ export class AsyncFollowupManager {
 
         this.pending.delete(type);
         this.onTriggered?.(entry);
+        const speech = entry.buildSpeech?.(entry.payload)?.trim();
+        if (speech && speech.length > 0 && typeof session.say === 'function') {
+          session.say(speech);
+          return;
+        }
         session.generateReply({ instructions: entry.buildInstructions(entry.payload) });
       }, this.delayMs);
 

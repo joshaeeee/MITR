@@ -21,6 +21,18 @@ export interface MediaStreamResolution {
 const toYoutubeSearchUrl = (query: string): string =>
   `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
 
+const isPlayableYoutubePageUrl = (rawUrl?: string): boolean => {
+  if (!rawUrl) return false;
+  try {
+    const url = new URL(rawUrl);
+    if (url.hostname.includes('youtu.be')) return true;
+    if (!url.hostname.includes('youtube.com')) return false;
+    return url.pathname === '/watch' || url.pathname.startsWith('/shorts/') || url.pathname.startsWith('/embed/');
+  } catch {
+    return false;
+  }
+};
+
 export class YoutubeStreamService {
   private cache = new Map<string, { value: MediaStreamResolution; expiresAt: number }>();
   private static readonly CACHE_TTL_MS = 10 * 60 * 1000;
@@ -46,15 +58,16 @@ export class YoutubeStreamService {
       const entry = parsed.entries?.[0] ?? parsed;
       const webpageUrl = entry.webpage_url;
       const title = entry.title ?? searchQuery;
-      if (!webpageUrl) {
-        return { title, searchQuery, webpageUrl: toYoutubeSearchUrl(searchQuery) };
+      if (!isPlayableYoutubePageUrl(webpageUrl)) {
+        throw new Error('Could not resolve a playable YouTube video result.');
       }
+      const playableWebpageUrl = webpageUrl!;
 
       let streamUrl: string | undefined;
       try {
         const attempts: string[][] = [
-          ['--no-warnings', '--no-playlist', '-f', 'bestaudio', '-g', webpageUrl],
-          ['--no-warnings', '--no-playlist', '-f', 'bestaudio/best', '-g', webpageUrl]
+          ['--no-warnings', '--no-playlist', '-f', 'bestaudio', '-g', playableWebpageUrl],
+          ['--no-warnings', '--no-playlist', '-f', 'bestaudio/best', '-g', playableWebpageUrl]
         ];
         for (const args of attempts) {
           const streamResult = await execFileAsync(env.YTDLP_PATH, args, {
@@ -73,13 +86,13 @@ export class YoutubeStreamService {
           : undefined;
         logger.warn('yt-dlp stream-url resolution failed; returning webpage URL fallback', {
           query: searchQuery,
-          webpageUrl,
+          webpageUrl: playableWebpageUrl,
           error: (error as Error).message,
           stderr
         });
       }
 
-      const value = { title, searchQuery, webpageUrl, streamUrl };
+      const value = { title, searchQuery, webpageUrl: playableWebpageUrl, streamUrl };
       this.cache.set(key, { value, expiresAt: Date.now() + YoutubeStreamService.CACHE_TTL_MS });
       return value;
     } catch (error) {
@@ -87,11 +100,7 @@ export class YoutubeStreamService {
         query: searchQuery,
         error: (error as Error).message
       });
-      return {
-        title: searchQuery,
-        searchQuery,
-        webpageUrl: toYoutubeSearchUrl(searchQuery)
-      };
+      throw new Error(`Could not resolve playable media for "${searchQuery}" right now.`);
     }
   }
 }

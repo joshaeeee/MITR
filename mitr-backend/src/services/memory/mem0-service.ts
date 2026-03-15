@@ -35,11 +35,29 @@ export class Mem0Service {
       hasMetadata: Boolean(metadata)
     });
 
-    const res = await fetch(`${env.MEM0_BASE_URL}/v1/memories/`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify(payload)
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), env.MEM0_ADD_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${env.MEM0_BASE_URL}/v1/memories/`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        logger.warn('Mem0 add timed out', {
+          userId,
+          messages: conversation.length,
+          timeoutMs: env.MEM0_ADD_TIMEOUT_MS
+        });
+        throw new Error(`Mem0 add timed out after ${env.MEM0_ADD_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!res.ok) {
       const body = await res.text();
@@ -51,11 +69,30 @@ export class Mem0Service {
 
   async searchMemory(userId: string, query: string, limit = 5): Promise<string[]> {
     logger.info('Mem0 search request', { userId, limit, queryChars: query.length });
-    const res = await fetch(`${env.MEM0_BASE_URL}/v1/memories/search/`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ user_id: userId, query, limit })
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), env.MEM0_SEARCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${env.MEM0_BASE_URL}/v1/memories/search/`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({ user_id: userId, query, limit }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        logger.warn('Mem0 search timed out', {
+          userId,
+          limit,
+          queryChars: query.length,
+          timeoutMs: env.MEM0_SEARCH_TIMEOUT_MS
+        });
+        return [];
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!res.ok) {
       const body = await res.text();
