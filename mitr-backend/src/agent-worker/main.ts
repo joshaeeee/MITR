@@ -44,6 +44,7 @@ import {
   ToolDeps,
   createToolDefinitions
 } from '../services/agent/tools.js';
+import { BackgroundVoiceCancellation } from '@livekit/noise-cancellation-node';
 import { AsyncFollowupManager } from './async-followup-manager.js';
 import { buildSystemPrompt } from './agent.js';
 import { createVoiceSession, prewarmVoicePipeline, validateVoicePipeline } from './pipelines/index.js';
@@ -1793,7 +1794,8 @@ export default defineAgent({
       room: ctx.room,
       inputOptions: {
         audioEnabled: true,
-        textEnabled: true
+        textEnabled: true,
+        noiseCancellation: BackgroundVoiceCancellation()
       },
       outputOptions: {
         audioEnabled: true,

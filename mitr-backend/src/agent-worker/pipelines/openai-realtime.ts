@@ -19,7 +19,7 @@ export const openAiRealtimePipeline: VoicePipelineStrategy = {
       voiceOptions: {
         maxToolSteps: 3,
         preemptiveGeneration: true,
-        minInterruptionDuration: 0.6,
+        minInterruptionDuration: 600,
         minInterruptionWords: 2
       }
     });

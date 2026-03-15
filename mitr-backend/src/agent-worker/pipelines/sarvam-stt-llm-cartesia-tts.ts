@@ -10,9 +10,8 @@ export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
   id: 'sarvam_stt_llm_cartesia_tts',
   async prewarm({ env, proc }) {
     if (env.AGENT_VOICE_PIPELINE !== 'sarvam_stt_llm_cartesia_tts') return;
-    if (env.SARVAM_STT_STREAMING) return;
     if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
-    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
+    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 400 });
   },
   validate({ env, ctx }) {
     if (!env.OPENROUTER_API_KEY) {
@@ -30,17 +29,15 @@ export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
         'CARTESIA_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_cartesia_tts'
       );
     }
-    if (!env.SARVAM_STT_STREAMING && !ctx.proc.userData[SILERO_VAD_USERDATA_KEY]) {
+    if (!ctx.proc.userData[SILERO_VAD_USERDATA_KEY]) {
       throw new Error(
-        'SARVAM_STT_STREAMING=false requires VAD integration for AgentSession, but no prewarmed VAD model was found.'
+        'AGENT_VOICE_PIPELINE=sarvam_stt_llm_cartesia_tts requires a prewarmed Silero VAD model, but none was found.'
       );
     }
   },
   createSession({ env, ctx, language }) {
     const sarvamNonStreamingStt = !env.SARVAM_STT_STREAMING;
-    const prewarmedVad = sarvamNonStreamingStt
-      ? (ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined)
-      : undefined;
+    const prewarmedVad = ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined;
 
     return new voice.AgentSession({
       turnDetection: sarvamNonStreamingStt ? 'vad' : 'stt',
@@ -68,7 +65,8 @@ export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
         maxToolSteps: 3,
         preemptiveGeneration: true,
         minInterruptionDuration: 600,
-        minInterruptionWords: 2
+        minInterruptionWords: 2,
+        minEndpointingDelay: 350
       }
     });
   }

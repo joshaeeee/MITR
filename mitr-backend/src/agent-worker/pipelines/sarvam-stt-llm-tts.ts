@@ -15,9 +15,10 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
   id: 'sarvam_stt_llm_tts',
   async prewarm({ env, proc }) {
     if (env.AGENT_VOICE_PIPELINE !== 'sarvam_stt_llm_tts') return;
-    if (env.SARVAM_STT_STREAMING) return;
     if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
-    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
+    // Reduce silence threshold from default 550ms → 400ms: fires END_OF_SPEECH sooner,
+    // cutting ~150ms off every turn in vad turn-detection mode.
+    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 400 });
   },
   validate({ env, ctx }) {
     if (!env.OPENROUTER_API_KEY) {
@@ -26,9 +27,9 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
     if (!env.SARVAM_API_KEY) {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
     }
-    if (!env.SARVAM_STT_STREAMING && !ctx.proc.userData[SILERO_VAD_USERDATA_KEY]) {
+    if (!ctx.proc.userData[SILERO_VAD_USERDATA_KEY]) {
       throw new Error(
-        'SARVAM_STT_STREAMING=false requires VAD integration for AgentSession, but no prewarmed VAD model was found.'
+        'AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts requires a prewarmed Silero VAD model, but none was found.'
       );
     }
   },
@@ -36,9 +37,7 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
     const ttsModel = normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL, logger);
     const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, env.SARVAM_TTS_SPEAKER, logger);
     const sarvamNonStreamingStt = !env.SARVAM_STT_STREAMING;
-    const prewarmedVad = sarvamNonStreamingStt
-      ? (ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined)
-      : undefined;
+    const prewarmedVad = ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined;
 
     return new voice.AgentSession({
       turnDetection: sarvamNonStreamingStt ? 'vad' : 'stt',
@@ -64,7 +63,9 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
         maxToolSteps: 3,
         preemptiveGeneration: true,
         minInterruptionDuration: 600,
-        minInterruptionWords: 2
+        minInterruptionWords: 2,
+        // Reduce silence wait before LLM fires: default 500ms → 350ms saves ~150ms per turn.
+        minEndpointingDelay: 350
       }
     });
   }

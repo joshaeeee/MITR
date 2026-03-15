@@ -64,8 +64,9 @@ export const geminiRealtimeTextSarvamTtsPipeline: VoicePipelineStrategy = {
       voiceOptions: {
         maxToolSteps: 3,
         preemptiveGeneration: true,
-        minInterruptionDuration: 0.6,
-        minInterruptionWords: 2
+        minInterruptionDuration: 600,
+        minInterruptionWords: 2,
+        minEndpointingDelay: 350
       }
     });
   }
