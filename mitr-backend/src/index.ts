@@ -1,8 +1,10 @@
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
-import { env } from './config/env.js';
+import { env, validateEnv } from './config/env.js';
 import { logger } from './lib/logger.js';
+
+validateEnv();
 import { registerSessionRoutes } from './routes/session.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerFamilyRoutes } from './routes/family.js';

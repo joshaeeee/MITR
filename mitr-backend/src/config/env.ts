@@ -140,4 +140,23 @@ const envSchema = z.object({
 });
 
 export type Env = z.infer<typeof envSchema>;
-export const env = envSchema.parse(process.env);
+
+/** Validate all env vars eagerly. Call at startup entry points. */
+export const validateEnv = (): Env => envSchema.parse(process.env);
+
+let _cached: Env | undefined;
+const _parse = (): Env => {
+  _cached ??= envSchema.parse(process.env);
+  return _cached;
+};
+
+/**
+ * Lazy env proxy — schema is NOT parsed at import time.
+ * First property access triggers full validation and caches the result.
+ * Call validateEnv() at startup for fast-fail behavior.
+ */
+export const env: Env = new Proxy({} as Env, {
+  get(_, prop: string) {
+    return _parse()[prop as keyof Env];
+  }
+});

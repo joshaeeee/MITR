@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { env } from '../config/env.js';
+import { env, validateEnv } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 import { ReligiousRetriever } from '../services/retrieval/religious-retriever.js';
 import { Mem0Service } from '../services/memory/mem0-service.js';
@@ -38,6 +38,7 @@ import { WebSearchService } from '../services/web/web-search-service.js';
 import { ConversationService } from '../services/conversations/conversation-service.js';
 import { UserTranscriptService } from '../services/conversations/user-transcript-service.js';
 import { NudgesService } from '../services/nudges/nudges-service.js';
+import { latencyTracker } from '../services/latency-tracker.js';
 import {
   AgentToolContext,
   AgentToolDefinition,
@@ -1897,6 +1898,8 @@ export default defineAgent({
     // can leave sessions feeling "stuck" before the first real user turn.
   }
 });
+
+validateEnv();
 
 cli.runApp(
   new ServerOptions({
