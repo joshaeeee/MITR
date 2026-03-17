@@ -941,7 +941,7 @@ export const createLegacyToolDefinitions = (
   const newsRetrieve: AgentToolDefinition = {
     name: 'news_retrieve',
     description:
-      'Retrieve current-affairs news (regional or global). Use freshness=latest for today/latest requests. For multi-part questions (for example two different conflicts), make multiple focused calls if needed. If result is pending, acknowledge briefly and wait for follow-up data; do not ask unrelated "anything else" prompts. When ready, summarize with headline + source + why it matters + one concrete detail.',
+      'Retrieve current-affairs news (regional or global). The agent must write the query in plain language based on user intent; do not rely on a canned wrapper. If the user asks for generic news with no place or topic, use an India-wide query such as "top news in India today". Do not default to local news unless the user explicitly asks for local/regional news or names a place. If local news is requested and a place is known, include that place directly in the query text, for example "latest local news in Jaipur, Rajasthan". If local news is requested but the place is missing, ask one short clarification question first. Use freshness=latest for today/latest requests. For multi-part questions (for example two different conflicts), make multiple focused calls if needed. If result is pending, acknowledge briefly and wait for follow-up data; do not ask unrelated "anything else" prompts. When ready, summarize with headline + source + why it matters + one concrete detail, and collapse near-duplicate coverage of the same story into a single update.',
     parameters: z.object({
       query: z.string(),
       freshness: z.enum(['latest', 'recent', 'general']).nullish(),
@@ -1819,7 +1819,8 @@ export const createLegacyToolDefinitions = (
 
   const pranayamaGuideGet: AgentToolDefinition = {
     name: 'pranayama_guide_get',
-    description: 'Get guided breathing steps for calming and emotional support.',
+    description:
+      'Get guided breathing steps for calming and emotional support, but only when the user explicitly asks for breathing/relaxation help or clearly agrees after you first respond with empathy. Never use this as the first response to pain, illness, or emotional distress.',
     parameters: z.object({
       minutes: z.number().int().min(2).max(20).optional()
     }),

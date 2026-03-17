@@ -32,18 +32,19 @@ const envSchema = z.object({
   OPENAI_REALTIME_VOICE: z.string().default('alloy'),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_BASE_URL: z.string().url().default('https://openrouter.ai/api/v1'),
-  OPENROUTER_MODEL: z.string().default('openrouter/auto'),
+  OPENROUTER_MODEL: z.string().default('openai/gpt-4o-mini'),
   AGENT_VOICE_PIPELINE: z
     .enum([
       'openai_realtime',
       'sarvam_stt_llm_tts',
       'sarvam_stt_llm_cartesia_tts',
       'gemini_realtime_text_sarvam_tts',
+      'gemini_realtime_text_cartesia_tts',
       'livekit_inference'
     ])
     .default('sarvam_stt_llm_tts'),
-  INFERENCE_LLM_MODEL: z.string().default('moonshotai/kimi-k2-instruct'),
-  INFERENCE_STT_MODEL: z.string().default('cartesia/ink-whisper'),
+  INFERENCE_LLM_MODEL: z.string().default('openai/gpt-4o-mini'),
+  INFERENCE_STT_MODEL: z.string().default('deepgram/nova-3-general'),
   INFERENCE_TTS_MODEL: z.string().default('cartesia/sonic-3'),
   GOOGLE_API_KEY: z.string().optional(),
   GOOGLE_REALTIME_MODEL: z.string().default('gemini-2.0-flash-exp'),
@@ -52,7 +53,7 @@ const envSchema = z.object({
   CARTESIA_VOICE_ID: z.string().default('794f9389-aac1-45b6-b726-9d9369183238'),
   CARTESIA_LANGUAGE: z.string().default('hi'),
   CARTESIA_BASE_URL: z.string().url().default('https://api.cartesia.ai'),
-  CARTESIA_CHUNK_TIMEOUT_MS: z.coerce.number().default(5000),
+  CARTESIA_CHUNK_TIMEOUT_MS: z.coerce.number().default(500),
 
   SARVAM_API_KEY: z.string().optional(),
   SARVAM_STT_MODEL: z.string().default('saaras:v3'),

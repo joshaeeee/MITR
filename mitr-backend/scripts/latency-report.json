@@ -1,0 +1,72 @@
+{
+  "timestamp": "2026-03-17T04:13:15.153Z",
+  "config": {
+    "apiBase": "http://localhost:8080",
+    "turns": 3
+  },
+  "turns": [
+    {
+      "prompt": "Namaste",
+      "timeToFirstResponseMs": null,
+      "responseType": "timeout",
+      "totalTurnMs": 20002
+    },
+    {
+      "prompt": "Aaj mausam kaisa hai?",
+      "timeToFirstResponseMs": null,
+      "responseType": "timeout",
+      "totalTurnMs": 20001
+    },
+    {
+      "prompt": "Aap mujhe ek kahani sunao",
+      "timeToFirstResponseMs": null,
+      "responseType": "timeout",
+      "totalTurnMs": 20001
+    }
+  ],
+  "aggregate": {
+    "timeToFirstResponse": {
+      "p50": null,
+      "p95": null,
+      "min": null,
+      "max": null,
+      "count": 0
+    },
+    "totalTurn": {
+      "p50": 20001,
+      "p95": 20002,
+      "min": 20001,
+      "max": 20002
+    }
+  },
+  "serverSnapshot": {
+    "ok": true,
+    "snapshot": {
+      "totalTurns": 0,
+      "recentCount": 0,
+      "p50": null,
+      "p95": null,
+      "byMode": {
+        "fast": {
+          "count": 0,
+          "p50": null,
+          "p95": null
+        },
+        "slow": {
+          "count": 0,
+          "p50": null,
+          "p95": null
+        }
+      }
+    },
+    "longSession": {
+      "long_session_started_total": 0,
+      "long_session_completed_total": 0,
+      "long_session_avg_duration_sec": 0,
+      "block_exec_p95_ms_by_type": {},
+      "block_transition_p95_ms": null,
+      "resume_success_rate": 1,
+      "orphan_running_blocks_total": 0
+    }
+  }
+}

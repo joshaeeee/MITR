@@ -21,6 +21,7 @@
     "test:agent": "tsx scripts/test-agent-tools.ts",
     "test:unit": "tsx --test src/agent-worker/async-followup-manager.test.ts src/services/reminders/reminder-time.test.ts src/services/companion/satsang-ledger.test.ts src/services/insights/insights-scoring.test.ts src/services/insights/daily-digest-service.test.ts",
     "test:web": "tsx tools/web-sim/server.ts",
+    "test:latency": "tsx scripts/test-latency.ts",
     "ingest:religious": "tsx scripts/ingest-religious-corpus.ts",
     "stories:translate": "tsx scripts/translate-stories-sarvam.ts",
     "ingest:stories": "tsx scripts/ingest-stories-corpus.ts",

@@ -6,6 +6,7 @@ import { env } from '../config/env.js';
 import { SessionStore } from '../services/session-store.js';
 import { ProfileService } from '../services/profile/profile-service.js';
 import { latencyTracker } from '../services/latency-tracker.js';
+import { redisLatencySnapshot } from '../services/latency-redis.js';
 import { SessionDirectorService } from '../services/long-session/session-director-service.js';
 import { longSessionMetrics } from '../services/long-session/long-session-metrics.js';
 import { requireAuth } from '../services/auth/auth-middleware.js';
@@ -217,9 +218,10 @@ export const registerSessionRoutes = (
   });
 
   app.get('/health/latency', async (_request, reply) => {
+    const redisSnapshot = await redisLatencySnapshot();
     return reply.send({
       ok: true,
-      snapshot: latencyTracker.snapshot(),
+      snapshot: redisSnapshot.totalTurns > 0 ? redisSnapshot : latencyTracker.snapshot(),
       longSession: longSessionMetrics.snapshot()
     });
   });

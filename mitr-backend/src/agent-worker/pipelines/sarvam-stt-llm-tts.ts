@@ -18,7 +18,7 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
     if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
     // Reduce silence threshold from default 550ms → 400ms: fires END_OF_SPEECH sooner,
     // cutting ~150ms off every turn in vad turn-detection mode.
-    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 400 });
+    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 250 });
   },
   validate({ env, ctx }) {
     if (!env.OPENROUTER_API_KEY) {
@@ -62,10 +62,9 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
       voiceOptions: {
         maxToolSteps: 3,
         preemptiveGeneration: true,
-        minInterruptionDuration: 600,
+        minInterruptionDuration: 400,
         minInterruptionWords: 2,
-        // Reduce silence wait before LLM fires: default 500ms → 350ms saves ~150ms per turn.
-        minEndpointingDelay: 350
+        minEndpointingDelay: 200
       }
     });
   }

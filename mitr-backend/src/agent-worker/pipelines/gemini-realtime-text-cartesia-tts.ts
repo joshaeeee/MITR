@@ -1,14 +1,9 @@
 import { Modality } from '@google/genai';
 import { voice } from '@livekit/agents';
+import * as cartesia from '@livekit/agents-plugin-cartesia';
 import * as google from '@livekit/agents-plugin-google';
-import * as sarvam from '@livekit/agents-plugin-sarvam';
 import type { VoicePipelineStrategy } from './types.js';
-import {
-  normalizeGoogleRealtimeModel,
-  normalizeSarvamTtsLanguageCode,
-  normalizeSarvamTtsSpeaker,
-  normalizeSarvamTtsModel
-} from './utils.js';
+import { normalizeGoogleRealtimeModel } from './utils.js';
 
 const resolveGoogleRealtimeModel = (
   configuredModel: string,
@@ -35,31 +30,31 @@ const resolveGoogleRealtimeModel = (
   return fallback;
 };
 
-export const geminiRealtimeTextSarvamTtsPipeline: VoicePipelineStrategy = {
-  id: 'gemini_realtime_text_sarvam_tts',
+export const geminiRealtimeTextCartesiaTtsPipeline: VoicePipelineStrategy = {
+  id: 'gemini_realtime_text_cartesia_tts',
   validate({ env }) {
     if (!env.GOOGLE_API_KEY) {
-      throw new Error('GOOGLE_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
+      throw new Error('GOOGLE_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_cartesia_tts');
     }
-    if (!env.SARVAM_API_KEY) {
-      throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
+    if (!env.CARTESIA_API_KEY) {
+      throw new Error('CARTESIA_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_cartesia_tts');
     }
   },
-  createSession({ env, logger, language }) {
+  createSession({ env, logger }) {
     const model = resolveGoogleRealtimeModel(env.GOOGLE_REALTIME_MODEL, logger);
-    const ttsModel = normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL, logger);
-    const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, env.SARVAM_TTS_SPEAKER, logger);
 
     return new voice.AgentSession({
       llm: new google.beta.realtime.RealtimeModel({
         model,
         modalities: [Modality.TEXT]
       }),
-      tts: new sarvam.TTS({
-        model: ttsModel,
-        speaker: ttsSpeaker,
-        targetLanguageCode: normalizeSarvamTtsLanguageCode(language, logger),
-        streaming: env.SARVAM_TTS_STREAMING
+      tts: new cartesia.TTS({
+        model: env.CARTESIA_MODEL,
+        voice: env.CARTESIA_VOICE_ID,
+        language: env.CARTESIA_LANGUAGE,
+        apiKey: env.CARTESIA_API_KEY,
+        baseUrl: env.CARTESIA_BASE_URL,
+        chunkTimeout: env.CARTESIA_CHUNK_TIMEOUT_MS
       }),
       voiceOptions: {
         maxToolSteps: 3,

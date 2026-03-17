@@ -42,7 +42,7 @@ export const createNewsRetrieveTool = (
 ): AgentToolDefinition => ({
   name: 'news_retrieve',
   description:
-    'Retrieve current-affairs news for the requested query/region. Returns ready or pending.',
+    'Retrieve current-affairs news for the requested query/region. The agent must write the query in plain language based on user intent; do not rely on a canned wrapper. If the user asks for generic news with no place or topic, use an India-wide query such as "top news in India today". Do not default to local news unless the user explicitly asks for local/regional news or names a place. If local news is requested and a place is known, include that place directly in the query text, for example "latest local news in Jaipur, Rajasthan". If local news is requested but the place is missing, ask one short clarification question first. Returns ready or pending. When summarizing results, prioritize distinct events and collapse near-duplicate coverage of the same story.',
   parameters: z.object({
     query: z.string(),
     freshness: z.enum(['latest', 'recent', 'general']).nullish(),

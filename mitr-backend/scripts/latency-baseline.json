@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-03-17T10:00:00.000Z",
+  "apiBase": "http://localhost:8080",
+  "snapshot": {
+    "totalTurns": 8,
+    "turnTotal": { "p50": 9691, "p95": 14709 },
+    "firstAudio": { "p50": null, "p95": null },
+    "modelTtft": { "p50": null, "p95": null },
+    "byMode": {
+      "fast": { "count": 6, "p50": 8277, "p95": 14709 },
+      "slow": { "count": 2, "p50": 11115, "p95": 12358 }
+    }
+  }
+}

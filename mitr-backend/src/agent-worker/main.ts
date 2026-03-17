@@ -48,6 +48,7 @@ import { BackgroundVoiceCancellation } from '@livekit/noise-cancellation-node';
 import { AsyncFollowupManager } from './async-followup-manager.js';
 import { buildSystemPrompt } from './agent.js';
 import { createVoiceSession, prewarmVoicePipeline, validateVoicePipeline } from './pipelines/index.js';
+import { pushLatencyRecord } from '../services/latency-redis.js';
 
 dotenv.config({ path: '.env.local' });
 
@@ -61,7 +62,7 @@ type DispatchMetadata = {
 type FlowType = 'satsang' | 'story' | 'companion';
 const FLOW_STATE_TOPIC = 'mitr.flow_state';
 const TOOL_EVENT_TOPIC = 'mitr.tool_event';
-const NEWS_AUTO_FOLLOWUP_DELAY_MS = 300;
+const NEWS_AUTO_FOLLOWUP_DELAY_MS = 50;
 const NUDGE_PLAYBACK_STATUS_TIMEOUT_MS = 20000;
 const NUDGE_PLAYBACK_MAX_ATTEMPTS = 2;
 const AMBIENCE_SAMPLE_RATE = 48000;
@@ -338,9 +339,81 @@ const truncate = (value: string, max: number): string => {
   return `${value.slice(0, max)}...`;
 };
 
+const NEWS_SUMMARY_NOISE_TOKENS = new Set([
+  'latest',
+  'live',
+  'news',
+  'headline',
+  'headlines',
+  'update',
+  'updates',
+  'breaking',
+  'report',
+  'reports',
+  'says',
+  'said',
+  'खबर',
+  'खबरें',
+  'ताजा',
+  'ताज़ा',
+  'लाइव',
+  'अपडेट',
+  'रिपोर्ट'
+]);
+
+const normalizeNewsSummaryText = (value: string): string =>
+  truncate(value, 520)
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const toNewsSummaryTokenSet = (value: string): Set<string> =>
+  new Set(
+    normalizeNewsSummaryText(value)
+      .split(' ')
+      .map((token) => token.trim())
+      .filter((token) => token.length > 1 && !NEWS_SUMMARY_NOISE_TOKENS.has(token))
+  );
+
+const newsSummaryOverlapScore = (left: Set<string>, right: Set<string>): number => {
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const token of left) {
+    if (right.has(token)) shared += 1;
+  }
+  return shared / Math.min(left.size, right.size);
+};
+
+const dedupeNewsSummaryLines = (lines: string[]): string[] => {
+  const unique: string[] = [];
+
+  for (const line of lines) {
+    const normalizedLine = normalizeNewsSummaryText(line);
+    if (!normalizedLine) continue;
+
+    const isDuplicate = unique.some((existing) => {
+      const normalizedExisting = normalizeNewsSummaryText(existing);
+      if (normalizedExisting === normalizedLine) return true;
+
+      const overlap = newsSummaryOverlapScore(
+        toNewsSummaryTokenSet(normalizedExisting),
+        toNewsSummaryTokenSet(normalizedLine)
+      );
+      return overlap >= 0.82;
+    });
+
+    if (!isDuplicate) unique.push(truncate(line.trim(), 520));
+  }
+
+  return unique;
+};
+
 const toNewsSummariesForFollowup = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
-  return value
+  return dedupeNewsSummaryLines(
+    value
     .map((entry) => {
       if (typeof entry === 'string') return truncate(entry.trim(), 520);
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return '';
@@ -348,7 +421,7 @@ const toNewsSummariesForFollowup = (value: unknown): string[] => {
       return summary ? truncate(summary, 520) : '';
     })
     .filter((entry) => entry.length > 0)
-    .slice(0, 5);
+  ).slice(0, 5);
 };
 
 const toWebItemsForFollowup = (value: unknown): WebItemForFollowup[] => {
@@ -666,25 +739,41 @@ export default defineAgent({
       if (activeTurnId === turn.turnId) {
         activeTurnId = null;
       }
+      const totalMs = Math.max(0, endedAt - turn.startedAt);
+      const firstAudioMs = turn.firstAudioAt ? Math.max(0, turn.firstAudioAt - turn.startedAt) : null;
+      const firstAssistantTextMs = turn.firstAssistantTextAt
+        ? Math.max(0, turn.firstAssistantTextAt - turn.startedAt)
+        : null;
       logger.info('Turn latency summary', {
         sessionId,
         turnId: turn.turnId,
         transcriptChars: turn.transcriptChars,
-        totalMs: Math.max(0, endedAt - turn.startedAt),
+        totalMs,
         sttFinalizeMs: turn.sttFinalizeMs,
         generationStartMs: turn.speechCreatedAt ? Math.max(0, turn.speechCreatedAt - turn.startedAt) : null,
         thinkingStartMs: turn.thinkingAt ? Math.max(0, turn.thinkingAt - turn.startedAt) : null,
         firstToolStartMs: turn.firstToolStartAt ? Math.max(0, turn.firstToolStartAt - turn.startedAt) : null,
         firstToolEndMs: turn.firstToolEndAt ? Math.max(0, turn.firstToolEndAt - turn.startedAt) : null,
-        firstAudioMs: turn.firstAudioAt ? Math.max(0, turn.firstAudioAt - turn.startedAt) : null,
-        firstAssistantTextMs: turn.firstAssistantTextAt
-          ? Math.max(0, turn.firstAssistantTextAt - turn.startedAt)
-          : null,
+        firstAudioMs,
+        firstAssistantTextMs,
         modelTtftMs: turn.modelTtftMs,
         toolCount: turn.toolCount,
         toolNames: turn.toolNames,
         totalToolMs: turn.totalToolMs
       });
+      pushLatencyRecord({
+        traceId: sessionId,
+        turnId: turn.turnId,
+        startedAt: turn.startedAt,
+        totalMs,
+        sttFinalizeMs: turn.sttFinalizeMs,
+        modelTtftMs: turn.modelTtftMs,
+        firstAudioMs,
+        firstAssistantTextMs,
+        toolCount: turn.toolCount,
+        totalToolMs: turn.totalToolMs,
+        toolNames: turn.toolNames
+      }).catch(() => {});
       cleanupLatencyTraces();
     };
 
@@ -697,6 +786,7 @@ export default defineAgent({
         'The background news retrieval is complete.',
         `Reply in ${language}.`,
         'Give a concise spoken news update based only on the provided summary lines.',
+        'If multiple summary lines describe the same event, merge them and mention that event only once.',
         'Do not mention URLs, source metadata, or identifiers.',
         'Cover up to 3 key items unless user explicitly asks for more.',
         'Do not ask a new question at the end unless there are zero usable summaries.',
