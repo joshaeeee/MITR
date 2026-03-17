@@ -92,7 +92,7 @@ jobs:
       - name: Build API Dockerfile (no push)
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./mitr-backend
           file: mitr-backend/Dockerfile.api
           push: false
           load: false
@@ -102,7 +102,7 @@ jobs:
       - name: Build Agent Dockerfile (no push)
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./mitr-backend
           file: mitr-backend/Dockerfile.agent
           push: false
           load: false
@@ -133,7 +133,7 @@ jobs:
       - name: Build and push API image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./mitr-backend
           file: mitr-backend/Dockerfile.api
           push: true
           tags: |
@@ -171,7 +171,7 @@ jobs:
       - name: Build and push agent image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./mitr-backend
           file: mitr-backend/Dockerfile.agent
           push: true
           tags: |
