@@ -103,10 +103,15 @@ Keep both connected to the same Postgres/Redis/Qdrant/Mem0 services.
 Files added under `mitr-backend/deploy/`:
 - `docker-compose.prod.yml`
 - `nginx.conf`
+- `nginx.http.conf`
+- `nginx.https.conf.template`
 - `.env.prod.template`
 - `deploy.sh`
 - `healthcheck.sh`
 - `bootstrap-ec2.sh`
+- `configure-nginx.sh`
+- `setup-https.sh`
+- `generate-prod-env.sh`
 
 ### One-time EC2 bootstrap
 ```bash
@@ -120,6 +125,7 @@ cp deploy/.env.prod.template deploy/.env.prod
 # edit deploy/.env.prod with real values
 # set API_PUBLIC_BASE_URL to your public API host (e.g. http://16.16.162.185)
 bash deploy/deploy.sh
+bash deploy/setup-https.sh
 ```
 
 ### Verify
@@ -158,6 +164,7 @@ Optional repo secret:
 Notes:
 - Deploy job rewrites `API_IMAGE`, `AGENT_IMAGE`, `REMINDER_IMAGE` in `deploy/.env.prod` to the new SHA-tagged images.
 - After deploy, it verifies running container image refs to prevent stale-image restarts.
+- If `ENABLE_HTTPS=true`, `PUBLIC_HOSTNAME`, and `TLS_EMAIL` are present in `.env.prod`, deploy also provisions/renews Let's Encrypt and exposes HTTPS on `443`.
 
 ## Ingestion / data utilities
 - Religious corpus:

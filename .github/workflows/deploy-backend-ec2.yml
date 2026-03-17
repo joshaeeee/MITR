@@ -182,12 +182,20 @@ jobs:
     needs: [build-api, build-agent]
     if: |
       github.event_name != 'pull_request' &&
-      (github.event_name == 'push' || inputs.deploy == true) &&
-      secrets.EC2_HOST != '' &&
-      secrets.EC2_USER != '' &&
-      secrets.EC2_SSH_KEY != ''
+      (github.event_name == 'push' || inputs.deploy == true)
     timeout-minutes: 20
     steps:
+      - name: Validate deploy secrets
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${EC2_HOST}" || { echo "Missing secret: EC2_HOST"; exit 1; }
+          test -n "${EC2_USER}" || { echo "Missing secret: EC2_USER"; exit 1; }
+          test -n "${EC2_SSH_KEY}" || { echo "Missing secret: EC2_SSH_KEY"; exit 1; }
+
       - name: Deploy on EC2 over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -215,7 +223,7 @@ jobs:
 
             cd "${APP_DIR}"
             if [ ! -f "deploy/.env.prod" ]; then
-              echo "Missing ${APP_DIR}/deploy/.env.prod. Create it from deploy/.env.prod.template"
+              echo "Missing ${APP_DIR}/deploy/.env.prod. Create it manually from deploy/.env.prod.template"
               exit 1
             fi
 
@@ -246,8 +254,10 @@ jobs:
             export GHCR_TOKEN="${GHCR_TOKEN_VALUE}"
             export HEALTH_BASE_URL="http://127.0.0.1"
 
+            chmod +x deploy/configure-nginx.sh deploy/setup-https.sh || true
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
             bash deploy/deploy.sh
+            bash deploy/setup-https.sh
 
             # Guard against stale image restarts.
             ACTUAL_API_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-api)"

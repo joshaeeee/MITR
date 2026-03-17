@@ -157,8 +157,11 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /opt/mitr/certbot-www:/var/www/certbot
     cpus: 0.10
     mem_limit: 96m
     logging:

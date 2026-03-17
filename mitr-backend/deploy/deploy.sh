@@ -30,6 +30,10 @@ fi
 
 cd "${SCRIPT_DIR}"
 
+if [[ -x "${SCRIPT_DIR}/configure-nginx.sh" ]]; then
+  bash "${SCRIPT_DIR}/configure-nginx.sh"
+fi
+
 running_image() {
   local container="$1"
   docker inspect --format='{{.Config.Image}}' "${container}" 2>/dev/null || true
