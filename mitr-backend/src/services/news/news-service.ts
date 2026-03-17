@@ -34,6 +34,31 @@ const clamp = (value: number, min: number, max: number): number => Math.min(Math
 
 const compactWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
+const NEWS_NOISE_TOKENS = new Set([
+  'latest',
+  'live',
+  'news',
+  'headline',
+  'headlines',
+  'update',
+  'updates',
+  'breaking',
+  'report',
+  'reports',
+  'says',
+  'said',
+  'video',
+  'photos',
+  'watch',
+  'खबर',
+  'खबरें',
+  'ताजा',
+  'ताज़ा',
+  'लाइव',
+  'अपडेट',
+  'रिपोर्ट'
+]);
+
 const isoDateDaysAgo = (days: number): string => {
   const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   return d.toISOString();
@@ -46,6 +71,91 @@ const sourceFromUrl = (rawUrl?: string): string => {
   } catch {
     return 'Unknown';
   }
+};
+
+const canonicalUrl = (rawUrl?: string): string => {
+  if (!rawUrl) return '';
+  try {
+    const url = new URL(rawUrl);
+    const pathname = url.pathname.replace(/\/+$/, '');
+    return `${url.hostname.replace(/^www\./, '')}${pathname}`;
+  } catch {
+    return rawUrl.trim();
+  }
+};
+
+const normalizeNewsText = (value: string): string =>
+  compactWhitespace(value.toLowerCase().replace(/https?:\/\/\S+/gu, ' ').replace(/[^\p{L}\p{N}\s]/gu, ' '));
+
+const toNewsTokenSet = (value: string): Set<string> =>
+  new Set(
+    normalizeNewsText(value)
+      .split(' ')
+      .map((token) => token.trim())
+      .filter((token) => token.length > 1 && !NEWS_NOISE_TOKENS.has(token))
+  );
+
+const intersectCount = (left: Set<string>, right: Set<string>): number => {
+  let count = 0;
+  for (const token of left) {
+    if (right.has(token)) count += 1;
+  }
+  return count;
+};
+
+const overlapScore = (left: Set<string>, right: Set<string>): number => {
+  if (left.size === 0 || right.size === 0) return 0;
+  return intersectCount(left, right) / Math.min(left.size, right.size);
+};
+
+const newsItemScore = (item: NewsItem): number => {
+  let score = 0;
+  if (item.publishedAt && !Number.isNaN(Date.parse(item.publishedAt))) score += 2;
+  if (item.summary && item.summary !== 'No summary available.') score += Math.min(item.summary.length / 200, 2);
+  if (item.title) score += Math.min(item.title.length / 120, 1);
+  if (item.source && item.source !== 'Unknown') score += 0.5;
+  return score;
+};
+
+const areLikelyDuplicateNewsItems = (left: NewsItem, right: NewsItem): boolean => {
+  const leftUrl = canonicalUrl(left.url);
+  const rightUrl = canonicalUrl(right.url);
+  if (leftUrl && rightUrl && leftUrl === rightUrl) return true;
+
+  const leftTitle = normalizeNewsText(left.title);
+  const rightTitle = normalizeNewsText(right.title);
+  if (leftTitle && rightTitle && leftTitle === rightTitle) return true;
+
+  const leftTitleTokens = toNewsTokenSet(left.title);
+  const rightTitleTokens = toNewsTokenSet(right.title);
+  const sharedTitleTokens = intersectCount(leftTitleTokens, rightTitleTokens);
+  const titleOverlap = overlapScore(leftTitleTokens, rightTitleTokens);
+  if (sharedTitleTokens >= 4 && titleOverlap >= 0.8) return true;
+
+  const leftCombinedTokens = toNewsTokenSet(`${left.title} ${left.summary}`);
+  const rightCombinedTokens = toNewsTokenSet(`${right.title} ${right.summary}`);
+  const combinedOverlap = overlapScore(leftCombinedTokens, rightCombinedTokens);
+  if (sharedTitleTokens >= 3 && combinedOverlap >= 0.78) return true;
+
+  return false;
+};
+
+const dedupeNewsItems = (items: NewsItem[]): NewsItem[] => {
+  const unique: NewsItem[] = [];
+
+  for (const item of items) {
+    const existingIndex = unique.findIndex((existing) => areLikelyDuplicateNewsItems(existing, item));
+    if (existingIndex === -1) {
+      unique.push(item);
+      continue;
+    }
+
+    if (newsItemScore(item) > newsItemScore(unique[existingIndex] as NewsItem)) {
+      unique[existingIndex] = item;
+    }
+  }
+
+  return unique;
 };
 
 const toSummary = (result: ExaResult): string => {
@@ -130,7 +240,7 @@ export class NewsService {
     }
 
     const requestBody: Record<string, unknown> = {
-      query: `Give the latest news on ${normalizedQuery}`,
+      query: normalizedQuery,
       category: 'news',
       type: 'deep',
       numResults,
@@ -155,7 +265,8 @@ export class NewsService {
     const payload = await this.runSearch(requestBody);
     if (!payload) return [];
 
-    const items = (payload.results ?? [])
+    const items = dedupeNewsItems(
+      (payload.results ?? [])
       .filter((item) => Boolean(item.url) && Boolean(item.title))
       .map((item) => ({
         title: String(item.title).trim(),
@@ -164,7 +275,7 @@ export class NewsService {
         url: String(item.url),
         publishedAt: item.publishedDate ? String(item.publishedDate) : ''
       }))
-      .slice(0, numResults);
+    ).slice(0, numResults);
 
     this.cache.set(cacheKey, {
       items,

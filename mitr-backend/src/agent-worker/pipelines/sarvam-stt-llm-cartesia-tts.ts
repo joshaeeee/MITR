@@ -11,7 +11,7 @@ export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
   async prewarm({ env, proc }) {
     if (env.AGENT_VOICE_PIPELINE !== 'sarvam_stt_llm_cartesia_tts') return;
     if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
-    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 400 });
+    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 250 });
   },
   validate({ env, ctx }) {
     if (!env.OPENROUTER_API_KEY) {
@@ -64,9 +64,9 @@ export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
       voiceOptions: {
         maxToolSteps: 3,
         preemptiveGeneration: true,
-        minInterruptionDuration: 600,
+        minInterruptionDuration: 400,
         minInterruptionWords: 2,
-        minEndpointingDelay: 350
+        minEndpointingDelay: 200
       }
     });
   }

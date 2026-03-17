@@ -17,7 +17,7 @@ export const livekitInferencePipeline: VoicePipelineStrategy = {
   async prewarm({ env, proc }) {
     if (env.AGENT_VOICE_PIPELINE !== 'livekit_inference') return;
     if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
-    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load();
+    proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 250 });
   },
   validate({ env, ctx }) {
     if (!env.CARTESIA_VOICE_ID?.trim()) {
@@ -51,9 +51,9 @@ export const livekitInferencePipeline: VoicePipelineStrategy = {
       voiceOptions: {
         maxToolSteps: 3,
         preemptiveGeneration: true,
-        minInterruptionDuration: 600,
+        minInterruptionDuration: 400,
         minInterruptionWords: 2,
-        minEndpointingDelay: 350
+        minEndpointingDelay: 200
       }
     });
   }
