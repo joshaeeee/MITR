@@ -233,6 +233,7 @@ Expected:
 - Some tools are intentionally async for fast voice latency.
 - In async cases, first response can be "pending" and detailed output comes in followup.
 - Satsang ambience is published as a separate LiveKit audio track by the backend.
+- Crazy Crazy
 
 ## Current Tool Surface
 `religious_retrieve`, `story_retrieve`, `memory_add`, `memory_get`, `reminder_create`, `reminder_list`, `news_retrieve`, `panchang_get`, `devotional_playlist_get`, `youtube_media_get`, `daily_briefing_get`, `diary_add`, `diary_list`, `flow_start`, `flow_next`, `flow_stop`, `pranayama_guide_get`, `brain_game_get`, `festival_context_get`, `medication_adherence_setup`
