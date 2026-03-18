@@ -179,3 +179,5 @@ pnpm stories:translate ../stories_curated.jsonl ./data/stories.hi.jsonl --target
 ```bash
 pnpm ingest:stories ./data/stories.hi.jsonl --chunk-size 1200 --chunk-overlap 150
 ```
+
+CI trigger: 2026-03-18 09:07:53 IST
