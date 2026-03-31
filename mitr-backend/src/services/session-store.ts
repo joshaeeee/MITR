@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { env } from '../config/env.js';
+import { sessionConfig } from '../config/session-config.js';
 import { getSharedRedisClient } from '../lib/redis.js';
 import { db } from '../db/client.js';
 import { userEventStream } from '../db/schema.js';
@@ -34,10 +34,6 @@ const historyKey = (sessionId: string): string => `session:${sessionId}:history`
 const userHistoryKey = (userId: string): string => `user:${userId}:history`;
 const userEventKey = (userId: string): string => `user:${userId}:events`;
 const userEventDedupKey = (userId: string, dedupeKey: string): string => `user:${userId}:events:dedupe:${dedupeKey}`;
-const USER_HISTORY_TTL_SEC = 60 * 60 * 24 * 30;
-const USER_HISTORY_MAX_TURNS = 300;
-const USER_EVENTS_TTL_SEC = 60 * 60 * 24 * 30;
-const USER_EVENTS_MAX = 200;
 
 export class SessionStore {
   private redis = getSharedRedisClient();
@@ -53,7 +49,7 @@ export class SessionStore {
     const payload: SessionRecord = { userId, createdAt: now, lastActivityAt: now, profileAnswers };
 
     if (this.redis) {
-      await this.redis.setex(sessionKey(sessionId), env.DEVICE_TOKEN_TTL_SEC, JSON.stringify(payload));
+      await this.redis.setex(sessionKey(sessionId), sessionConfig.deviceTokenTtlSec, JSON.stringify(payload));
       return sessionId;
     }
 
@@ -76,7 +72,7 @@ export class SessionStore {
 
     const updated: SessionRecord = { ...current, lastActivityAt: Date.now() };
     if (this.redis) {
-      await this.redis.setex(sessionKey(sessionId), env.DEVICE_TOKEN_TTL_SEC, JSON.stringify(updated));
+      await this.redis.setex(sessionKey(sessionId), sessionConfig.deviceTokenTtlSec, JSON.stringify(updated));
       return;
     }
 
@@ -94,7 +90,7 @@ export class SessionStore {
     };
 
     if (this.redis) {
-      await this.redis.setex(sessionKey(sessionId), Math.min(env.DEVICE_TOKEN_TTL_SEC, 3600), JSON.stringify(updated));
+      await this.redis.setex(sessionKey(sessionId), sessionConfig.terminatedSessionTtlSec, JSON.stringify(updated));
       await this.redis.del(historyKey(sessionId));
       return;
     }
@@ -106,7 +102,7 @@ export class SessionStore {
   async appendTurn(sessionId: string, turn: SessionTurn): Promise<void> {
     if (this.redis) {
       await this.redis.rpush(historyKey(sessionId), JSON.stringify(turn));
-      await this.redis.expire(historyKey(sessionId), env.DEVICE_TOKEN_TTL_SEC);
+      await this.redis.expire(historyKey(sessionId), sessionConfig.deviceTokenTtlSec);
       return;
     }
 
@@ -137,19 +133,19 @@ export class SessionStore {
   async appendUserTurn(userId: string, turn: SessionTurn): Promise<void> {
     if (this.redis) {
       await this.redis.rpush(userHistoryKey(userId), JSON.stringify(turn));
-      await this.redis.ltrim(userHistoryKey(userId), -USER_HISTORY_MAX_TURNS, -1);
-      await this.redis.expire(userHistoryKey(userId), USER_HISTORY_TTL_SEC);
+      await this.redis.ltrim(userHistoryKey(userId), -sessionConfig.userHistoryMaxTurns, -1);
+      await this.redis.expire(userHistoryKey(userId), sessionConfig.userHistoryTtlSec);
       return;
     }
 
     const current = this.memoryUserHistory.get(userId) ?? [];
     current.push(turn);
-    this.memoryUserHistory.set(userId, current.slice(-USER_HISTORY_MAX_TURNS));
+    this.memoryUserHistory.set(userId, current.slice(-sessionConfig.userHistoryMaxTurns));
   }
 
   async getUserTurns(userId: string, limit = 15): Promise<SessionTurn[]> {
     if (this.redis) {
-      const start = Math.max(-limit, -USER_HISTORY_MAX_TURNS);
+      const start = Math.max(-limit, -sessionConfig.userHistoryMaxTurns);
       const rows = await this.redis.lrange(userHistoryKey(userId), start, -1);
       return rows
         .map((row) => {
@@ -180,7 +176,7 @@ export class SessionStore {
 
     if (this.redis) {
       if (dedupeKey) {
-        const dedupe = await this.redis.set(userEventDedupKey(userId, dedupeKey), '1', 'EX', USER_EVENTS_TTL_SEC, 'NX');
+        const dedupe = await this.redis.set(userEventDedupKey(userId, dedupeKey), '1', 'EX', sessionConfig.userEventsTtlSec, 'NX');
         if (dedupe !== 'OK') return false;
       }
     } else if (dedupeKey) {
@@ -199,13 +195,13 @@ export class SessionStore {
 
     if (this.redis) {
       await this.redis.rpush(userEventKey(userId), JSON.stringify(eventRecord));
-      await this.redis.ltrim(userEventKey(userId), -USER_EVENTS_MAX, -1);
-      await this.redis.expire(userEventKey(userId), USER_EVENTS_TTL_SEC);
+      await this.redis.ltrim(userEventKey(userId), -sessionConfig.userEventsMax, -1);
+      await this.redis.expire(userEventKey(userId), sessionConfig.userEventsTtlSec);
     }
 
     const current = this.memoryUserEvents.get(userId) ?? [];
     current.push(eventRecord);
-    this.memoryUserEvents.set(userId, current.slice(-USER_EVENTS_MAX));
+    this.memoryUserEvents.set(userId, current.slice(-sessionConfig.userEventsMax));
     return true;
   }
 
@@ -222,7 +218,7 @@ export class SessionStore {
   ): Promise<UserEventRecord[]> {
     const limit = options.limit ?? 20;
     const afterEventId = options.afterEventId;
-    const safeLimit = Math.max(1, Math.min(limit, USER_EVENTS_MAX));
+    const safeLimit = Math.max(1, Math.min(limit, sessionConfig.userEventsMax));
 
     let minCreatedAt: Date | null = null;
     if (afterEventId) {
@@ -245,7 +241,7 @@ export class SessionStore {
           : eq(userEventStream.userId, userId)
       )
       .orderBy(asc(userEventStream.createdAt), asc(userEventStream.id))
-      .limit(USER_EVENTS_MAX);
+      .limit(sessionConfig.userEventsMax);
 
     const mapped = rows.map((row) => ({
       id: row.id,

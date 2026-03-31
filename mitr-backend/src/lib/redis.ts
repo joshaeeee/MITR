@@ -1,5 +1,5 @@
 import { Redis } from 'ioredis';
-import { env } from '../config/env.js';
+import { infrastructureConfig } from '../config/infrastructure-config.js';
 
 let sharedRedisClient: Redis | null = null;
 let sharedBullRedisClient: Redis | null = null;
@@ -8,16 +8,16 @@ const buildRedisClient = (url: string, maxRetriesPerRequest: number | null): Red
   new Redis(url, { maxRetriesPerRequest });
 
 export const getSharedRedisClient = (): Redis | null => {
-  if (!env.REDIS_URL) return null;
+  if (!infrastructureConfig.redisUrl) return null;
   if (!sharedRedisClient) {
-    sharedRedisClient = buildRedisClient(env.REDIS_URL, 2);
+    sharedRedisClient = buildRedisClient(infrastructureConfig.redisUrl, 2);
   }
   return sharedRedisClient;
 };
 
 export const getSharedBullRedisClient = (): Redis => {
   if (!sharedBullRedisClient) {
-    sharedBullRedisClient = buildRedisClient(env.REDIS_URL ?? 'redis://localhost:6379', null);
+    sharedBullRedisClient = buildRedisClient(infrastructureConfig.redisUrl ?? 'redis://localhost:6379', null);
   }
   return sharedBullRedisClient;
 };

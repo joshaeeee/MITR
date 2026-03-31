@@ -19,9 +19,11 @@
     "start:insights-worker": "node dist/src/workers/insights-worker.js",
     "start:digest-worker": "node dist/src/workers/digest-worker.js",
     "test:agent": "tsx scripts/test-agent-tools.ts",
-    "test:unit": "tsx --test src/agent-worker/async-followup-manager.test.ts src/services/reminders/reminder-time.test.ts src/services/companion/satsang-ledger.test.ts src/services/insights/insights-scoring.test.ts src/services/insights/daily-digest-service.test.ts",
+    "test:unit": "node --import ./node_modules/tsx/dist/loader.mjs --test src/agent-worker/async-followup-manager.test.ts src/services/reminders/reminder-time.test.ts src/services/companion/satsang-ledger.test.ts src/services/insights/insights-scoring.test.ts src/services/insights/daily-digest-service.test.ts src/services/family/device-usage-summary.test.ts",
     "test:web": "tsx tools/web-sim/server.ts",
     "test:latency": "tsx scripts/test-latency.ts",
+    "smoke:health": "tsx scripts/smoke-health.ts",
+    "esp32:output-token": "tsx scripts/mint-livekit-output-token.ts",
     "ingest:religious": "tsx scripts/ingest-religious-corpus.ts",
     "stories:translate": "tsx scripts/translate-stories-sarvam.ts",
     "ingest:stories": "tsx scripts/ingest-stories-corpus.ts",
@@ -52,6 +54,7 @@
     "livekit-server-sdk": "^2.15.0",
     "pg": "^8.13.3",
     "uuid": "^11.1.0",
+    "ws": "^8.19.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {

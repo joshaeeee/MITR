@@ -13,6 +13,13 @@ export type ReminderJobPayload = {
   language?: string;
 };
 
+const getQueue = (): Queue<ReminderJobPayload> => {
+  if (!reminderQueue) {
+    reminderQueue = new Queue<ReminderJobPayload>(REMINDER_QUEUE, { connection: getSharedBullRedisClient() });
+  }
+  return reminderQueue;
+};
+
 export const scheduleReminderJob = async (
   payload: ReminderJobPayload,
   delayMs: number,
@@ -27,11 +34,7 @@ export const scheduleReminderJob = async (
     });
   }
 
-  if (!reminderQueue) {
-    reminderQueue = new Queue<ReminderJobPayload>(REMINDER_QUEUE, { connection: getSharedBullRedisClient() });
-  }
-
-  await reminderQueue.add('reminder.fire', payload, {
+  await getQueue().add('reminder.fire', payload, {
     delay: normalizedDelay,
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 },
@@ -54,6 +57,23 @@ export const createReminderWorker = (
     reminderWorkers.delete(worker);
   });
   return worker;
+};
+
+export const getReminderQueueHealth = async (): Promise<{
+  waiting: number;
+  active: number;
+  delayed: number;
+  failed: number;
+  completed: number;
+}> => {
+  const counts = await getQueue().getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed');
+  return {
+    waiting: counts.waiting ?? 0,
+    active: counts.active ?? 0,
+    delayed: counts.delayed ?? 0,
+    failed: counts.failed ?? 0,
+    completed: counts.completed ?? 0
+  };
 };
 
 export const closeReminderQueue = async (): Promise<void> => {

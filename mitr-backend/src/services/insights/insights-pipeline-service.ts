@@ -3,6 +3,7 @@ import { db } from '../../db/client.js';
 import {
   concernSignals,
   insightCheckins,
+  insightDailyDigests,
   insightDailyScores,
   insightEvidenceSpans,
   insightModelVersions,
@@ -946,6 +947,34 @@ export class InsightsReadService {
     }));
   }
 
+  async updateConcernStatus(
+    userId: string,
+    signalId: string,
+    status: 'reviewed' | 'resolved'
+  ): Promise<Record<string, unknown> | null> {
+    const elder = await this.repo.getElderByUser(userId);
+    if (!elder) return null;
+
+    const [updated] = await db
+      .update(concernSignals)
+      .set({ status })
+      .where(and(eq(concernSignals.id, signalId), eq(concernSignals.elderId, elder.id)))
+      .returning();
+
+    if (!updated) return null;
+
+    return {
+      id: updated.id,
+      elderId: updated.elderId,
+      type: updated.type,
+      severity: updated.severity,
+      confidence: updated.confidence,
+      message: updated.message,
+      status: updated.status,
+      createdAt: updated.createdAt.toISOString()
+    };
+  }
+
   async sessions(userId: string, cursor?: string): Promise<Record<string, unknown>> {
     const elder = await this.repo.getElderByUser(userId);
     if (!elder) return { cursor: cursor ?? null, nextCursor: null, items: [] };
@@ -1007,15 +1036,53 @@ export class InsightsReadService {
   async pipelineHealth(userId: string): Promise<Record<string, unknown>> {
     const elder = await this.repo.getElderByUser(userId);
 
-    const runs = await db
-      .select()
-      .from(insightPipelineRuns)
-      .where(elder ? eq(insightPipelineRuns.elderId, elder.id) : sql`true`)
-      .orderBy(desc(insightPipelineRuns.startedAt))
-      .limit(20);
+    const [runs, transcriptStats, latestScore, latestDigest] = await Promise.all([
+      db
+        .select()
+        .from(insightPipelineRuns)
+        .where(elder ? eq(insightPipelineRuns.elderId, elder.id) : sql`true`)
+        .orderBy(desc(insightPipelineRuns.startedAt))
+        .limit(20),
+      db
+        .select({
+          transcriptCount: sql<number>`count(*)`,
+          latestTranscriptAt: sql<Date | null>`max(${userInputTranscripts.createdAt})`
+        })
+        .from(userInputTranscripts)
+        .where(eq(userInputTranscripts.userId, userId))
+        .then((rows) => rows[0] ?? { transcriptCount: 0, latestTranscriptAt: null }),
+      elder
+        ? db
+            .select({ lastComputedAt: insightDailyScores.lastComputedAt })
+            .from(insightDailyScores)
+            .where(eq(insightDailyScores.elderId, elder.id))
+            .orderBy(desc(insightDailyScores.lastComputedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      elder
+        ? db
+            .select({
+              generatedAt: insightDailyDigests.generatedAt,
+              confidence: insightDailyDigests.confidence,
+              dataSufficiency: insightDailyDigests.dataSufficiency
+            })
+            .from(insightDailyDigests)
+            .where(eq(insightDailyDigests.elderId, elder.id))
+            .orderBy(desc(insightDailyDigests.generatedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null)
+    ]);
 
     return {
       elderId: elder?.id ?? null,
+      transcriptCount: Number(transcriptStats.transcriptCount ?? 0),
+      latestTranscriptAt: transcriptStats.latestTranscriptAt?.toISOString() ?? null,
+      latestScoreComputedAt: latestScore?.lastComputedAt?.toISOString() ?? null,
+      latestDigestGeneratedAt: latestDigest?.generatedAt?.toISOString() ?? null,
+      latestDigestConfidence: latestDigest?.confidence ?? null,
+      latestDigestDataSufficiency: latestDigest?.dataSufficiency ?? null,
       recentRuns: runs.map((run) => ({
         id: run.id,
         status: run.status,

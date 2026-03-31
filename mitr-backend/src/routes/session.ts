@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { AccessToken, VideoGrant } from 'livekit-server-sdk';
 import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
-import { env } from '../config/env.js';
+import { getRequiredLivekitConfig } from '../config/livekit-config.js';
 import { SessionStore } from '../services/session-store.js';
 import { ProfileService } from '../services/profile/profile-service.js';
 import { latencyTracker } from '../services/latency-tracker.js';
@@ -11,6 +11,8 @@ import { SessionDirectorService } from '../services/long-session/session-directo
 import { longSessionMetrics } from '../services/long-session/long-session-metrics.js';
 import { requireAuth } from '../services/auth/auth-middleware.js';
 import type { AuthService } from '../services/auth/auth-service.js';
+import { logger } from '../lib/logger.js';
+import { getApiHealthStatus } from '../services/health/health-status.js';
 
 const sessionStartSchema = z.object({
   userId: z.string().min(1).optional()
@@ -142,7 +144,8 @@ export const registerSessionRoutes = (
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
-    if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
+    const livekit = getRequiredLivekitConfig();
+    if (!livekit) {
       return reply.status(500).send({
         error: 'LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.'
       });
@@ -153,9 +156,9 @@ export const registerSessionRoutes = (
     const roomName = buildRoomName(userId, parsed.data.roomName);
     const identity = parsed.data.participantName?.trim() || `user-${slug(userId)}-${Math.floor(Math.random() * 10_000)}`;
 
-    const at = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
+    const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
       identity,
-      ttl: env.LIVEKIT_TOKEN_TTL_SEC
+      ttl: livekit.tokenTtlSec
     });
 
     const videoGrant: VideoGrant = {
@@ -177,7 +180,7 @@ export const registerSessionRoutes = (
     at.roomConfig = new RoomConfiguration({
       agents: [
         new RoomAgentDispatch({
-          agentName: env.LIVEKIT_AGENT_NAME,
+          agentName: livekit.agentName,
           metadata: JSON.stringify(dispatchMetadata)
         })
       ]
@@ -185,11 +188,11 @@ export const registerSessionRoutes = (
 
     const participantToken = await at.toJwt();
     return reply.send({
-      serverUrl: env.LIVEKIT_URL,
+      serverUrl: livekit.url,
       participantToken,
       roomName,
       identity,
-      agentName: env.LIVEKIT_AGENT_NAME
+      agentName: livekit.agentName
     });
   });
 
@@ -213,8 +216,18 @@ export const registerSessionRoutes = (
     return reply.send({ ok: true, profile: profile.answers });
   });
 
-  app.get('/healthz', async (_request, reply) => {
-    return reply.send({ ok: true, service: 'mitr-api' });
+  app.get('/healthz', async (request, reply) => {
+    const health = await getApiHealthStatus();
+    if (!health.ok) {
+      logger.warn('API health degraded', {
+        requestId: request.id,
+        dependencies: health.dependencies
+      });
+    }
+    return reply.status(health.ok ? 200 : 503).send({
+      requestId: request.id,
+      ...health
+    });
   });
 
   app.get('/health/latency', async (_request, reply) => {

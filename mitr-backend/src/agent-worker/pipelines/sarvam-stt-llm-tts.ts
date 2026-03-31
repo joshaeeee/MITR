@@ -2,6 +2,11 @@ import { voice } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as sarvam from '@livekit/agents-plugin-sarvam';
 import * as silero from '@livekit/agents-plugin-silero';
+import {
+  getOpenRouterConfig,
+  getSarvamSpeechConfig,
+  isSelectedVoicePipeline
+} from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
 import {
   normalizeSarvamLanguageCode,
@@ -14,17 +19,19 @@ import {
 export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
   id: 'sarvam_stt_llm_tts',
   async prewarm({ env, proc }) {
-    if (env.AGENT_VOICE_PIPELINE !== 'sarvam_stt_llm_tts') return;
+    if (!isSelectedVoicePipeline(env, 'sarvam_stt_llm_tts')) return;
     if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
     // Reduce silence threshold from default 550ms → 400ms: fires END_OF_SPEECH sooner,
     // cutting ~150ms off every turn in vad turn-detection mode.
     proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 250 });
   },
   validate({ env, ctx }) {
-    if (!env.OPENROUTER_API_KEY) {
+    const openRouter = getOpenRouterConfig(env);
+    const sarvamConfig = getSarvamSpeechConfig(env);
+    if (!openRouter.apiKey) {
       throw new Error('OPENROUTER_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
     }
-    if (!env.SARVAM_API_KEY) {
+    if (!sarvamConfig.apiKey) {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=sarvam_stt_llm_tts');
     }
     if (!ctx.proc.userData[SILERO_VAD_USERDATA_KEY]) {
@@ -34,30 +41,32 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
     }
   },
   createSession({ env, logger, language, ctx }) {
-    const ttsModel = normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL, logger);
-    const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, env.SARVAM_TTS_SPEAKER, logger);
-    const sarvamNonStreamingStt = !env.SARVAM_STT_STREAMING;
+    const openRouter = getOpenRouterConfig(env);
+    const sarvamConfig = getSarvamSpeechConfig(env);
+    const ttsModel = normalizeSarvamTtsModel(sarvamConfig.ttsModel, logger);
+    const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, sarvamConfig.ttsSpeaker, logger);
+    const sarvamNonStreamingStt = !sarvamConfig.sttStreaming;
     const prewarmedVad = ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined;
 
     return new voice.AgentSession({
       turnDetection: sarvamNonStreamingStt ? 'vad' : 'stt',
       vad: prewarmedVad,
       stt: new sarvam.STT({
-        model: env.SARVAM_STT_MODEL as sarvam.STTModels,
+        model: sarvamConfig.sttModel,
         languageCode: normalizeSarvamLanguageCode(language),
-        mode: env.SARVAM_STT_MODE as sarvam.STTModes,
-        streaming: env.SARVAM_STT_STREAMING
+        mode: sarvamConfig.sttMode,
+        streaming: sarvamConfig.sttStreaming
       }),
       llm: new openai.LLM({
-        model: env.OPENROUTER_MODEL,
-        apiKey: env.OPENROUTER_API_KEY,
-        baseURL: env.OPENROUTER_BASE_URL
+        model: openRouter.model,
+        apiKey: openRouter.apiKey,
+        baseURL: openRouter.baseUrl
       }),
       tts: new sarvam.TTS({
         model: ttsModel,
         speaker: ttsSpeaker,
         targetLanguageCode: normalizeSarvamTtsLanguageCode(language, logger),
-        streaming: env.SARVAM_TTS_STREAMING
+        streaming: sarvamConfig.ttsStreaming
       }),
       voiceOptions: {
         maxToolSteps: 3,

@@ -1,6 +1,6 @@
 import { getInsightsQueueHealth } from './queue.js';
 import { getDigestQueueHealth } from './digest-queue.js';
-import { DailyDigestService } from './daily-digest-service.js';
+import { DailyDigestService, isInsufficientConfidence } from './daily-digest-service.js';
 import { InsightsPipelineService, InsightsReadService } from './insights-pipeline-service.js';
 import {
   RecommendationFeedbackService,
@@ -27,6 +27,14 @@ export class InsightsService {
 
   async concerns(userId: string, status: 'open' | 'all') {
     return this.read.concerns(userId, status);
+  }
+
+  async markConcernReviewed(userId: string, signalId: string) {
+    return this.read.updateConcernStatus(userId, signalId, 'reviewed');
+  }
+
+  async resolveConcern(userId: string, signalId: string) {
+    return this.read.updateConcernStatus(userId, signalId, 'resolved');
   }
 
   async sessions(userId: string, cursor?: string) {
@@ -127,8 +135,42 @@ export class InsightsService {
         completed: 0
       }))
     ]);
+    const transcriptCount = Number(readHealth.transcriptCount ?? 0);
+    const hasConversationData = transcriptCount > 0;
+    const latestTranscriptAtMs = Date.parse(String(readHealth.latestTranscriptAt ?? ''));
+    const latestScoreComputedAtMs = Date.parse(String(readHealth.latestScoreComputedAt ?? ''));
+    const latestDigestGeneratedAtMs = Date.parse(String(readHealth.latestDigestGeneratedAt ?? ''));
+    const latestProcessedAtMs = Math.max(
+      Number.isFinite(latestScoreComputedAtMs) ? latestScoreComputedAtMs : 0,
+      Number.isFinite(latestDigestGeneratedAtMs) ? latestDigestGeneratedAtMs : 0
+    );
+    const queueBacklog =
+      queue.waiting + queue.active + queue.delayed + digestQueue.waiting + digestQueue.active + digestQueue.delayed > 0;
+    const insightsPending =
+      hasConversationData &&
+      (queueBacklog ||
+        latestProcessedAtMs === 0 ||
+        (Number.isFinite(latestTranscriptAtMs) && latestTranscriptAtMs > latestProcessedAtMs));
+    const lowConfidence =
+      Number.isFinite(Number(readHealth.latestDigestConfidence)) &&
+      Number.isFinite(Number(readHealth.latestDigestDataSufficiency)) &&
+      isInsufficientConfidence(
+        Number(readHealth.latestDigestConfidence),
+        Number(readHealth.latestDigestDataSufficiency)
+      );
+    const processingState = !hasConversationData
+      ? 'no_conversations'
+      : insightsPending
+        ? 'processing_pending'
+        : lowConfidence
+          ? 'low_confidence'
+          : 'ready';
+
     return {
       ...readHealth,
+      hasConversationData,
+      insightsPending,
+      processingState,
       queue,
       digestQueue
     };

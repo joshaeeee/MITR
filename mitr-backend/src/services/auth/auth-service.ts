@@ -2,7 +2,7 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { and, eq, gt, isNull, or } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { authIdentities, authPasswords, authSessions, otpChallenges, users } from '../../db/schema.js';
-import { env } from '../../config/env.js';
+import { authConfig } from '../../config/auth-config.js';
 import { logger } from '../../lib/logger.js';
 
 export interface AuthUser {
@@ -236,8 +236,8 @@ export class AuthService {
 
   private async issueSessionForUser(user: AuthUser): Promise<SessionPair> {
     const createdAt = now();
-    const accessExpiresAt = createdAt + env.AUTH_SESSION_TTL_SEC * 1000;
-    const refreshExpiresAt = createdAt + env.AUTH_REFRESH_TTL_SEC * 1000;
+    const accessExpiresAt = createdAt + authConfig.sessionTtlSec * 1000;
+    const refreshExpiresAt = createdAt + authConfig.refreshTtlSec * 1000;
     const accessToken = token();
     const refreshToken = token();
 
@@ -255,7 +255,7 @@ export class AuthService {
   async startOtp(phone: string): Promise<{ challengeId: string; expiresAt: number; devOtpCode?: string }> {
     const challengeId = randomUUID();
     const code = generateCode();
-    const expiresAt = now() + env.AUTH_OTP_TTL_SEC * 1000;
+    const expiresAt = now() + authConfig.otpTtlSec * 1000;
 
     await db.insert(otpChallenges).values({
       id: challengeId,
@@ -272,7 +272,7 @@ export class AuthService {
     return {
       challengeId,
       expiresAt,
-      devOtpCode: env.AUTH_DEV_OTP_BYPASS ? code : undefined
+      devOtpCode: authConfig.devOtpBypassEnabled ? code : undefined
     };
   }
 
@@ -294,7 +294,7 @@ export class AuthService {
 
     const supplied = hashOtpCode(input.code);
     const expected = challenge.codeHash;
-    const bypass = env.AUTH_DEV_OTP_BYPASS && input.code === env.AUTH_DEV_OTP_CODE;
+    const bypass = authConfig.devOtpBypassEnabled && input.code === authConfig.devOtpCode;
     if (!bypass) {
       const suppliedBuffer = Buffer.from(supplied, 'hex');
       const expectedBuffer = Buffer.from(expected, 'hex');

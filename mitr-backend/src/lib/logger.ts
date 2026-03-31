@@ -1,3 +1,5 @@
+import { observabilityConfig } from '../config/observability-config.js';
+
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 const order: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
@@ -5,7 +7,7 @@ const isLogLevel = (value: unknown): value is LogLevel =>
   typeof value === 'string' && value in order;
 
 const shouldLog = (level: LogLevel): boolean => {
-  const configured = process.env.LOG_LEVEL;
+  const configured = observabilityConfig.logLevel;
   const threshold = isLogLevel(configured) ? configured : 'info';
   return order[level] >= order[threshold];
 };

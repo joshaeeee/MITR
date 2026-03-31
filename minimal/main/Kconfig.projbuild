@@ -1,0 +1,40 @@
+menu "ESP32 Audio Bridge"
+    config AUDIO_BRIDGE_URI
+        string "Bridge WebSocket URI"
+        default "ws://192.168.1.100:8787/esp32-audio"
+        help
+            WebSocket bridge endpoint exposed by the MITR web simulator.
+
+    config AUDIO_BRIDGE_ROOM
+        string "Bridge room name"
+        default "mitr-esp32-test"
+        help
+            Must match the room name used in the web simulator so the bridge
+            routes the agent audio to this device.
+
+    config AUDIO_BRIDGE_SAMPLE_RATE
+        int "Playback sample rate"
+        default 16000
+        range 8000 48000
+        help
+            PCM sample rate expected from the browser audio bridge.
+
+    config AUDIO_BRIDGE_RINGBUF_BYTES
+        int "Audio ring buffer size (bytes)"
+        default 65536
+        range 8192 262144
+        help
+            Larger values reduce underruns at the cost of more latency.
+
+    config AUDIO_BRIDGE_I2S_BCLK
+        int "I2S BCLK GPIO"
+        default 14
+
+    config AUDIO_BRIDGE_I2S_WS
+        int "I2S WS/LRC GPIO"
+        default 12
+
+    config AUDIO_BRIDGE_I2S_DOUT
+        int "I2S DOUT GPIO"
+        default 13
+endmenu

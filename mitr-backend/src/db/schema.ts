@@ -157,6 +157,23 @@ export const elderDevices = pgTable('elder_devices', {
   elderIdx: uniqueIndex('elder_devices_elder_uq').on(table.elderId)
 }));
 
+export const elderDeviceUsageSessions = pgTable('elder_device_usage_sessions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  sessionId: text('session_id').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }).notNull(),
+  durationSec: integer('duration_sec').notNull(),
+  usageSummaryJson: jsonb('usage_summary_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  sessionIdUq: uniqueIndex('elder_device_usage_sessions_session_uq').on(table.sessionId),
+  elderStartedIdx: index('elder_device_usage_sessions_elder_started_idx').on(table.elderId, table.startedAt),
+  elderEndedIdx: index('elder_device_usage_sessions_elder_ended_idx').on(table.elderId, table.endedAt)
+}));
+
 export const nudges = pgTable('nudges', {
   id: uuid('id').defaultRandom().primaryKey(),
   elderId: uuid('elder_id').notNull(),
@@ -201,7 +218,7 @@ export const concernSignals = pgTable('concern_signals', {
   severity: text('severity').$type<'low' | 'medium' | 'high' | 'critical'>().notNull(),
   confidence: text('confidence').$type<'low' | 'medium' | 'high'>().notNull(),
   message: text('message').notNull(),
-  status: text('status').$type<'open' | 'resolved'>().default('open').notNull(),
+  status: text('status').$type<'open' | 'reviewed' | 'resolved'>().default('open').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 });
 
@@ -268,6 +285,27 @@ export const careReminders = pgTable('care_reminders', {
   enabled: boolean('enabled').default(true).notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
+
+export const carePlanItems = pgTable('care_plan_items', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  section: text('section')
+    .$type<'medicines' | 'repeated_reminders' | 'one_off_plans' | 'important_dates'>()
+    .notNull(),
+  type: text('type').$type<'medicine' | 'reminder' | 'plan' | 'date'>().notNull(),
+  title: text('title').notNull(),
+  description: text('description'),
+  enabled: boolean('enabled').default(true).notNull(),
+  scheduledAt: text('scheduled_at'),
+  repeatRule: text('repeat_rule'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+  sortOrder: integer('sort_order').default(0).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderSectionSortIdx: index('care_plan_items_elder_section_sort_idx').on(table.elderId, table.section, table.sortOrder),
+  elderCreatedIdx: index('care_plan_items_elder_created_idx').on(table.elderId, table.createdAt)
+}));
 
 export const auditEvents = pgTable('audit_events', {
   id: uuid('id').defaultRandom().primaryKey(),

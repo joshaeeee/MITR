@@ -1,3 +1,4 @@
+import { getSelectedVoicePipeline } from '../../config/voice-pipeline-config.js';
 import type { PipelineContext, PipelinePrewarmContext, VoicePipelineStrategy } from './types.js';
 import { geminiRealtimePipeline } from './gemini-realtime.js';
 import { geminiRealtimeTextCartesiaTtsPipeline } from './gemini-realtime-text-cartesia-tts.js';
@@ -22,16 +23,16 @@ export const getVoicePipeline = (
 ): VoicePipelineStrategy => PIPELINES[pipelineId];
 
 export const prewarmVoicePipeline = async (input: PipelinePrewarmContext): Promise<void> => {
-  const pipeline = getVoicePipeline(input.env.AGENT_VOICE_PIPELINE);
+  const pipeline = getVoicePipeline(getSelectedVoicePipeline(input.env));
   await pipeline.prewarm?.(input);
 };
 
 export const validateVoicePipeline = (input: PipelineContext): void => {
-  const pipeline = getVoicePipeline(input.env.AGENT_VOICE_PIPELINE);
+  const pipeline = getVoicePipeline(getSelectedVoicePipeline(input.env));
   pipeline.validate(input);
 };
 
 export const createVoiceSession = (input: PipelineContext) => {
-  const pipeline = getVoicePipeline(input.env.AGENT_VOICE_PIPELINE);
+  const pipeline = getVoicePipeline(getSelectedVoicePipeline(input.env));
   return pipeline.createSession(input);
 };

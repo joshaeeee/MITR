@@ -39,6 +39,10 @@ const recommendationIdParamsSchema = z.object({
   id: z.string().min(1)
 });
 
+const concernIdParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
 const recommendationFeedbackBodySchema = z.object({
   action: z.enum(['accepted', 'dismissed', 'completed']),
   notes: z.string().max(1200).optional()
@@ -100,6 +104,22 @@ export const registerInsightsRoutes = (app: FastifyInstance, auth: AuthService):
     const parsed = concernsQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
     return reply.send({ items: await insights.concerns(request.auth!.user.id, parsed.data.status) });
+  });
+
+  app.post('/insights/concerns/:id/review', { preHandler: guard }, async (request, reply) => {
+    const params = concernIdParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    const item = await insights.markConcernReviewed(request.auth!.user.id, params.data.id);
+    if (!item) return reply.status(404).send({ error: 'Concern not found' });
+    return reply.send({ item });
+  });
+
+  app.post('/insights/concerns/:id/resolve', { preHandler: guard }, async (request, reply) => {
+    const params = concernIdParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    const item = await insights.resolveConcern(request.auth!.user.id, params.data.id);
+    if (!item) return reply.status(404).send({ error: 'Concern not found' });
+    return reply.send({ item });
   });
 
   app.get('/insights/sessions', { preHandler: guard }, async (request, reply) => {

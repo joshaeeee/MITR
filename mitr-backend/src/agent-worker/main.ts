@@ -22,7 +22,13 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import {
+  isSatsangAmbienceEnabled,
+  shouldIgnoreLegacyAsyncAlias
+} from '../config/agent-worker-config.js';
 import { env, validateEnv } from '../config/env.js';
+import { livekitConfig } from '../config/livekit-config.js';
+import { getSelectedVoicePipeline } from '../config/voice-pipeline-config.js';
 import { logger } from '../lib/logger.js';
 import { ReligiousRetriever } from '../services/retrieval/religious-retriever.js';
 import { Mem0Service } from '../services/memory/mem0-service.js';
@@ -37,6 +43,7 @@ import { PanchangService } from '../services/panchang/panchang-service.js';
 import { WebSearchService } from '../services/web/web-search-service.js';
 import { ConversationService } from '../services/conversations/conversation-service.js';
 import { UserTranscriptService } from '../services/conversations/user-transcript-service.js';
+import { getFamilyRepository } from '../services/family/family-repository.js';
 import { NudgesService } from '../services/nudges/nudges-service.js';
 import { latencyTracker } from '../services/latency-tracker.js';
 import {
@@ -652,6 +659,9 @@ export default defineAgent({
     const participantIdentity = (ctx.job as { participant?: { identity?: string } }).participant?.identity;
     const userId = metadata.user_id ?? participantIdentity ?? 'anonymous-user';
     const language = metadata.language ?? 'hi-IN';
+    const familyRepo = getFamilyRepository();
+    const sessionStartedAt = Date.now();
+    const selectedVoicePipeline = getSelectedVoicePipeline(env);
     validateVoicePipeline({
       env,
       logger,
@@ -1207,7 +1217,7 @@ export default defineAgent({
 
       const isLegacyAsyncAlias =
         payload.type.endsWith('_ready') || payload.type.endsWith('_failed');
-      if (env.ASYNC_TOOL_RUNTIME_V2 && isLegacyAsyncAlias && !payload.type.startsWith('tool_async_')) {
+      if (shouldIgnoreLegacyAsyncAlias(env, payload.type, isLegacyAsyncAlias)) {
         return;
       }
 
@@ -1367,7 +1377,7 @@ export default defineAgent({
     };
 
     const startSatsangAmbience = async () => {
-      if (!env.SATSANG_AMBIENCE_ENABLED) return;
+      if (!isSatsangAmbienceEnabled(env)) return;
       if (!satsangAmbiencePublisher) return;
       try {
         await satsangAmbiencePublisher.start();
@@ -1510,7 +1520,7 @@ export default defineAgent({
         userId,
         language,
         profileAnswers: metadata.profile_answers ?? null,
-        voicePipeline: env.AGENT_VOICE_PIPELINE
+        voicePipeline: selectedVoicePipeline
       }),
       tools: toolMap as Record<string, any>
     });
@@ -1523,7 +1533,7 @@ export default defineAgent({
     });
     logger.info('Voice pipeline selected', {
       sessionId,
-      pipeline: env.AGENT_VOICE_PIPELINE,
+      pipeline: selectedVoicePipeline,
       language
     });
     sessionRef = session;
@@ -1850,6 +1860,27 @@ export default defineAgent({
       }
       sessionRef = null;
       clearAutoFlow();
+      void familyRepo
+        .recordDeviceUsageSession(userId, {
+          sessionId,
+          startedAt: sessionStartedAt,
+          endedAt: event.createdAt,
+          usageSummaryJson: {
+            usage: usageCollector.getSummary(),
+            sessionReason: event.reason,
+            language,
+            pipeline: selectedVoicePipeline,
+            roomName
+          },
+          sessionReason: event.reason
+        })
+        .catch((error) => {
+          logger.warn('Failed to persist device usage session', {
+            sessionId,
+            userId,
+            error: (error as Error).message
+          });
+        });
       logger.info('Agent session closed', {
         sessionId,
         reason: event.reason,
@@ -1904,6 +1935,6 @@ validateEnv();
 cli.runApp(
   new ServerOptions({
     agent: fileURLToPath(import.meta.url),
-    agentName: env.LIVEKIT_AGENT_NAME
+    agentName: livekitConfig.agentName
   })
 );

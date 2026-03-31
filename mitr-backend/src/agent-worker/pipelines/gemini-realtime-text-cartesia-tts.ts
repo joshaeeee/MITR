@@ -2,6 +2,7 @@ import { Modality } from '@google/genai';
 import { voice } from '@livekit/agents';
 import * as cartesia from '@livekit/agents-plugin-cartesia';
 import * as google from '@livekit/agents-plugin-google';
+import { getCartesiaConfig, getGoogleRealtimeConfig } from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
 import { normalizeGoogleRealtimeModel } from './utils.js';
 
@@ -33,15 +34,19 @@ const resolveGoogleRealtimeModel = (
 export const geminiRealtimeTextCartesiaTtsPipeline: VoicePipelineStrategy = {
   id: 'gemini_realtime_text_cartesia_tts',
   validate({ env }) {
-    if (!env.GOOGLE_API_KEY) {
+    const googleConfig = getGoogleRealtimeConfig(env);
+    const cartesiaConfig = getCartesiaConfig(env);
+    if (!googleConfig.apiKey) {
       throw new Error('GOOGLE_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_cartesia_tts');
     }
-    if (!env.CARTESIA_API_KEY) {
+    if (!cartesiaConfig.apiKey) {
       throw new Error('CARTESIA_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_cartesia_tts');
     }
   },
   createSession({ env, logger }) {
-    const model = resolveGoogleRealtimeModel(env.GOOGLE_REALTIME_MODEL, logger);
+    const googleConfig = getGoogleRealtimeConfig(env);
+    const cartesiaConfig = getCartesiaConfig(env);
+    const model = resolveGoogleRealtimeModel(googleConfig.model, logger);
 
     return new voice.AgentSession({
       llm: new google.beta.realtime.RealtimeModel({
@@ -49,12 +54,12 @@ export const geminiRealtimeTextCartesiaTtsPipeline: VoicePipelineStrategy = {
         modalities: [Modality.TEXT]
       }),
       tts: new cartesia.TTS({
-        model: env.CARTESIA_MODEL,
-        voice: env.CARTESIA_VOICE_ID,
-        language: env.CARTESIA_LANGUAGE,
-        apiKey: env.CARTESIA_API_KEY,
-        baseUrl: env.CARTESIA_BASE_URL,
-        chunkTimeout: env.CARTESIA_CHUNK_TIMEOUT_MS
+        model: cartesiaConfig.model,
+        voice: cartesiaConfig.voiceId,
+        language: cartesiaConfig.language,
+        apiKey: cartesiaConfig.apiKey,
+        baseUrl: cartesiaConfig.baseUrl,
+        chunkTimeout: cartesiaConfig.chunkTimeoutMs
       }),
       voiceOptions: {
         maxToolSteps: 3,

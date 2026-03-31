@@ -50,6 +50,20 @@
       "when": 1772329800000,
       "tag": "0006_daily_digest_and_feedback",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1773810616365,
+      "tag": "0007_elder_device_usage_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1773810617000,
+      "tag": "0008_care_plan_items",
+      "breakpoints": true
     }
   ]
 }

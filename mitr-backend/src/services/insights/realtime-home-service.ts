@@ -12,6 +12,9 @@ export class RealtimeHomeService {
       confidence: digest.confidence,
       dataSufficiency: digest.dataSufficiency,
       insufficientConfidence: digest.insufficientConfidence,
+      hasConversationData: digest.hasConversationData,
+      insightsPending: digest.insightsPending,
+      insightState: digest.insightState,
       topConcern: digest.topConcern,
       recommendedAction: digest.recommendedAction,
       lastComputedAt: digest.lastComputedAt

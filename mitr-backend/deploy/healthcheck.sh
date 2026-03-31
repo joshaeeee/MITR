@@ -23,4 +23,6 @@ while (( SECONDS < deadline )); do
 done
 
 echo "[healthcheck] FAILED after ${MAX_WAIT_SECONDS}s"
+echo "[healthcheck] last /healthz payload:"
+curl -sS --max-time 5 "${BASE_URL}/healthz" || true
 exit 1

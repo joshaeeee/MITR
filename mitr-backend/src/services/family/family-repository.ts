@@ -3,9 +3,11 @@ import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   alerts,
+  carePlanItems,
   careReminders,
   careRoutines,
   concernSignals,
+  elderDeviceUsageSessions,
   elderDevices,
   elderProfiles,
   escalationPolicies,
@@ -16,8 +18,13 @@ import {
 } from '../../db/schema.js';
 import type {
   AlertStatus,
+  CarePlanItem,
+  CarePlanSection,
+  CarePlanSource,
+  CarePlanType,
   CareReminder,
   ConcernSignal,
+  DeviceUsageSummary,
   ElderProfile,
   ElderStatusSnapshot,
   EscalationPolicy,
@@ -26,6 +33,7 @@ import type {
   NudgeDeliveryState,
   NudgePriority
 } from './family-types.js';
+import { buildDeviceUsageSummary } from './device-usage-summary.js';
 
 export interface FamilyAccountRecord {
   id: string;
@@ -80,6 +88,48 @@ export interface RoutineRecord {
   updatedAt: number;
 }
 
+const CARE_SECTION_ORDER: Record<CarePlanSection, number> = {
+  medicines: 0,
+  repeated_reminders: 1,
+  one_off_plans: 2,
+  important_dates: 3
+};
+
+const MEDICINE_KEYWORDS = [/medicine/i, /medication/i, /tablet/i, /pill/i, /dose/i, /dosage/i, /capsule/i];
+const IMPORTANT_DATE_KEYWORDS = [/birthday/i, /anniversary/i, /date/i, /celebrat/i, /wedding/i];
+const ONE_OFF_KEYWORDS = [/appointment/i, /function/i, /event/i, /visit/i, /meeting/i, /trip/i, /check.?up/i, /party/i];
+
+const normalizeScheduleRank = (value?: string): number => {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const trimmed = value.trim();
+  const timeMatch = trimmed.match(/(\d{1,2}):(\d{2})/);
+  if (timeMatch) {
+    const hour = Number(timeMatch[1]);
+    const minute = Number(timeMatch[2]);
+    if (Number.isFinite(hour) && Number.isFinite(minute)) return hour * 60 + minute;
+  }
+
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) return Math.floor(dateMs / 60000);
+
+  return trimmed.toLowerCase().split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+};
+
+const inferSectionFromText = (title: string, description?: string): CarePlanSection => {
+  const hay = `${title} ${description ?? ''}`;
+  if (MEDICINE_KEYWORDS.some((pattern) => pattern.test(hay))) return 'medicines';
+  if (IMPORTANT_DATE_KEYWORDS.some((pattern) => pattern.test(hay))) return 'important_dates';
+  if (ONE_OFF_KEYWORDS.some((pattern) => pattern.test(hay))) return 'one_off_plans';
+  return 'repeated_reminders';
+};
+
+const inferTypeFromSection = (section: CarePlanSection): CarePlanType => {
+  if (section === 'medicines') return 'medicine';
+  if (section === 'one_off_plans') return 'plan';
+  if (section === 'important_dates') return 'date';
+  return 'reminder';
+};
+
 const toMillis = (value: Date | null | undefined): number | undefined => (value ? value.getTime() : undefined);
 
 const toFamilyAccount = (row: typeof familyAccounts.$inferSelect): FamilyAccountRecord => ({
@@ -119,6 +169,16 @@ const toDeviceRecord = (row: typeof elderDevices.$inferSelect): DeviceRecord => 
   linkedAt: row.linkedAt.getTime(),
   wifiConnected: row.wifiConnected,
   firmwareVersion: row.firmwareVersion ?? undefined
+});
+
+const toUsageSession = (row: typeof elderDeviceUsageSessions.$inferSelect): {
+  startedAt: Date;
+  endedAt: Date;
+  durationSec: number;
+} => ({
+  startedAt: row.startedAt,
+  endedAt: row.endedAt,
+  durationSec: row.durationSec
 });
 
 const toNudgeRecord = (row: typeof nudges.$inferSelect): NudgeRecord => ({
@@ -169,6 +229,68 @@ const toRoutineRecord = (row: typeof careRoutines.$inferSelect): RoutineRecord =
   updatedAt: row.updatedAt.getTime()
 });
 
+const toCarePlanItem = (row: typeof carePlanItems.$inferSelect): CarePlanItem => ({
+  id: row.id,
+  elderId: row.elderId,
+  section: row.section,
+  type: row.type,
+  title: row.title,
+  description: row.description ?? undefined,
+  enabled: row.enabled,
+  scheduledAt: row.scheduledAt ?? undefined,
+  repeatRule: row.repeatRule ?? undefined,
+  metadata: row.metadata ?? {},
+  sortOrder: row.sortOrder,
+  createdAt: row.createdAt.getTime(),
+  updatedAt: row.updatedAt.getTime(),
+  source: 'planner'
+});
+
+const toLegacyReminderCareItem = (row: typeof careReminders.$inferSelect): CarePlanItem => {
+  const section = inferSectionFromText(row.title, row.description ?? undefined);
+  return {
+    id: row.id,
+    elderId: row.elderId,
+    section,
+    type: inferTypeFromSection(section),
+    title: row.title,
+    description: row.description ?? undefined,
+    enabled: row.enabled,
+    scheduledAt: row.scheduledTime,
+    repeatRule: 'daily',
+    metadata: {
+      origin: 'legacy_reminder'
+    },
+    sortOrder: normalizeScheduleRank(row.scheduledTime),
+    createdAt: row.updatedAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
+    source: 'legacy_reminder'
+  };
+};
+
+const toLegacyRoutineCareItem = (row: typeof careRoutines.$inferSelect): CarePlanItem => {
+  const section = inferSectionFromText(row.title, row.key);
+  return {
+    id: row.id,
+    elderId: row.elderId,
+    section: section === 'important_dates' ? 'repeated_reminders' : section,
+    type: inferTypeFromSection(section === 'important_dates' ? 'repeated_reminders' : section),
+    title: row.title,
+    description: row.key,
+    enabled: row.enabled,
+    scheduledAt: row.schedule,
+    repeatRule: 'daily',
+    metadata: {
+      origin: 'legacy_routine',
+      key: row.key
+    },
+    sortOrder: normalizeScheduleRank(row.schedule),
+    createdAt: row.updatedAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
+    source: 'legacy_routine'
+  };
+};
+
 const toPolicy = (row: typeof escalationPolicies.$inferSelect): EscalationPolicy => ({
   elderId: row.elderId,
   quietHoursStart: row.quietHoursStart,
@@ -189,6 +311,19 @@ const toConcernSignal = (row: typeof concernSignals.$inferSelect): ConcernSignal
   message: row.message,
   createdAt: row.createdAt.getTime()
 });
+
+const compareCarePlanItems = (a: CarePlanItem, b: CarePlanItem): number => {
+  const sectionDiff = CARE_SECTION_ORDER[a.section] - CARE_SECTION_ORDER[b.section];
+  if (sectionDiff !== 0) return sectionDiff;
+
+  const sortDiff = a.sortOrder - b.sortOrder;
+  if (sortDiff !== 0) return sortDiff;
+
+  const scheduledDiff = normalizeScheduleRank(a.scheduledAt) - normalizeScheduleRank(b.scheduledAt);
+  if (scheduledDiff !== 0) return scheduledDiff;
+
+  return a.title.localeCompare(b.title);
+};
 
 export class FamilyRepository {
   async getOrCreateFamilyForOwner(userId: string): Promise<FamilyAccountRecord> {
@@ -392,14 +527,18 @@ export class FamilyRepository {
       ? await db.select().from(elderDevices).where(eq(elderDevices.elderId, elder.id)).limit(1)
       : [undefined];
     const device = deviceRow ? toDeviceRecord(deviceRow) : null;
-    const [latestDaily] = elder
-      ? await db
-          .select()
-          .from(insightDailyScores)
-          .where(eq(insightDailyScores.elderId, elder.id))
-          .orderBy(desc(insightDailyScores.dateKey))
-          .limit(1)
-      : [undefined];
+    const [latestDaily, deviceUsageSummary] = elder
+      ? await Promise.all([
+          db
+            .select()
+            .from(insightDailyScores)
+            .where(eq(insightDailyScores.elderId, elder.id))
+            .orderBy(desc(insightDailyScores.dateKey))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+          this.getDeviceUsageSummary(ownerUserId)
+        ])
+      : [null, this.buildEmptyUsageSummary()];
 
     return {
       elder,
@@ -407,12 +546,84 @@ export class FamilyRepository {
       snapshot: {
         elderId: elder?.id ?? 'unknown',
         onlineState: device ? 'online' : 'offline',
-        lastInteractionAt: Date.now() - 15 * 60 * 1000,
+        lastInteractionAt: deviceUsageSummary.lastSessionEndedAt ?? undefined,
         latestMoodScore: latestDaily ? latestDaily.emotionalToneScore / 100 : undefined,
         latestEngagementScore: latestDaily ? latestDaily.engagementScore / 100 : undefined,
+        deviceUsageSummary,
         updatedAt: Date.now()
       }
     };
+  }
+
+  private buildEmptyUsageSummary(now = new Date()): DeviceUsageSummary {
+    return {
+      totalDurationSec: 0,
+      todayDurationSec: 0,
+      sessionCount: 0,
+      todaySessionCount: 0,
+      updatedAt: now.getTime()
+    };
+  }
+
+  async getDeviceUsageSummary(ownerUserId: string): Promise<DeviceUsageSummary> {
+    const elder = await this.getElderByUser(ownerUserId);
+    if (!elder) return this.buildEmptyUsageSummary();
+
+    const rows = await db
+      .select()
+      .from(elderDeviceUsageSessions)
+      .where(eq(elderDeviceUsageSessions.elderId, elder.id))
+      .orderBy(desc(elderDeviceUsageSessions.endedAt), desc(elderDeviceUsageSessions.startedAt));
+
+    if (rows.length === 0) return this.buildEmptyUsageSummary();
+    return buildDeviceUsageSummary(rows.map(toUsageSession), elder.timezone?.trim() || 'Asia/Kolkata');
+  }
+
+  async recordDeviceUsageSession(
+    ownerUserId: string,
+    input: {
+      sessionId: string;
+      startedAt: number;
+      endedAt: number;
+      usageSummaryJson?: Record<string, unknown>;
+      sessionReason?: string;
+    }
+  ): Promise<void> {
+    const elder = await this.getElderByUser(ownerUserId);
+    if (!elder) return;
+
+    const startedAt = new Date(input.startedAt);
+    const endedAt = new Date(input.endedAt);
+    const durationSec = Math.max(0, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000));
+    const usageSummaryJson = {
+      ...(input.usageSummaryJson ?? {}),
+      sessionReason: input.sessionReason ?? null
+    };
+
+    await db
+      .insert(elderDeviceUsageSessions)
+      .values({
+        elderId: elder.id,
+        userId: ownerUserId,
+        sessionId: input.sessionId,
+        startedAt,
+        endedAt,
+        durationSec,
+        usageSummaryJson,
+        updatedAt: new Date()
+      })
+      .onConflictDoUpdate({
+        target: elderDeviceUsageSessions.sessionId,
+        set: {
+          elderId: elder.id,
+          userId: ownerUserId,
+          startedAt,
+          endedAt,
+          durationSec,
+          usageSummaryJson,
+          updatedAt: new Date()
+        }
+      });
   }
 
   async addNudge(ownerUserId: string, input: {
@@ -730,6 +941,163 @@ export class FamilyRepository {
       .returning();
 
     return updated ? toRoutineRecord(updated) : null;
+  }
+
+  async getCarePlanItems(ownerUserId: string): Promise<CarePlanItem[]> {
+    const elder = await this.getElderByUser(ownerUserId);
+    if (!elder) return [];
+
+    const [plannerRows, reminderRows, routineRows] = await Promise.all([
+      db.select().from(carePlanItems).where(eq(carePlanItems.elderId, elder.id)),
+      db.select().from(careReminders).where(eq(careReminders.elderId, elder.id)),
+      db.select().from(careRoutines).where(eq(careRoutines.elderId, elder.id))
+    ]);
+
+    const items = [
+      ...plannerRows.map(toCarePlanItem),
+      ...reminderRows.map(toLegacyReminderCareItem),
+      ...routineRows.map(toLegacyRoutineCareItem)
+    ];
+
+    return items.sort(compareCarePlanItems);
+  }
+
+  async createCarePlanItem(
+    ownerUserId: string,
+    input: {
+      section: CarePlanSection;
+      type?: CarePlanType;
+      title: string;
+      description?: string;
+      enabled?: boolean;
+      scheduledAt?: string;
+      repeatRule?: string;
+      metadata?: Record<string, unknown>;
+      sortOrder?: number;
+    }
+  ): Promise<CarePlanItem> {
+    const elder = await this.getElderByUser(ownerUserId);
+    if (!elder) throw new Error('Elder profile not found');
+
+    const [maxRow] = await db
+      .select({ maxSortOrder: sql<number>`coalesce(max(${carePlanItems.sortOrder}), -1)` })
+      .from(carePlanItems)
+      .where(and(eq(carePlanItems.elderId, elder.id), eq(carePlanItems.section, input.section)));
+
+    const sortOrder = input.sortOrder ?? Number(maxRow?.maxSortOrder ?? -1) + 1;
+    const [created] = await db
+      .insert(carePlanItems)
+      .values({
+        elderId: elder.id,
+        section: input.section,
+        type: input.type ?? inferTypeFromSection(input.section),
+        title: input.title,
+        description: input.description,
+        enabled: input.enabled ?? true,
+        scheduledAt: input.scheduledAt,
+        repeatRule: input.repeatRule,
+        metadata: input.metadata ?? {},
+        sortOrder,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    return toCarePlanItem(created);
+  }
+
+  async patchCarePlanItem(
+    ownerUserId: string,
+    itemId: string,
+    patch: Partial<{
+      section: CarePlanSection;
+      type: CarePlanType;
+      title: string;
+      description?: string;
+      enabled: boolean;
+      scheduledAt?: string;
+      repeatRule?: string;
+      metadata?: Record<string, unknown>;
+      sortOrder: number;
+    }>
+  ): Promise<CarePlanItem | null> {
+    const elder = await this.getElderByUser(ownerUserId);
+    if (!elder) return null;
+
+    const plannerPatch: Partial<typeof carePlanItems.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.section !== undefined) plannerPatch.section = patch.section;
+    if (patch.type !== undefined) plannerPatch.type = patch.type;
+    if (patch.title !== undefined) plannerPatch.title = patch.title;
+    if (patch.description !== undefined) plannerPatch.description = patch.description;
+    if (patch.enabled !== undefined) plannerPatch.enabled = patch.enabled;
+    if (patch.scheduledAt !== undefined) plannerPatch.scheduledAt = patch.scheduledAt;
+    if (patch.repeatRule !== undefined) plannerPatch.repeatRule = patch.repeatRule;
+    if (patch.metadata !== undefined) plannerPatch.metadata = patch.metadata;
+    if (patch.sortOrder !== undefined) plannerPatch.sortOrder = patch.sortOrder;
+
+    const [plannerUpdated] = await db
+      .update(carePlanItems)
+      .set(plannerPatch)
+      .where(and(eq(carePlanItems.id, itemId), eq(carePlanItems.elderId, elder.id)))
+      .returning();
+
+    if (plannerUpdated) return toCarePlanItem(plannerUpdated);
+
+    const reminderPatch: Partial<typeof careReminders.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.title !== undefined) reminderPatch.title = patch.title;
+    if (patch.description !== undefined) reminderPatch.description = patch.description;
+    if (patch.scheduledAt !== undefined) reminderPatch.scheduledTime = patch.scheduledAt;
+    if (patch.enabled !== undefined) reminderPatch.enabled = patch.enabled;
+
+    const [reminderUpdated] = await db
+      .update(careReminders)
+      .set(reminderPatch)
+      .where(and(eq(careReminders.id, itemId), eq(careReminders.elderId, elder.id)))
+      .returning();
+
+    if (reminderUpdated) return toLegacyReminderCareItem(reminderUpdated);
+
+    const routinePatch: Partial<typeof careRoutines.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.title !== undefined) routinePatch.title = patch.title;
+    if (patch.enabled !== undefined) routinePatch.enabled = patch.enabled;
+    if (patch.scheduledAt !== undefined) routinePatch.schedule = patch.scheduledAt;
+
+    const [routineUpdated] = await db
+      .update(careRoutines)
+      .set(routinePatch)
+      .where(and(eq(careRoutines.id, itemId), eq(careRoutines.elderId, elder.id)))
+      .returning();
+
+    return routineUpdated ? toLegacyRoutineCareItem(routineUpdated) : null;
+  }
+
+  async deleteCarePlanItem(ownerUserId: string, itemId: string): Promise<boolean> {
+    const elder = await this.getElderByUser(ownerUserId);
+    if (!elder) return false;
+
+    const [plannerDeleted] = await db
+      .delete(carePlanItems)
+      .where(and(eq(carePlanItems.id, itemId), eq(carePlanItems.elderId, elder.id)))
+      .returning({ id: carePlanItems.id });
+    if (plannerDeleted) return true;
+
+    const [reminderDeleted] = await db
+      .delete(careReminders)
+      .where(and(eq(careReminders.id, itemId), eq(careReminders.elderId, elder.id)))
+      .returning({ id: careReminders.id });
+    if (reminderDeleted) return true;
+
+    const [routineDeleted] = await db
+      .delete(careRoutines)
+      .where(and(eq(careRoutines.id, itemId), eq(careRoutines.elderId, elder.id)))
+      .returning({ id: careRoutines.id });
+
+    return Boolean(routineDeleted);
   }
 
   async getCareReminders(userId: string): Promise<CareReminder[]> {

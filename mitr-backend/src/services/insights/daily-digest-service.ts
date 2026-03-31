@@ -5,9 +5,11 @@ import {
   insightDailyDigests,
   insightDailyScores,
   insightRecommendations,
-  insightSignalEvents
+  insightSignalEvents,
+  userInputTranscripts
 } from '../../db/schema.js';
 import { getFamilyRepository } from '../family/family-repository.js';
+import { getInsightsQueueHealth } from './queue.js';
 import { toIsoDateKey, dateKeyToEpochMs, clamp } from './insights-scoring.js';
 
 export type DailyDigestSummary = {
@@ -17,6 +19,9 @@ export type DailyDigestSummary = {
   confidence: number;
   dataSufficiency: number;
   insufficientConfidence: boolean;
+  hasConversationData: boolean;
+  insightsPending: boolean;
+  insightState: 'no_conversations' | 'processing_pending' | 'low_confidence' | 'ready';
   lastComputedAt: string | null;
   topTopics: Array<{ topic: string; score: number }>;
   topConcern: {
@@ -94,6 +99,70 @@ export class DailyDigestService {
     };
   }
 
+  private async buildProcessingState(userId: string, digest: DailyDigestSummary | null): Promise<{
+    hasConversationData: boolean;
+    insightsPending: boolean;
+    insightState: DailyDigestSummary['insightState'];
+  }> {
+    const [transcriptCountRow, latestTranscriptRow, queueHealth] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(userInputTranscripts)
+        .where(eq(userInputTranscripts.userId, userId))
+        .then((rows) => rows[0] ?? { count: 0 }),
+      db
+        .select({ createdAt: userInputTranscripts.createdAt })
+        .from(userInputTranscripts)
+        .where(eq(userInputTranscripts.userId, userId))
+        .orderBy(desc(userInputTranscripts.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      getInsightsQueueHealth().catch(() => ({
+        waiting: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0
+      }))
+    ]);
+
+    const transcriptCount = Number(transcriptCountRow.count ?? 0);
+    if (transcriptCount === 0) {
+      return {
+        hasConversationData: false,
+        insightsPending: false,
+        insightState: 'no_conversations'
+      };
+    }
+
+    const queuePending = (queueHealth.waiting ?? 0) + (queueHealth.active ?? 0) + (queueHealth.delayed ?? 0) > 0;
+    const latestTranscriptAt = latestTranscriptRow?.createdAt?.getTime() ?? 0;
+    const digestGeneratedAt = digest?.generatedAt ? Date.parse(digest.generatedAt) : 0;
+    const pendingBecauseFreshData = latestTranscriptAt > 0 && digestGeneratedAt > 0 && latestTranscriptAt > digestGeneratedAt;
+
+    if (!digest || queuePending || pendingBecauseFreshData) {
+      return {
+        hasConversationData: true,
+        insightsPending: true,
+        insightState: 'processing_pending'
+      };
+    }
+
+    if (digest.insufficientConfidence) {
+      return {
+        hasConversationData: true,
+        insightsPending: false,
+        insightState: 'low_confidence'
+      };
+    }
+
+    return {
+      hasConversationData: true,
+      insightsPending: false,
+      insightState: 'ready'
+    };
+  }
+
   async materializeDigestByElder(elderId: string, dateKey: string): Promise<DailyDigestSummary | null> {
     const [daily] = await db
       .select()
@@ -135,6 +204,9 @@ export class DailyDigestService {
       confidence: insufficient && fallback ? fallback.confidence : daily.confidence,
       dataSufficiency: insufficient && fallback ? fallback.dataSufficiency : daily.dataSufficiency,
       insufficientConfidence: insufficient,
+      hasConversationData: true,
+      insightsPending: false,
+      insightState: insufficient ? 'low_confidence' : 'ready',
       lastComputedAt: daily.lastComputedAt.toISOString(),
       topTopics: this.topicScoresFromMetrics((daily.metricsJson ?? {}) as Record<string, unknown>),
       topConcern: topConcern
@@ -197,8 +269,30 @@ export class DailyDigestService {
       .where(and(eq(insightDailyDigests.elderId, elderId), eq(insightDailyDigests.dateKey, dateKey)))
       .limit(1);
 
-    if (existing) return existing.summaryJson as unknown as DailyDigestSummary;
-    return this.materializeDigestByElder(elderId, dateKey);
+    const base = existing ? (existing.summaryJson as unknown as DailyDigestSummary) : await this.materializeDigestByElder(elderId, dateKey);
+    if (!base) {
+      const state = await this.buildProcessingState(userId, null);
+      if (state.insightState === 'no_conversations') return null;
+      return {
+        elderId,
+        dateKey,
+        scoreBand: 'watch',
+        confidence: 0,
+        dataSufficiency: 0,
+        insufficientConfidence: true,
+        hasConversationData: state.hasConversationData,
+        insightsPending: state.insightsPending,
+        insightState: state.insightState,
+        lastComputedAt: null,
+        topTopics: [],
+        topConcern: null,
+        recommendedAction: null,
+        generatedAt: new Date().toISOString()
+      };
+    }
+
+    const state = await this.buildProcessingState(userId, base);
+    return { ...base, ...state };
   }
 
   async getDigestForUserByDate(userId: string, dateKey: string): Promise<DailyDigestSummary | null> {
@@ -211,8 +305,30 @@ export class DailyDigestService {
       .where(and(eq(insightDailyDigests.elderId, elderId), eq(insightDailyDigests.dateKey, dateKey)))
       .limit(1);
 
-    if (existing) return existing.summaryJson as unknown as DailyDigestSummary;
-    return this.materializeDigestByElder(elderId, dateKey);
+    const base = existing ? (existing.summaryJson as unknown as DailyDigestSummary) : await this.materializeDigestByElder(elderId, dateKey);
+    if (!base) {
+      const state = await this.buildProcessingState(userId, null);
+      if (state.insightState === 'no_conversations') return null;
+      return {
+        elderId,
+        dateKey,
+        scoreBand: 'watch',
+        confidence: 0,
+        dataSufficiency: 0,
+        insufficientConfidence: true,
+        hasConversationData: state.hasConversationData,
+        insightsPending: state.insightsPending,
+        insightState: state.insightState,
+        lastComputedAt: null,
+        topTopics: [],
+        topConcern: null,
+        recommendedAction: null,
+        generatedAt: new Date().toISOString()
+      };
+    }
+
+    const state = await this.buildProcessingState(userId, base);
+    return { ...base, ...state };
   }
 
   async getDigestRangeForUser(userId: string, from: string, to: string): Promise<{
@@ -268,6 +384,9 @@ export class DailyDigestService {
     confidence: number;
     dataSufficiency: number;
     insufficientConfidence: boolean;
+    hasConversationData: boolean;
+    insightsPending: boolean;
+    insightState: DailyDigestSummary['insightState'];
     topConcern: DailyDigestSummary['topConcern'];
     recommendedAction: DailyDigestSummary['recommendedAction'];
     lastComputedAt: string | null;
@@ -280,6 +399,9 @@ export class DailyDigestService {
       confidence: digest.confidence,
       dataSufficiency: digest.dataSufficiency,
       insufficientConfidence: digest.insufficientConfidence,
+      hasConversationData: digest.hasConversationData,
+      insightsPending: digest.insightsPending,
+      insightState: digest.insightState,
       topConcern: digest.topConcern,
       recommendedAction: digest.recommendedAction,
       lastComputedAt: digest.lastComputedAt

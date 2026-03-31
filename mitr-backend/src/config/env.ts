@@ -16,6 +16,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().default(8080),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  LOCAL_LATENCY_TRACKING_FILE: z.string().optional(),
   CORS_ORIGINS: z.string().default('http://localhost:8787'),
   API_PUBLIC_BASE_URL: z.string().url().optional(),
   VOICE_NOTES_STORAGE_DIR: z.string().default('var/voice-notes'),

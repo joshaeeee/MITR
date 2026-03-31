@@ -1,4 +1,5 @@
 import { getFamilyRepository } from '../family/family-repository.js';
+import type { CarePlanSection, CarePlanType } from '../family/family-types.js';
 
 export class CareService {
   private readonly repo = getFamilyRepository();
@@ -12,6 +13,10 @@ export class CareService {
 
   async listReminders(userId: string) {
     return this.repo.getCareReminders(userId);
+  }
+
+  async listItems(userId: string) {
+    return this.repo.getCarePlanItems(userId);
   }
 
   async createReminder(
@@ -47,5 +52,47 @@ export class CareService {
   ) {
     await this.requireOwner(userId);
     return this.repo.patchRoutine(userId, routineId, patch);
+  }
+
+  async createItem(
+    userId: string,
+    input: {
+      section: CarePlanSection;
+      type?: CarePlanType;
+      title: string;
+      description?: string;
+      enabled?: boolean;
+      scheduledAt?: string;
+      repeatRule?: string;
+      metadata?: Record<string, unknown>;
+      sortOrder?: number;
+    }
+  ) {
+    await this.requireOwner(userId);
+    return this.repo.createCarePlanItem(userId, input);
+  }
+
+  async patchItem(
+    userId: string,
+    itemId: string,
+    patch: {
+      section?: CarePlanSection;
+      type?: CarePlanType;
+      title?: string;
+      description?: string;
+      enabled?: boolean;
+      scheduledAt?: string;
+      repeatRule?: string;
+      metadata?: Record<string, unknown>;
+      sortOrder?: number;
+    }
+  ) {
+    await this.requireOwner(userId);
+    return this.repo.patchCarePlanItem(userId, itemId, patch);
+  }
+
+  async deleteItem(userId: string, itemId: string) {
+    await this.requireOwner(userId);
+    return this.repo.deleteCarePlanItem(userId, itemId);
   }
 }

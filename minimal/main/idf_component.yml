@@ -1,0 +1,6 @@
+dependencies:
+  idf: '>=5.4'
+  livekit/example_utils:
+    version: ~0.2.0
+  espressif/esp_websocket_client:
+    version: "~1.6.1"

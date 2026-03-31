@@ -6,6 +6,10 @@ export type InsightConfidence = 'low' | 'medium' | 'high';
 export type NudgePriority = 'gentle' | 'important' | 'urgent';
 export type NudgeDeliveryState = 'queued' | 'delivering' | 'delivered' | 'acknowledged' | 'failed';
 export type EscalationStage = 'nudge' | 'family_push' | 'emergency_contact';
+export type CarePlanSection = 'medicines' | 'repeated_reminders' | 'one_off_plans' | 'important_dates';
+export type CarePlanType = 'medicine' | 'reminder' | 'plan' | 'date';
+export type CarePlanSource = 'planner' | 'legacy_reminder' | 'legacy_routine';
+export type InsightProcessingState = 'no_conversations' | 'processing_pending' | 'low_confidence' | 'ready';
 
 export interface FamilyMember {
   id: string;
@@ -31,12 +35,24 @@ export interface ElderProfile {
   updatedAt: number;
 }
 
+export interface DeviceUsageSummary {
+  totalDurationSec: number;
+  todayDurationSec: number;
+  sessionCount: number;
+  todaySessionCount: number;
+  lastSessionDurationSec?: number;
+  lastSessionStartedAt?: number;
+  lastSessionEndedAt?: number;
+  updatedAt: number;
+}
+
 export interface ElderStatusSnapshot {
   elderId: string;
   onlineState: 'online' | 'idle' | 'offline' | 'degraded';
   lastInteractionAt?: number;
   latestMoodScore?: number;
   latestEngagementScore?: number;
+  deviceUsageSummary?: DeviceUsageSummary;
   updatedAt: number;
 }
 
@@ -79,4 +95,21 @@ export interface CareReminder {
   scheduledTime: string;
   enabled: boolean;
   updatedAt: number;
+}
+
+export interface CarePlanItem {
+  id: string;
+  elderId: string;
+  section: CarePlanSection;
+  type: CarePlanType;
+  title: string;
+  description?: string;
+  enabled: boolean;
+  scheduledAt?: string;
+  repeatRule?: string;
+  metadata: Record<string, unknown>;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+  source: CarePlanSource;
 }

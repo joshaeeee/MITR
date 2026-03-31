@@ -1,5 +1,10 @@
 import { inference, voice } from '@livekit/agents';
 import * as silero from '@livekit/agents-plugin-silero';
+import {
+  getCartesiaConfig,
+  getInferenceConfig,
+  isSelectedVoicePipeline
+} from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
 import { SILERO_VAD_USERDATA_KEY } from './utils.js';
 
@@ -15,12 +20,13 @@ const normalizeInferenceLanguage = (language: string): string => {
 export const livekitInferencePipeline: VoicePipelineStrategy = {
   id: 'livekit_inference',
   async prewarm({ env, proc }) {
-    if (env.AGENT_VOICE_PIPELINE !== 'livekit_inference') return;
+    if (!isSelectedVoicePipeline(env, 'livekit_inference')) return;
     if (proc.userData[SILERO_VAD_USERDATA_KEY]) return;
     proc.userData[SILERO_VAD_USERDATA_KEY] = await silero.VAD.load({ minSilenceDuration: 250 });
   },
   validate({ env, ctx }) {
-    if (!env.CARTESIA_VOICE_ID?.trim()) {
+    const cartesiaConfig = getCartesiaConfig(env);
+    if (!cartesiaConfig.voiceId.trim()) {
       throw new Error('CARTESIA_VOICE_ID is required when AGENT_VOICE_PIPELINE=livekit_inference');
     }
     if (!ctx.proc.userData[SILERO_VAD_USERDATA_KEY]) {
@@ -30,6 +36,8 @@ export const livekitInferencePipeline: VoicePipelineStrategy = {
     }
   },
   createSession({ env, language, ctx }) {
+    const inferenceConfig = getInferenceConfig(env);
+    const cartesiaConfig = getCartesiaConfig(env);
     const normalizedLanguage = normalizeInferenceLanguage(language);
     const prewarmedVad = ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined;
 
@@ -37,15 +45,15 @@ export const livekitInferencePipeline: VoicePipelineStrategy = {
       turnDetection: 'stt',
       vad: prewarmedVad,
       stt: new inference.STT({
-        model: env.INFERENCE_STT_MODEL,
+        model: inferenceConfig.sttModel,
         language: normalizedLanguage
       }),
       llm: new inference.LLM({
-        model: env.INFERENCE_LLM_MODEL
+        model: inferenceConfig.llmModel
       }),
       tts: new inference.TTS({
-        model: env.INFERENCE_TTS_MODEL,
-        voice: env.CARTESIA_VOICE_ID,
+        model: inferenceConfig.ttsModel,
+        voice: cartesiaConfig.voiceId,
         language: normalizedLanguage
       }),
       voiceOptions: {

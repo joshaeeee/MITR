@@ -37,3 +37,6 @@ coverage/
 *.sqlite
 
 /mitr-mobile/
+.gstack/
+.gstack/
+.gstack/

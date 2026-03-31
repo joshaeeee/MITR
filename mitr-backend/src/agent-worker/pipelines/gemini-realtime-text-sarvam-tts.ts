@@ -2,6 +2,7 @@ import { Modality } from '@google/genai';
 import { voice } from '@livekit/agents';
 import * as google from '@livekit/agents-plugin-google';
 import * as sarvam from '@livekit/agents-plugin-sarvam';
+import { getGoogleRealtimeConfig, getSarvamSpeechConfig } from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
 import {
   normalizeGoogleRealtimeModel,
@@ -38,17 +39,21 @@ const resolveGoogleRealtimeModel = (
 export const geminiRealtimeTextSarvamTtsPipeline: VoicePipelineStrategy = {
   id: 'gemini_realtime_text_sarvam_tts',
   validate({ env }) {
-    if (!env.GOOGLE_API_KEY) {
+    const googleConfig = getGoogleRealtimeConfig(env);
+    const sarvamConfig = getSarvamSpeechConfig(env);
+    if (!googleConfig.apiKey) {
       throw new Error('GOOGLE_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
     }
-    if (!env.SARVAM_API_KEY) {
+    if (!sarvamConfig.apiKey) {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
     }
   },
   createSession({ env, logger, language }) {
-    const model = resolveGoogleRealtimeModel(env.GOOGLE_REALTIME_MODEL, logger);
-    const ttsModel = normalizeSarvamTtsModel(env.SARVAM_TTS_MODEL, logger);
-    const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, env.SARVAM_TTS_SPEAKER, logger);
+    const googleConfig = getGoogleRealtimeConfig(env);
+    const sarvamConfig = getSarvamSpeechConfig(env);
+    const model = resolveGoogleRealtimeModel(googleConfig.model, logger);
+    const ttsModel = normalizeSarvamTtsModel(sarvamConfig.ttsModel, logger);
+    const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, sarvamConfig.ttsSpeaker, logger);
 
     return new voice.AgentSession({
       llm: new google.beta.realtime.RealtimeModel({
@@ -59,7 +64,7 @@ export const geminiRealtimeTextSarvamTtsPipeline: VoicePipelineStrategy = {
         model: ttsModel,
         speaker: ttsSpeaker,
         targetLanguageCode: normalizeSarvamTtsLanguageCode(language, logger),
-        streaming: env.SARVAM_TTS_STREAMING
+        streaming: sarvamConfig.ttsStreaming
       }),
       voiceOptions: {
         maxToolSteps: 3,

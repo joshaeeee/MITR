@@ -1,3 +1,4 @@
+import { isAsyncToolRuntimeV2Enabled } from '../../../config/agent-worker-config.js';
 import { env } from '../../../config/env.js';
 import { logger } from '../../../lib/logger.js';
 import { AsyncToolRuntime } from '../../../agent-worker/async-tool-runtime.js';
@@ -56,7 +57,7 @@ const createToolDefinitionsV2 = (deps: ToolDeps): AgentToolDefinition[] => {
 };
 
 export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => {
-  if (env.ASYNC_TOOL_RUNTIME_V2) {
+  if (isAsyncToolRuntimeV2Enabled(env)) {
     return createToolDefinitionsV2(deps);
   }
 

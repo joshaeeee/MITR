@@ -34,7 +34,7 @@ export const registerHomeRoutes = (app: FastifyInstance, auth: AuthService): voi
       id: n.id,
       type: 'nudge' as const,
       title: n.type === 'voice' ? 'Voice nudge sent' : 'Nudge sent',
-      subtitle: n.text ?? n.voiceUrl ?? '',
+      subtitle: n.type === 'voice' ? 'Voice note from family' : (n.text ?? ''),
       timestampMs: n.createdAt,
       icon: iconForTimeline('nudge'),
       color: colorForTimeline('nudge')
@@ -54,6 +54,7 @@ export const registerHomeRoutes = (app: FastifyInstance, auth: AuthService): voi
       user: request.auth!.user,
       profile,
       deviceStatus,
+      deviceUsageSummary: deviceStatus.snapshot.deviceUsageSummary,
       alerts: alertItems,
       timeline: [...nudgeEvents, ...reminderEvents],
       insights: {
@@ -61,6 +62,9 @@ export const registerHomeRoutes = (app: FastifyInstance, auth: AuthService): voi
         confidence: Number(realtimeDigest?.confidence ?? 0),
         dataSufficiency: Number(realtimeDigest?.dataSufficiency ?? 0),
         insufficientConfidence: Boolean(realtimeDigest?.insufficientConfidence ?? true),
+        hasConversationData: Boolean(realtimeDigest?.hasConversationData ?? false),
+        insightsPending: Boolean(realtimeDigest?.insightsPending ?? false),
+        insightState: realtimeDigest?.insightState ?? 'no_conversations',
         topConcern: realtimeDigest?.topConcern ?? null,
         recommendedAction: realtimeDigest?.recommendedAction ?? null,
         lastComputedAt: realtimeDigest?.lastComputedAt ?? null

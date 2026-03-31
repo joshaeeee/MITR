@@ -173,12 +173,21 @@
             <label for="roomName">Room Name (optional)</label>
             <input id="roomName" placeholder="mitr-dev-room" />
           </div>
+          <div>
+            <label for="bridgeUrl">ESP32 Audio Bridge URL</label>
+            <input id="bridgeUrl" placeholder="ws://192.168.x.x:8787/esp32-audio" />
+          </div>
+          <div>
+            <label for="bridgeRoomName">ESP32 Bridge Room</label>
+            <input id="bridgeRoomName" placeholder="mitr-esp32-test" />
+          </div>
         </div>
         <div class="row">
           <button id="connectBtn" class="btn-primary">Connect + Start Mic</button>
           <button id="muteBtn" class="btn-amber" disabled>Mute Mic</button>
           <button id="disconnectBtn" class="btn-danger" disabled>Disconnect</button>
           <span id="state" class="badge">disconnected</span>
+          <span id="bridgeState" class="badge">bridge:idle</span>
         </div>
       </div>
 
@@ -192,6 +201,19 @@
         <p class="muted">Auto-managed channel: starts during satsang flow, stops when satsang ends.</p>
         <div class="row">
           <span id="ambienceState" class="badge">ambience:off</span>
+          <button id="bridgeTestBtn" class="btn-amber">Play Test Ambience On ESP32</button>
+          <button id="bridgeTestStopBtn" class="btn-danger" disabled>Stop Test Ambience</button>
+          <span id="bridgeTestState" class="badge">esp32-test:idle</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>ESP32 Local Tone Test</h2>
+        <p class="muted">Triggers a sine wave generated on the ESP32 itself. No agent audio or browser PCM path involved.</p>
+        <div class="row">
+          <button id="espToneBtn" class="btn-primary">Start ESP32 Tone</button>
+          <button id="espToneStopBtn" class="btn-danger" disabled>Stop ESP32 Tone</button>
+          <span id="espToneState" class="badge">esp-tone:idle</span>
         </div>
       </div>
 
@@ -210,14 +232,23 @@
       const userIdInput = document.getElementById('userId');
       const languageInput = document.getElementById('language');
       const roomNameInput = document.getElementById('roomName');
+      const bridgeUrlInput = document.getElementById('bridgeUrl');
+      const bridgeRoomNameInput = document.getElementById('bridgeRoomName');
       const connectBtn = document.getElementById('connectBtn');
       const muteBtn = document.getElementById('muteBtn');
       const disconnectBtn = document.getElementById('disconnectBtn');
       const stateBadge = document.getElementById('state');
+      const bridgeStateBadge = document.getElementById('bridgeState');
       const logsEl = document.getElementById('logs');
       const transcriptEl = document.getElementById('transcript');
       const audioContainer = document.getElementById('audioContainer');
       const ambienceStateBadge = document.getElementById('ambienceState');
+      const bridgeTestBtn = document.getElementById('bridgeTestBtn');
+      const bridgeTestStopBtn = document.getElementById('bridgeTestStopBtn');
+      const bridgeTestStateBadge = document.getElementById('bridgeTestState');
+      const espToneBtn = document.getElementById('espToneBtn');
+      const espToneStopBtn = document.getElementById('espToneStopBtn');
+      const espToneStateBadge = document.getElementById('espToneState');
       const FLOW_STATE_TOPIC = 'mitr.flow_state';
       const TOOL_EVENT_TOPIC = 'mitr.tool_event';
       const AUTO_AMBIENCE_PRESET = 'none';
@@ -260,7 +291,27 @@
       const TEST_EMAIL = 'tester@gmail.com';
       const TEST_PASSWORD = '12345678910';
       const HOST_STORAGE_KEY = 'mitr_websim_host';
+      const BRIDGE_URL_STORAGE_KEY = 'mitr_websim_bridge_url';
+      const BRIDGE_ROOM_STORAGE_KEY = 'mitr_websim_bridge_room';
       const DEFAULT_API_HOST = 'http://16.16.162.185';
+      const DEFAULT_BRIDGE_URL = (() => {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host || '127.0.0.1:8787';
+        return `${protocol}//${host}/esp32-audio`;
+      })();
+      const PCM_SAMPLE_RATE = 16000;
+      const PCM_CHANNELS = 1;
+      const PCM_FORMAT = 'pcm_s16le';
+
+      let bridgeSocket = null;
+      let bridgeRoomName = null;
+      let bridgeAudioContext = null;
+      let bridgeMixNode = null;
+      let bridgeProcessor = null;
+      let bridgeMuteNode = null;
+      let bridgeSourceNodes = new Map();
+      const ESP32_TEST_TRACK_KEY = '__esp32_bridge_test_track__';
+      let esp32BridgeTestAudio = null;
 
       const readInitialHost = () => {
         try {
@@ -277,6 +328,32 @@
 
       hostInput.value = readInitialHost();
 
+      const readInitialBridgeUrl = () => {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const fromQuery = (params.get('bridgeUrl') || '').trim();
+          if (fromQuery) return fromQuery;
+        } catch (_) {}
+
+        const persisted = (window.localStorage.getItem(BRIDGE_URL_STORAGE_KEY) || '').trim();
+        if (persisted) return persisted;
+        return DEFAULT_BRIDGE_URL;
+      };
+
+      bridgeUrlInput.value = readInitialBridgeUrl();
+
+      const readInitialBridgeRoom = () => {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const fromQuery = (params.get('bridgeRoom') || '').trim();
+          if (fromQuery) return fromQuery;
+        } catch (_) {}
+
+        return (window.localStorage.getItem(BRIDGE_ROOM_STORAGE_KEY) || '').trim();
+      };
+
+      bridgeRoomNameInput.value = readInitialBridgeRoom();
+
       const log = (event, payload = '') => {
         const ts = new Date().toISOString();
         const line = typeof payload === 'string' ? payload : JSON.stringify(payload);
@@ -288,8 +365,20 @@
         stateBadge.textContent = value;
       };
 
+      const setBridgeState = (value) => {
+        bridgeStateBadge.textContent = `bridge:${value}`;
+      };
+
       const setAmbienceState = (value) => {
         ambienceStateBadge.textContent = `ambience:${value}`;
+      };
+
+      const setBridgeTestState = (value) => {
+        bridgeTestStateBadge.textContent = `esp32-test:${value}`;
+      };
+
+      const setEspToneState = (value) => {
+        espToneStateBadge.textContent = `esp-tone:${value}`;
       };
 
       const persistAuthSession = (session) => {
@@ -349,6 +438,274 @@
 
       const clearTranscript = () => {
         transcriptEl.innerHTML = '';
+      };
+
+      const disconnectBridgeSources = () => {
+        for (const entry of bridgeSourceNodes.values()) {
+          try {
+            entry.source.disconnect();
+          } catch (_) {}
+          try {
+            entry.gain.disconnect();
+          } catch (_) {}
+        }
+        bridgeSourceNodes = new Map();
+      };
+
+      const closeAudioBridge = async () => {
+        stopEsp32BridgeTest();
+        disconnectBridgeSources();
+        bridgeRoomName = null;
+        if (bridgeSocket) {
+          try {
+            bridgeSocket.close();
+          } catch (_) {}
+          bridgeSocket = null;
+        }
+        if (bridgeProcessor) {
+          try {
+            bridgeProcessor.disconnect();
+          } catch (_) {}
+          bridgeProcessor.onaudioprocess = null;
+          bridgeProcessor = null;
+        }
+        if (bridgeMixNode) {
+          try {
+            bridgeMixNode.disconnect();
+          } catch (_) {}
+          bridgeMixNode = null;
+        }
+        if (bridgeMuteNode) {
+          try {
+            bridgeMuteNode.disconnect();
+          } catch (_) {}
+          bridgeMuteNode = null;
+        }
+        if (bridgeAudioContext) {
+          try {
+            await bridgeAudioContext.close();
+          } catch (_) {}
+          bridgeAudioContext = null;
+        }
+        setBridgeState('idle');
+      };
+
+      const ensureAudioBridgeSocket = (roomName) => new Promise((resolve, reject) => {
+        const bridgeUrl = bridgeUrlInput.value.trim();
+        if (!bridgeUrl) {
+          reject(new Error('bridge URL is required'));
+          return;
+        }
+
+        if (
+          bridgeSocket &&
+          bridgeSocket.readyState === WebSocket.OPEN &&
+          bridgeRoomName === roomName
+        ) {
+          resolve();
+          return;
+        }
+
+        if (bridgeSocket && bridgeSocket.readyState <= WebSocket.OPEN) {
+          try {
+            bridgeSocket.close();
+          } catch (_) {}
+        }
+
+        const socket = new WebSocket(bridgeUrl);
+        bridgeSocket = socket;
+        bridgeRoomName = roomName;
+        setBridgeState('connecting');
+
+        socket.addEventListener('open', () => {
+          if (bridgeSocket !== socket) return;
+          socket.send(
+            JSON.stringify({
+              type: 'init',
+              role: 'source',
+              room: roomName,
+              sampleRate: PCM_SAMPLE_RATE,
+              channels: PCM_CHANNELS,
+              format: PCM_FORMAT
+            })
+          );
+          setBridgeState('connected');
+          log('esp32_bridge_connected', { bridgeUrl, roomName });
+          resolve();
+        }, { once: true });
+
+        socket.addEventListener('message', (event) => {
+          try {
+            const data = JSON.parse(typeof event.data === 'string' ? event.data : '');
+            if (data?.type === 'status') {
+              setBridgeState(data.status || 'connected');
+            }
+          } catch (_) {}
+        });
+
+        socket.addEventListener('close', () => {
+          if (bridgeSocket === socket) {
+            bridgeSocket = null;
+            setBridgeState('disconnected');
+          }
+        });
+
+        socket.addEventListener('error', () => {
+          if (bridgeSocket === socket) {
+            setBridgeState('error');
+          }
+          reject(new Error('failed to connect to ESP32 audio bridge'));
+        }, { once: true });
+      });
+
+      const ensureAudioBridgeGraph = async (roomName) => {
+        if (!bridgeAudioContext) {
+          bridgeAudioContext = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
+          bridgeMixNode = bridgeAudioContext.createGain();
+          bridgeMuteNode = bridgeAudioContext.createGain();
+          bridgeMuteNode.gain.value = 0;
+          bridgeProcessor = bridgeAudioContext.createScriptProcessor(4096, 2, 1);
+
+          bridgeProcessor.onaudioprocess = (event) => {
+            if (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN) return;
+            const input = event.inputBuffer;
+            const samples = input.getChannelData(0);
+            const right = input.numberOfChannels > 1 ? input.getChannelData(1) : null;
+            const pcm = new Int16Array(samples.length);
+
+            for (let i = 0; i < samples.length; i++) {
+              let value = samples[i];
+              if (right) value = (value + right[i]) * 0.5;
+              value = Math.max(-1, Math.min(1, value));
+              pcm[i] = value < 0 ? value * 0x8000 : value * 0x7fff;
+            }
+            bridgeSocket.send(pcm.buffer);
+          };
+
+          bridgeMixNode.connect(bridgeProcessor);
+          bridgeProcessor.connect(bridgeMuteNode);
+          bridgeMuteNode.connect(bridgeAudioContext.destination);
+        }
+
+        await bridgeAudioContext.resume();
+        await ensureAudioBridgeSocket(roomName);
+      };
+
+      const mirrorTrackToEsp32 = async (trackKey, mediaEl, roomName) => {
+        if (bridgeSourceNodes.has(trackKey)) return;
+        await ensureAudioBridgeGraph(roomName);
+
+        const stream =
+          mediaEl.srcObject instanceof MediaStream
+            ? mediaEl.srcObject
+            : typeof mediaEl.captureStream === 'function'
+              ? mediaEl.captureStream()
+              : null;
+
+        if (!stream) {
+          throw new Error('audio track stream is unavailable for mirroring');
+        }
+
+        const source = bridgeAudioContext.createMediaStreamSource(stream);
+        const gain = bridgeAudioContext.createGain();
+        gain.gain.value = 1;
+        source.connect(gain);
+        gain.connect(bridgeMixNode);
+        bridgeSourceNodes.set(trackKey, { source, gain });
+        log('esp32_bridge_track_added', { trackKey, roomName });
+      };
+
+      const bridgeMediaElementToEsp32 = async (trackKey, mediaEl, roomName) => {
+        if (bridgeSourceNodes.has(trackKey)) return;
+        await ensureAudioBridgeGraph(roomName);
+
+        const source = bridgeAudioContext.createMediaElementSource(mediaEl);
+        const gain = bridgeAudioContext.createGain();
+        gain.gain.value = 1;
+        source.connect(gain);
+        gain.connect(bridgeMixNode);
+        bridgeSourceNodes.set(trackKey, { source, gain });
+        log('esp32_bridge_media_added', { trackKey, roomName });
+      };
+
+      const unmirrorTrackFromEsp32 = (trackKey) => {
+        const entry = bridgeSourceNodes.get(trackKey);
+        if (!entry) return;
+        try {
+          entry.source.disconnect();
+        } catch (_) {}
+        try {
+          entry.gain.disconnect();
+        } catch (_) {}
+        bridgeSourceNodes.delete(trackKey);
+      };
+
+      const stopEsp32BridgeTest = () => {
+        unmirrorTrackFromEsp32(ESP32_TEST_TRACK_KEY);
+        if (esp32BridgeTestAudio) {
+          try {
+            esp32BridgeTestAudio.pause();
+          } catch (_) {}
+          try {
+            esp32BridgeTestAudio.removeAttribute('src');
+            esp32BridgeTestAudio.load();
+          } catch (_) {}
+          esp32BridgeTestAudio.remove();
+          esp32BridgeTestAudio = null;
+        }
+        bridgeTestBtn.disabled = false;
+        bridgeTestStopBtn.disabled = true;
+        setBridgeTestState('idle');
+        log('esp32_test_audio', 'stopped');
+      };
+
+      const startEsp32BridgeTest = async () => {
+        const roomName = bridgeRoomNameInput.value.trim();
+        if (!roomName) {
+          throw new Error('set ESP32 Bridge Room before starting the bridge test');
+        }
+
+        stopEsp32BridgeTest();
+
+        const track = AMBIENCE_TRACKS[0];
+        if (!track) {
+          throw new Error('no ambience tracks are available');
+        }
+
+        const audio = document.createElement('audio');
+        audio.preload = 'auto';
+        audio.loop = true;
+        audio.autoplay = false;
+        audio.controls = false;
+        audio.style.display = 'none';
+        audio.src = track.url;
+        audio.crossOrigin = 'anonymous';
+        audioContainer.appendChild(audio);
+        esp32BridgeTestAudio = audio;
+
+        await bridgeMediaElementToEsp32(ESP32_TEST_TRACK_KEY, audio, roomName);
+        await audio.play();
+
+        bridgeTestBtn.disabled = true;
+        bridgeTestStopBtn.disabled = false;
+        setBridgeTestState(`playing:${track.id}`);
+        log('esp32_test_audio', `playing ${track.id} -> ${roomName}`);
+      };
+
+      const sendEsp32Control = async (action) => {
+        const roomName = bridgeRoomNameInput.value.trim();
+        if (!roomName) {
+          throw new Error('set ESP32 Bridge Room before sending ESP32 controls');
+        }
+
+        await ensureAudioBridgeSocket(roomName);
+        bridgeSocket.send(
+          JSON.stringify({
+            type: 'control',
+            action
+          })
+        );
+        log('esp32_control', { roomName, action });
       };
 
       const getAmbienceVolume = () => AUTO_AMBIENCE_VOLUME;
@@ -757,6 +1114,7 @@
         stopExternalMedia();
         satsangFlowActive = false;
         ambienceAutoStarted = false;
+        void closeAudioBridge();
         if (!room) return;
         room.removeAllListeners();
         room.disconnect();
@@ -775,6 +1133,7 @@
         const userId = userIdInput.value.trim();
         const language = languageInput.value.trim() || 'hi-IN';
         const roomName = roomNameInput.value.trim();
+        const bridgeRoomName = bridgeRoomNameInput.value.trim();
 
         if (!host || !userId) {
           log('error', 'host and userId are required');
@@ -786,6 +1145,12 @@
         }
 
         window.localStorage.setItem(HOST_STORAGE_KEY, host);
+        window.localStorage.setItem(BRIDGE_URL_STORAGE_KEY, bridgeUrlInput.value.trim());
+        if (bridgeRoomName) {
+          window.localStorage.setItem(BRIDGE_ROOM_STORAGE_KEY, bridgeRoomName);
+        } else {
+          window.localStorage.removeItem(BRIDGE_ROOM_STORAGE_KEY);
+        }
 
         await primeAmbienceAutoplay();
         connectBtn.disabled = true;
@@ -816,15 +1181,27 @@
             if (track.kind !== Track.Kind.Audio) return;
             const mediaEl = track.attach();
             mediaEl.autoplay = true;
+            mediaEl.playsInline = true;
+            if (bridgeRoomName) {
+              mediaEl.muted = true;
+              mediaEl.volume = 0;
+            }
             audioContainer.appendChild(mediaEl);
+            const trackKey = publication.trackSid || `${participant.identity}-${publication.source}`;
             log('track_subscribed', {
               participant: participant.identity,
               source: publication.source,
               trackSid: publication.trackSid
             });
+            const effectiveBridgeRoom = bridgeRoomName || tokenResponse.roomName;
+            void mirrorTrackToEsp32(trackKey, mediaEl, effectiveBridgeRoom).catch((error) => {
+              log('esp32_bridge_error', error?.message || String(error));
+            });
           });
 
-          room.on(RoomEvent.TrackUnsubscribed, (track) => {
+          room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+            const trackKey = publication?.trackSid || `${participant?.identity || 'unknown'}-${publication?.source || 'audio'}`;
+            unmirrorTrackFromEsp32(trackKey);
             const attached = track.detach();
             attached.forEach((el) => el.remove());
           });
@@ -884,6 +1261,42 @@
         cleanupRoom();
       });
 
+      bridgeTestBtn.addEventListener('click', async () => {
+        try {
+          await startEsp32BridgeTest();
+        } catch (error) {
+          setBridgeTestState('error');
+          log('esp32_test_audio_error', error?.message || String(error));
+        }
+      });
+
+      bridgeTestStopBtn.addEventListener('click', () => {
+        stopEsp32BridgeTest();
+      });
+
+      espToneBtn.addEventListener('click', async () => {
+        try {
+          await sendEsp32Control('tone_start');
+          espToneBtn.disabled = true;
+          espToneStopBtn.disabled = false;
+          setEspToneState('on');
+        } catch (error) {
+          setEspToneState('error');
+          log('esp32_tone_error', error?.message || String(error));
+        }
+      });
+
+      espToneStopBtn.addEventListener('click', async () => {
+        try {
+          await sendEsp32Control('tone_stop');
+        } catch (error) {
+          log('esp32_tone_error', error?.message || String(error));
+        }
+        espToneBtn.disabled = false;
+        espToneStopBtn.disabled = true;
+        setEspToneState('idle');
+      });
+
       muteBtn.addEventListener('click', async () => {
         if (!room) return;
         micEnabled = !micEnabled;
@@ -894,6 +1307,8 @@
 
       setState('disconnected');
       setAmbienceState('off');
+      setBridgeTestState('idle');
+      setEspToneState('idle');
       log('ready', 'click Connect + Start Mic');
     </script>
   </body>
