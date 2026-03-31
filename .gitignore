@@ -40,3 +40,10 @@ coverage/
 .gstack/
 .gstack/
 .gstack/
+
+# Local agent / prompt files
+.agents/
+.claude/
+AGENTS.md
+CLAUDE.md
+extra_system_prompt.txt
