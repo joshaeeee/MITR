@@ -1,4 +1,5 @@
 import type { PipelineContext, PipelinePrewarmContext, VoicePipelineStrategy } from './types.js';
+import { geminiRealtimePipeline } from './gemini-realtime.js';
 import { geminiRealtimeTextCartesiaTtsPipeline } from './gemini-realtime-text-cartesia-tts.js';
 import { geminiRealtimeTextSarvamTtsPipeline } from './gemini-realtime-text-sarvam-tts.js';
 import { livekitInferencePipeline } from './livekit-inference.js';
@@ -12,6 +13,7 @@ const PIPELINES: Record<VoicePipelineStrategy['id'], VoicePipelineStrategy> = {
   sarvam_stt_llm_cartesia_tts: sarvamSttLlmCartesiaTtsPipeline,
   gemini_realtime_text_sarvam_tts: geminiRealtimeTextSarvamTtsPipeline,
   gemini_realtime_text_cartesia_tts: geminiRealtimeTextCartesiaTtsPipeline,
+  gemini_realtime: geminiRealtimePipeline,
   livekit_inference: livekitInferencePipeline
 };
 

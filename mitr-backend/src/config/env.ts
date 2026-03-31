@@ -40,6 +40,7 @@ const envSchema = z.object({
       'sarvam_stt_llm_cartesia_tts',
       'gemini_realtime_text_sarvam_tts',
       'gemini_realtime_text_cartesia_tts',
+      'gemini_realtime',
       'livekit_inference'
     ])
     .default('sarvam_stt_llm_tts'),
@@ -47,7 +48,7 @@ const envSchema = z.object({
   INFERENCE_STT_MODEL: z.string().default('deepgram/nova-3-general'),
   INFERENCE_TTS_MODEL: z.string().default('cartesia/sonic-3'),
   GOOGLE_API_KEY: z.string().optional(),
-  GOOGLE_REALTIME_MODEL: z.string().default('gemini-2.0-flash-exp'),
+  GOOGLE_REALTIME_MODEL: z.string().default('gemini-3.1-pro-preview'),
   CARTESIA_API_KEY: z.string().optional(),
   CARTESIA_MODEL: z.string().default('sonic-3'),
   CARTESIA_VOICE_ID: z.string().default('794f9389-aac1-45b6-b726-9d9369183238'),
