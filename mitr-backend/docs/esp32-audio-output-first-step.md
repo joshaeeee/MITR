@@ -1,5 +1,7 @@
 # ESP32 Audio Output First Step
 
+For the production path and fleet architecture, see `docs/esp32-production-architecture.md`.
+
 This is the minimum viable path for getting MITR agent audio out of an ESP32-S3 while keeping the existing web simulator as the microphone/input client.
 
 ## What we are doing

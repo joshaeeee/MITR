@@ -64,6 +64,13 @@
       "when": 1773810617000,
       "tag": "0008_care_plan_items",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1774987321825,
+      "tag": "0009_vengeful_white_queen",
+      "breakpoints": true
     }
   ]
 }

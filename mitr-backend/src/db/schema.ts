@@ -381,6 +381,95 @@ export const authSessions = pgTable('auth_sessions', {
   userCreatedIdx: index('auth_sessions_user_created_idx').on(table.userId, table.createdAt)
 }));
 
+export const devices = pgTable('devices', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  deviceId: text('device_id').notNull(),
+  userId: text('user_id').notNull(),
+  displayName: text('display_name'),
+  hardwareRev: text('hardware_rev'),
+  firmwareVersion: text('firmware_version'),
+  deviceAccessTokenHash: text('device_access_token_hash').notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true })
+}, (table) => ({
+  deviceIdUnique: uniqueIndex('devices_device_id_uq').on(table.deviceId),
+  accessTokenUnique: uniqueIndex('devices_access_token_uq').on(table.deviceAccessTokenHash),
+  userClaimedIdx: index('devices_user_claimed_idx').on(table.userId, table.claimedAt)
+}));
+
+export const deviceClaims = pgTable('device_claims', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  codeHash: text('code_hash').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  codeHashUnique: uniqueIndex('device_claims_code_hash_uq').on(table.codeHash),
+  userCreatedIdx: index('device_claims_user_created_idx').on(table.userId, table.createdAt)
+}));
+
+export const deviceSessions = pgTable('device_sessions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  deviceId: text('device_id').notNull(),
+  userId: text('user_id').notNull(),
+  roomName: text('room_name').notNull(),
+  participantIdentity: text('participant_identity').notNull(),
+  language: text('language').default('hi-IN').notNull(),
+  firmwareVersion: text('firmware_version'),
+  hardwareRev: text('hardware_rev'),
+  status: text('status').$type<'issued' | 'active' | 'ended'>().default('issued').notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endReason: text('end_reason')
+}, (table) => ({
+  deviceStartedIdx: index('device_sessions_device_started_idx').on(table.deviceId, table.startedAt),
+  userStartedIdx: index('device_sessions_user_started_idx').on(table.userId, table.startedAt),
+  deviceStatusIdx: index('device_sessions_device_status_idx').on(table.deviceId, table.status, table.startedAt)
+}));
+
+export const deviceTelemetry = pgTable('device_telemetry', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  deviceId: text('device_id').notNull(),
+  userId: text('user_id').notNull(),
+  sessionId: uuid('session_id'),
+  eventType: text('event_type').notNull(),
+  level: text('level').$type<'debug' | 'info' | 'warn' | 'error'>().default('info').notNull(),
+  payloadJson: jsonb('payload_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  deviceCreatedIdx: index('device_telemetry_device_created_idx').on(table.deviceId, table.createdAt),
+  sessionCreatedIdx: index('device_telemetry_session_created_idx').on(table.sessionId, table.createdAt)
+}));
+
+export const firmwareReleases = pgTable('firmware_releases', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  hardwareRev: text('hardware_rev').notNull(),
+  version: text('version').notNull(),
+  rolloutChannel: text('rollout_channel').$type<'dev' | 'pilot' | 'ga'>().default('dev').notNull(),
+  downloadUrl: text('download_url'),
+  releaseNotes: text('release_notes'),
+  isMandatory: boolean('is_mandatory').default(false).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  publishedAt: timestamp('published_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  hardwareVersionUnique: uniqueIndex('firmware_releases_hardware_version_uq').on(table.hardwareRev, table.version),
+  hardwareChannelActiveIdx: index('firmware_releases_hardware_channel_active_idx').on(
+    table.hardwareRev,
+    table.rolloutChannel,
+    table.isActive,
+    table.publishedAt
+  )
+}));
+
 export const userEventStream = pgTable('user_event_stream', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: text('user_id').notNull(),
