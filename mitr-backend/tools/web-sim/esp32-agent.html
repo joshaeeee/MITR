@@ -1,0 +1,1025 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mitr ESP32 Agent Simulator</title>
+    <style>
+      :root {
+        --bg: #09111f;
+        --bg2: #12213f;
+        --card: rgba(10, 23, 45, 0.9);
+        --text: #e7eefb;
+        --muted: #93a6c9;
+        --line: #24406f;
+        --green: #34d399;
+        --amber: #fbbf24;
+        --red: #f87171;
+        --blue: #60a5fa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(52, 211, 153, 0.12), transparent 28%),
+          radial-gradient(circle at top right, rgba(96, 165, 250, 0.18), transparent 32%),
+          linear-gradient(180deg, #040915, #09111f 46%, #040915);
+      }
+
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 28px 18px 40px;
+      }
+
+      .hero {
+        margin-bottom: 18px;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 34px;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      @media (max-width: 820px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid rgba(36, 64, 111, 0.7);
+        border-radius: 18px;
+        padding: 16px;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+      }
+
+      .full {
+        grid-column: 1 / -1;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 21px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      input {
+        width: 100%;
+        padding: 11px 12px;
+        border-radius: 11px;
+        border: 1px solid var(--line);
+        background: rgba(3, 10, 24, 0.86);
+        color: var(--text);
+        font-size: 15px;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 11px;
+        padding: 11px 15px;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .primary {
+        background: var(--green);
+        color: #032214;
+      }
+
+      .danger {
+        background: var(--red);
+        color: #2b0707;
+      }
+
+      .secondary {
+        background: var(--blue);
+        color: #041427;
+      }
+
+      .badge-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(36, 64, 111, 0.8);
+        background: rgba(6, 15, 33, 0.9);
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #425271;
+      }
+
+      .dot.ok {
+        background: var(--green);
+        box-shadow: 0 0 12px rgba(52, 211, 153, 0.6);
+      }
+
+      .dot.wait {
+        background: var(--amber);
+        box-shadow: 0 0 12px rgba(251, 191, 36, 0.55);
+      }
+
+      .dot.err {
+        background: var(--red);
+        box-shadow: 0 0 12px rgba(248, 113, 113, 0.55);
+      }
+
+      .meta {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      @media (max-width: 680px) {
+        .meta {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .meta-item {
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(36, 64, 111, 0.6);
+        background: rgba(4, 13, 28, 0.7);
+      }
+
+      .meta-item strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      #transcript {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        max-height: 360px;
+        overflow: auto;
+      }
+
+      .line {
+        padding: 12px 13px;
+        border-radius: 14px;
+        border: 1px solid rgba(36, 64, 111, 0.64);
+        background: rgba(5, 14, 31, 0.82);
+      }
+
+      .line strong {
+        display: block;
+        margin-bottom: 6px;
+        color: #bfd4ff;
+      }
+
+      pre {
+        margin: 0;
+        padding: 14px;
+        max-height: 300px;
+        overflow: auto;
+        border-radius: 14px;
+        border: 1px solid rgba(36, 64, 111, 0.64);
+        background: rgba(3, 9, 21, 0.95);
+        color: #d8e4ff;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="hero">
+        <h1>Mitr ESP32 Agent Simulator</h1>
+        <p>
+          Local test path: <strong>ESP32 mic</strong> into <strong>bridge.py</strong>, then into
+          <strong>our backend AgentSession</strong>, then the backend reply audio is pushed back through
+          the browser into <strong>bridge.py</strong> and out to the <strong>ESP32 speaker</strong>.
+        </p>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h2>Connection</h2>
+          <div class="grid">
+            <div>
+              <label for="apiHost">API Host</label>
+              <input id="apiHost" value="http://localhost:8081" />
+            </div>
+            <div>
+              <label for="language">Language</label>
+              <input id="language" value="hi-IN" />
+            </div>
+            <div>
+              <label for="bridgeUrl">Bridge Signaling URL</label>
+              <input id="bridgeUrl" value="ws://localhost:8769" />
+            </div>
+            <div>
+              <label for="espIp">ESP32 IP</label>
+              <input id="espIp" value="192.168.4.1" />
+            </div>
+          </div>
+
+          <div class="controls">
+            <button id="startBtn" class="primary">Start Session</button>
+            <button id="stopBtn" class="danger" disabled>Stop</button>
+            <button id="clearBtn" class="secondary">Clear Transcript</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Status</h2>
+          <div class="badge-row">
+            <span class="badge"><span class="dot" id="backendDot"></span><span id="backendState">backend: idle</span></span>
+            <span class="badge"><span class="dot" id="rtcDot"></span><span id="rtcState">rtc: idle</span></span>
+            <span class="badge"><span class="dot" id="agentDot"></span><span id="agentState">agent: idle</span></span>
+            <span class="badge"><span class="dot" id="userDot"></span><span id="userState">user: listening</span></span>
+          </div>
+
+          <div class="meta">
+            <div class="meta-item">
+              <strong>Pipeline</strong>
+              <span id="pipelineValue">not started</span>
+            </div>
+            <div class="meta-item">
+              <strong>Session</strong>
+              <span id="sessionValue">not started</span>
+            </div>
+            <div class="meta-item">
+              <strong>User</strong>
+              <span id="userValue">not authenticated</span>
+            </div>
+            <div class="meta-item">
+              <strong>Output Format</strong>
+              <span id="formatValue">waiting for first audio frame</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card full">
+          <h2>Transcript</h2>
+          <div id="transcript"></div>
+        </div>
+
+        <div class="card full">
+          <h2>Logs</h2>
+          <pre id="logs"></pre>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const INPUT_SAMPLE_RATE = 16000;
+      const INPUT_CHANNELS = 1;
+      const INPUT_FRAME_SAMPLES = 320;
+      const TEST_EMAIL = 'tester@gmail.com';
+      const TEST_PASSWORD = '12345678910';
+      const STORAGE_KEYS = {
+        apiHost: 'mitr_esp32_agent_api_host',
+        bridgeUrl: 'mitr_esp32_agent_bridge_url',
+        espIp: 'mitr_esp32_agent_esp_ip',
+        language: 'mitr_esp32_agent_language',
+        accessToken: 'mitr_websim_access_token',
+        refreshToken: 'mitr_websim_refresh_token',
+      };
+
+      const els = {
+        apiHost: document.getElementById('apiHost'),
+        language: document.getElementById('language'),
+        bridgeUrl: document.getElementById('bridgeUrl'),
+        espIp: document.getElementById('espIp'),
+        startBtn: document.getElementById('startBtn'),
+        stopBtn: document.getElementById('stopBtn'),
+        clearBtn: document.getElementById('clearBtn'),
+        backendDot: document.getElementById('backendDot'),
+        backendState: document.getElementById('backendState'),
+        rtcDot: document.getElementById('rtcDot'),
+        rtcState: document.getElementById('rtcState'),
+        agentDot: document.getElementById('agentDot'),
+        agentState: document.getElementById('agentState'),
+        userDot: document.getElementById('userDot'),
+        userState: document.getElementById('userState'),
+        pipelineValue: document.getElementById('pipelineValue'),
+        sessionValue: document.getElementById('sessionValue'),
+        userValue: document.getElementById('userValue'),
+        formatValue: document.getElementById('formatValue'),
+        transcript: document.getElementById('transcript'),
+        logs: document.getElementById('logs'),
+      };
+
+      let accessToken = window.localStorage.getItem(STORAGE_KEYS.accessToken) || null;
+      let refreshToken = window.localStorage.getItem(STORAGE_KEYS.refreshToken) || null;
+
+      let backendSocket = null;
+      let micBridgeSocket = null;
+      let signalSocket = null;
+      let rtcPeer = null;
+      let audioContext = null;
+      let captureSource = null;
+      let captureProcessor = null;
+      let captureMute = null;
+      let rtcDestination = null;
+      let rtcOutboundGain = null;
+      let nextPlaybackAt = 0;
+      let backendOutputFormat = null;
+      let pendingMicSamples = new Int16Array(0);
+      let hasLoggedMicPacket = false;
+      const scheduledSources = new Set();
+
+      const log = (event, meta) => {
+        const ts = new Date().toLocaleTimeString();
+        const line = meta ? ` ${JSON.stringify(meta)}` : '';
+        els.logs.textContent += `[${ts}] ${event}${line}\n`;
+        els.logs.scrollTop = els.logs.scrollHeight;
+      };
+
+      const setBadge = (dot, label, text, state) => {
+        dot.className = `dot ${state || ''}`.trim();
+        label.textContent = text;
+      };
+
+      const setBackendState = (text, state) => setBadge(els.backendDot, els.backendState, `backend: ${text}`, state);
+      const setRtcState = (text, state) => setBadge(els.rtcDot, els.rtcState, `rtc: ${text}`, state);
+      const setAgentState = (text, state) => setBadge(els.agentDot, els.agentState, `agent: ${text}`, state);
+      const setUserState = (text, state) => setBadge(els.userDot, els.userState, `user: ${text}`, state);
+
+      const persistField = (key, value) => {
+        window.localStorage.setItem(key, value);
+      };
+
+      const restoreFields = () => {
+        const persistedHost = window.localStorage.getItem(STORAGE_KEYS.apiHost);
+        const persistedBridge = window.localStorage.getItem(STORAGE_KEYS.bridgeUrl);
+        const persistedEspIp = window.localStorage.getItem(STORAGE_KEYS.espIp);
+        const persistedLanguage = window.localStorage.getItem(STORAGE_KEYS.language);
+        if (persistedHost) {
+          els.apiHost.value =
+            persistedHost === 'http://localhost:8080' ? 'http://localhost:8081' : persistedHost;
+        }
+        if (persistedBridge) els.bridgeUrl.value = persistedBridge;
+        if (persistedEspIp) els.espIp.value = persistedEspIp;
+        if (persistedLanguage) els.language.value = persistedLanguage;
+      };
+
+      const persistAuthSession = (session) => {
+        accessToken = session?.accessToken || null;
+        refreshToken = session?.refreshToken || null;
+
+        if (accessToken) {
+          window.localStorage.setItem(STORAGE_KEYS.accessToken, accessToken);
+        } else {
+          window.localStorage.removeItem(STORAGE_KEYS.accessToken);
+        }
+
+        if (refreshToken) {
+          window.localStorage.setItem(STORAGE_KEYS.refreshToken, refreshToken);
+        } else {
+          window.localStorage.removeItem(STORAGE_KEYS.refreshToken);
+        }
+      };
+
+      const bootstrapAuth = async (host) => {
+        if (accessToken) {
+          const me = await fetch(`${host}/auth/me`, {
+            headers: { authorization: `Bearer ${accessToken}` },
+          });
+          if (me.ok) {
+            const payload = await me.json();
+            els.userValue.textContent = payload.user?.id || 'authenticated';
+            return;
+          }
+        }
+
+        const login = await fetch(`${host}/auth/email/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD }),
+        });
+
+        if (login.ok) {
+          const payload = await login.json();
+          persistAuthSession(payload.session);
+          els.userValue.textContent = payload.user?.id || 'authenticated';
+          return;
+        }
+
+        const signup = await fetch(`${host}/auth/email/signup`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD, name: 'Tester Family' }),
+        });
+
+        if (!signup.ok) {
+          const body = await signup.text();
+          throw new Error(`Auth bootstrap failed (${signup.status}): ${body}`);
+        }
+
+        const payload = await signup.json();
+        persistAuthSession(payload.session);
+        els.userValue.textContent = payload.user?.id || 'authenticated';
+      };
+
+      const wsUrlFromHttp = (host, path, params = {}) => {
+        const url = new URL(host);
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+        url.pathname = path;
+        url.search = '';
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null && String(value).trim()) {
+            url.searchParams.set(key, String(value));
+          }
+        });
+        return url.toString();
+      };
+
+      const bridgeSocketUrl = (bridgeUrl, port) => {
+        const url = new URL(bridgeUrl);
+        url.port = String(port);
+        url.pathname = '/';
+        url.search = '';
+        url.hash = '';
+        return url.toString();
+      };
+
+      const concatInt16 = (left, right) => {
+        if (!left || left.length === 0) return right.slice();
+        if (!right || right.length === 0) return left.slice();
+        const merged = new Int16Array(left.length + right.length);
+        merged.set(left, 0);
+        merged.set(right, left.length);
+        return merged;
+      };
+
+      const downsampleToInt16 = (left, right, inputRate, outputRate) => {
+        if (!left || left.length === 0) return new Int16Array(0);
+        const ratio = inputRate / outputRate;
+        const outLength = Math.max(1, Math.floor(left.length / ratio));
+        const pcm = new Int16Array(outLength);
+
+        for (let i = 0; i < outLength; i++) {
+          const idx = Math.min(left.length - 1, Math.floor(i * ratio));
+          let value = left[idx];
+          if (right) value = (value + right[idx]) * 0.5;
+          value = Math.max(-1, Math.min(1, value));
+          pcm[i] = value < 0 ? value * 0x8000 : value * 0x7fff;
+        }
+
+        return pcm;
+      };
+
+      const queueMicSamples = (pcm) => {
+        if (!backendSocket || backendSocket.readyState !== WebSocket.OPEN || !pcm.length) return;
+        pendingMicSamples = concatInt16(pendingMicSamples, pcm);
+
+        while (pendingMicSamples.length >= INPUT_FRAME_SAMPLES) {
+          const frame = pendingMicSamples.slice(0, INPUT_FRAME_SAMPLES);
+          pendingMicSamples = pendingMicSamples.slice(INPUT_FRAME_SAMPLES);
+          backendSocket.send(frame.buffer);
+        }
+      };
+
+      const ensureAudioGraph = async () => {
+        if (!audioContext) {
+          audioContext = new AudioContext();
+          rtcDestination = audioContext.createMediaStreamDestination();
+          rtcOutboundGain = audioContext.createGain();
+          rtcOutboundGain.gain.value = 1;
+          rtcOutboundGain.connect(rtcDestination);
+          captureMute = audioContext.createGain();
+          captureMute.gain.value = 0;
+          captureMute.connect(audioContext.destination);
+        }
+
+        if (audioContext.state !== 'running') {
+          await audioContext.resume();
+        }
+        nextPlaybackAt = Math.max(nextPlaybackAt, audioContext.currentTime + 0.08);
+      };
+
+      const clearScheduledPlayback = () => {
+        for (const source of scheduledSources) {
+          try {
+            source.stop();
+          } catch (_) {}
+          try {
+            source.disconnect();
+          } catch (_) {}
+        }
+        scheduledSources.clear();
+        if (audioContext) {
+          nextPlaybackAt = audioContext.currentTime + 0.08;
+        }
+      };
+
+      const scheduleBackendAudio = async (arrayBuffer) => {
+        if (!backendOutputFormat || !audioContext || !rtcOutboundGain) return;
+        const pcm = new Int16Array(arrayBuffer);
+        if (!pcm.length) return;
+
+        const { sampleRate, channels } = backendOutputFormat;
+        const samplesPerChannel = Math.floor(pcm.length / channels);
+        if (!samplesPerChannel) return;
+
+        const audioBuffer = audioContext.createBuffer(channels, samplesPerChannel, sampleRate);
+        for (let channel = 0; channel < channels; channel++) {
+          const channelData = audioBuffer.getChannelData(channel);
+          for (let i = 0; i < samplesPerChannel; i++) {
+            const sample = pcm[i * channels + channel] || 0;
+            channelData[i] = sample / 32768;
+          }
+        }
+
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(rtcOutboundGain);
+
+        const startAt = Math.max(audioContext.currentTime + 0.08, nextPlaybackAt);
+        nextPlaybackAt = startAt + audioBuffer.duration;
+        scheduledSources.add(source);
+        source.onended = () => {
+          scheduledSources.delete(source);
+          try {
+            source.disconnect();
+          } catch (_) {}
+        };
+        source.start(startAt);
+      };
+
+      const connectMicBridge = (bridgeUrl, espIp) =>
+        new Promise((resolve, reject) => {
+          const wsUrl = bridgeSocketUrl(bridgeUrl, 8766);
+          const socket = new WebSocket(wsUrl);
+          socket.binaryType = 'arraybuffer';
+          micBridgeSocket = socket;
+
+          socket.addEventListener(
+            'open',
+            () => {
+              socket.send(JSON.stringify({ host: espIp, port: 1235 }));
+              log('mic_bridge_open', { wsUrl, espIp });
+            },
+            { once: true }
+          );
+
+          socket.addEventListener('message', (event) => {
+            if (typeof event.data === 'string') {
+              let message = null;
+              try {
+                message = JSON.parse(event.data);
+              } catch (_) {
+                log('mic_bridge_bad_json', { data: event.data });
+                return;
+              }
+
+              if (message?.status === 'connected') {
+                log('mic_bridge_connected', { espIp });
+                resolve();
+                return;
+              }
+
+              if (message?.status === 'error') {
+                reject(new Error(message.message || 'mic bridge error'));
+              }
+              return;
+            }
+
+            const pcm = new Int16Array(event.data);
+            if (!hasLoggedMicPacket) {
+              hasLoggedMicPacket = true;
+              log('mic_bridge_first_packet', { samples: pcm.length });
+            }
+            queueMicSamples(pcm);
+          });
+
+          socket.addEventListener('close', () => {
+            if (micBridgeSocket === socket) {
+              micBridgeSocket = null;
+            }
+          });
+
+          socket.addEventListener(
+            'error',
+            () => {
+              reject(new Error('Failed to connect ESP32 mic bridge'));
+            },
+            { once: true }
+          );
+        });
+
+      const connectBackend = (host, language) =>
+        new Promise((resolve, reject) => {
+          const wsUrl = wsUrlFromHttp(host, '/local/esp32-agent', { accessToken });
+          const socket = new WebSocket(wsUrl);
+          socket.binaryType = 'arraybuffer';
+          backendSocket = socket;
+          setBackendState('connecting', 'wait');
+
+          socket.addEventListener(
+            'open',
+            () => {
+              socket.send(
+                JSON.stringify({
+                  type: 'init',
+                  language,
+                  sampleRate: INPUT_SAMPLE_RATE,
+                  channels: INPUT_CHANNELS,
+                })
+              );
+              log('backend_socket_open', { wsUrl });
+            },
+            { once: true }
+          );
+
+          socket.addEventListener('message', async (event) => {
+            if (typeof event.data !== 'string') {
+              await scheduleBackendAudio(event.data);
+              return;
+            }
+
+            let message = null;
+            try {
+              message = JSON.parse(event.data);
+            } catch (_) {
+              log('backend_bad_json', { data: event.data });
+              return;
+            }
+
+            if (!message || typeof message !== 'object') return;
+
+            if (message.type === 'ready') {
+              setBackendState('ready', 'ok');
+              els.pipelineValue.textContent = message.pipeline || 'unknown';
+              els.sessionValue.textContent = message.sessionId || 'unknown';
+              els.userValue.textContent = message.userId || els.userValue.textContent;
+              resolve();
+              return;
+            }
+
+            if (message.type === 'output_format') {
+              backendOutputFormat = {
+                sampleRate: Number(message.sampleRate) || 24000,
+                channels: Number(message.channels) || 1,
+              };
+              els.formatValue.textContent = `${backendOutputFormat.sampleRate} Hz / ${backendOutputFormat.channels} ch`;
+              return;
+            }
+
+            if (message.type === 'playback_clear') {
+              clearScheduledPlayback();
+              return;
+            }
+
+            if (message.type === 'state') {
+              if (message.scope === 'agent') {
+                const value = message.value || 'idle';
+                const state = value === 'speaking' || value === 'listening' || value === 'thinking' ? 'ok' : '';
+                setAgentState(value, state);
+              }
+              if (message.scope === 'user') {
+                const value = message.value || 'listening';
+                const state = value === 'speaking' ? 'wait' : 'ok';
+                setUserState(value, state);
+              }
+              return;
+            }
+
+            if (message.type === 'transcript') {
+              if (message.final === false) return;
+              appendTranscript(message.speaker === 'assistant' ? 'Mitr' : 'User', message.text || '');
+              return;
+            }
+
+            if (message.type === 'tool_event') {
+              log('tool_event', { calls: message.calls || [] });
+              return;
+            }
+
+            if (message.type === 'session_closed') {
+              log('backend_session_closed', { reason: message.reason || 'unknown' });
+              setBackendState(`closed (${message.reason || 'unknown'})`, 'err');
+              return;
+            }
+
+            if (message.type === 'error') {
+              log('backend_error', { message: message.message || 'unknown' });
+              setBackendState('error', 'err');
+              if (backendSocket === socket) {
+                reject(new Error(message.message || 'backend websocket error'));
+              }
+            }
+          });
+
+          socket.addEventListener('close', () => {
+            if (backendSocket === socket) {
+              backendSocket = null;
+              setBackendState('closed', 'err');
+            }
+          });
+
+          socket.addEventListener(
+            'error',
+            () => {
+              if (backendSocket === socket) {
+                setBackendState('error', 'err');
+              }
+              reject(new Error('Failed to connect backend websocket'));
+            },
+            { once: true }
+          );
+        });
+
+      const connectRtcBridge = (bridgeUrl, espIp) =>
+        new Promise(async (resolve, reject) => {
+          await ensureAudioGraph();
+
+          const pc = new RTCPeerConnection({ iceServers: [] });
+          rtcPeer = pc;
+          setRtcState('connecting', 'wait');
+
+          const outboundTrack = rtcDestination.stream.getAudioTracks()[0];
+          pc.addTrack(outboundTrack, rtcDestination.stream);
+
+          pc.ontrack = (event) => {
+            log('rtc_track_received', { kind: event.track.kind });
+          };
+
+          pc.onconnectionstatechange = () => {
+            const state = pc.connectionState;
+            if (state === 'connected') {
+              setRtcState('connected', 'ok');
+              resolve();
+              return;
+            }
+            if (state === 'connecting') {
+              setRtcState('connecting', 'wait');
+              return;
+            }
+            if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+              setRtcState(state, 'err');
+            }
+          };
+
+          const ws = new WebSocket(bridgeUrl);
+          signalSocket = ws;
+
+          pc.onicecandidate = (event) => {
+            if (!event.candidate || !signalSocket || signalSocket.readyState !== WebSocket.OPEN) return;
+            signalSocket.send(
+              JSON.stringify({
+                type: 'candidate',
+                candidate: {
+                  candidate: event.candidate.candidate,
+                  sdpMid: event.candidate.sdpMid,
+                  sdpMLineIndex: event.candidate.sdpMLineIndex,
+                },
+              })
+            );
+          };
+
+          ws.addEventListener(
+            'open',
+            async () => {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              ws.send(
+                JSON.stringify({
+                  type: 'offer',
+                  sdp: offer.sdp,
+                  host: espIp,
+                  mode: 'duplex',
+                })
+              );
+              log('rtc_offer_sent', { bridgeUrl, espIp });
+            },
+            { once: true }
+          );
+
+          ws.addEventListener('message', async (event) => {
+            let message = null;
+            try {
+              message = JSON.parse(event.data);
+            } catch (_) {
+              return;
+            }
+
+            if (!message || typeof message !== 'object') return;
+            if (message.type === 'answer') {
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: message.sdp }));
+              log('rtc_answer_set');
+              return;
+            }
+            if (message.type === 'candidate' && message.candidate) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+              } catch (_) {}
+              return;
+            }
+            if (message.type === 'error') {
+              reject(new Error(message.message || 'bridge error'));
+            }
+          });
+
+          ws.addEventListener(
+            'error',
+            () => {
+              reject(new Error('Failed to connect bridge signaling websocket'));
+            },
+            { once: true }
+          );
+
+          ws.addEventListener('close', () => {
+            if (signalSocket === ws) {
+              signalSocket = null;
+              if (rtcPeer === pc && pc.connectionState !== 'closed') {
+                setRtcState('signaling closed', 'err');
+              }
+            }
+          });
+        });
+
+      const appendTranscript = (speaker, text) => {
+        if (!text || !String(text).trim()) return;
+        const line = document.createElement('div');
+        line.className = 'line';
+        line.innerHTML = `<strong>${speaker}</strong><span>${String(text)}</span>`;
+        els.transcript.appendChild(line);
+        els.transcript.scrollTop = els.transcript.scrollHeight;
+      };
+
+      const stopSession = async () => {
+        els.startBtn.disabled = false;
+        els.stopBtn.disabled = true;
+
+        pendingMicSamples = new Int16Array(0);
+        hasLoggedMicPacket = false;
+        clearScheduledPlayback();
+
+        if (captureProcessor) {
+          try {
+            captureProcessor.disconnect();
+          } catch (_) {}
+          captureProcessor.onaudioprocess = null;
+          captureProcessor = null;
+        }
+
+        if (captureSource) {
+          try {
+            captureSource.disconnect();
+          } catch (_) {}
+          captureSource = null;
+        }
+
+        if (rtcPeer) {
+          try {
+            rtcPeer.close();
+          } catch (_) {}
+          rtcPeer = null;
+        }
+
+        if (signalSocket) {
+          try {
+            signalSocket.close();
+          } catch (_) {}
+          signalSocket = null;
+        }
+
+        if (micBridgeSocket) {
+          try {
+            micBridgeSocket.close();
+          } catch (_) {}
+          micBridgeSocket = null;
+        }
+
+        if (backendSocket) {
+          try {
+            backendSocket.close();
+          } catch (_) {}
+          backendSocket = null;
+        }
+
+        if (audioContext) {
+          try {
+            await audioContext.close();
+          } catch (_) {}
+          audioContext = null;
+          rtcDestination = null;
+          rtcOutboundGain = null;
+          captureMute = null;
+        }
+
+        backendOutputFormat = null;
+        nextPlaybackAt = 0;
+        els.formatValue.textContent = 'waiting for first audio frame';
+        els.pipelineValue.textContent = 'not started';
+        els.sessionValue.textContent = 'not started';
+        setBackendState('idle', '');
+        setRtcState('idle', '');
+        setAgentState('idle', '');
+        setUserState('listening', '');
+        log('session_stopped');
+      };
+
+      const startSession = async () => {
+        els.startBtn.disabled = true;
+        els.stopBtn.disabled = false;
+
+        const host = els.apiHost.value.trim().replace(/\/$/, '');
+        const language = els.language.value.trim() || 'hi-IN';
+        const bridgeUrl = els.bridgeUrl.value.trim();
+        const espIp = els.espIp.value.trim() || '192.168.4.1';
+
+        persistField(STORAGE_KEYS.apiHost, host);
+        persistField(STORAGE_KEYS.bridgeUrl, bridgeUrl);
+        persistField(STORAGE_KEYS.espIp, espIp);
+        persistField(STORAGE_KEYS.language, language);
+
+        try {
+          await bootstrapAuth(host);
+          await ensureAudioGraph();
+          await connectBackend(host, language);
+          await connectMicBridge(bridgeUrl, espIp);
+          await connectRtcBridge(bridgeUrl, espIp);
+          log('session_started', { host, bridgeUrl, language, espIp });
+        } catch (error) {
+          log('session_start_failed', { error: error.message || String(error) });
+          await stopSession();
+        }
+      };
+
+      els.startBtn.addEventListener('click', () => {
+        void startSession();
+      });
+
+      els.stopBtn.addEventListener('click', () => {
+        void stopSession();
+      });
+
+      els.clearBtn.addEventListener('click', () => {
+        els.transcript.innerHTML = '';
+      });
+
+      restoreFields();
+      setBackendState('idle', '');
+      setRtcState('idle', '');
+      setAgentState('idle', '');
+      setUserState('listening', '');
+      log('ready', {
+        flow: 'ESP32 -> bridge.py -> backend agent session -> bridge.py -> ESP32'
+      });
+    </script>
+  </body>
+</html>

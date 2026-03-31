@@ -6,6 +6,7 @@ import { logger } from './lib/logger.js';
 
 validateEnv();
 import { registerSessionRoutes } from './routes/session.js';
+import { registerEsp32LocalAgentBridge } from './routes/esp32-local-agent.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerFamilyRoutes } from './routes/family.js';
 import { registerElderRoutes } from './routes/elder.js';
@@ -97,6 +98,7 @@ const bootstrap = async (): Promise<void> => {
   registerHomeRoutes(app, auth);
   registerNotificationsRoutes(app, auth);
   registerSessionRoutes(app, store, profiles, auth);
+  registerEsp32LocalAgentBridge(app, auth, profiles);
 
   await db.execute(sql`select 1`);
   const recovery = new SessionRecoveryService();

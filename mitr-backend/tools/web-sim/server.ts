@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.WEB_SIM_PORT ?? 8787);
+const pagesRoot = resolve(process.cwd(), 'tools/web-sim');
 const indexPath = resolve(process.cwd(), 'tools/web-sim/index.html');
 const assetsRoot = resolve(process.cwd(), 'tools/web-sim/assets');
 
@@ -72,6 +73,9 @@ const safeSendJson = (socket: WebSocket, payload: unknown) => {
 };
 
 const contentTypeFor = (path: string): string => {
+  if (path.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (path.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (path.endsWith('.css')) return 'text/css; charset=utf-8';
   if (path.endsWith('.mp3')) return 'audio/mpeg';
   if (path.endsWith('.ogg') || path.endsWith('.oga')) return 'audio/ogg';
   if (path.endsWith('.wav')) return 'audio/wav';
@@ -92,6 +96,19 @@ const server = createServer(async (req, res) => {
     } catch (error) {
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
       res.end(`Failed to load simulator page: ${(error as Error).message}`);
+      return;
+    }
+  }
+
+  if (req.url === '/esp32-agent' || req.url === '/esp32-agent.html') {
+    try {
+      const html = await readFile(resolve(pagesRoot, 'esp32-agent.html'), 'utf8');
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    } catch (error) {
+      res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(`Failed to load ESP32 simulator page: ${(error as Error).message}`);
       return;
     }
   }
