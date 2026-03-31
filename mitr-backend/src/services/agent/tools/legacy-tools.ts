@@ -12,6 +12,7 @@ import { WebSearchService } from '../../web/web-search-service.js';
 import { logger } from '../../../lib/logger.js';
 import { env } from '../../../config/env.js';
 import { NudgesService } from '../../nudges/nudges-service.js';
+import { getCurrentDateTimeContext } from '../../../lib/current-datetime.js';
 
 export interface ToolDeps {
   religiousRetriever: ReligiousRetriever;
@@ -725,7 +726,7 @@ export const createLegacyToolDefinitions = (
   const reminderCreate: AgentToolDefinition = {
     name: 'reminder_create',
     description:
-      'Create alarm/reminder items for medicine, appointments, routines, or schedule tasks only. Do not use this for family nudges/messages.',
+      'Create alarm/reminder items for medicine, appointments, routines, or schedule tasks only. Do not use this for family nudges/messages. Requires a future ISO datetime string. For requests using today, tomorrow, कल, परसों, or a date without a year, call current_datetime_get first and construct the ISO datetime in Asia/Kolkata.',
     parameters: z.object({
       title: z.string(),
       datetimeISO: z.string(),
@@ -745,6 +746,15 @@ export const createLegacyToolDefinitions = (
       });
       return { reminderId: reminder.id };
     }
+  };
+
+  const currentDatetimeGet: AgentToolDefinition = {
+    name: 'current_datetime_get',
+    description:
+      'Get the current date and time in India (Asia/Kolkata). Call this before reminder_create when the user uses relative dates like today, tomorrow, कल, परसों, next week, or gives a date without a year.',
+    parameters: z.object({}),
+    timeoutMs: 300,
+    execute: async () => getCurrentDateTimeContext()
   };
 
   const reminderList: AgentToolDefinition = {
@@ -1900,6 +1910,7 @@ export const createLegacyToolDefinitions = (
   const definitions: AgentToolDefinition[] = [
     memoryAdd,
     memoryGet,
+    currentDatetimeGet,
     reminderCreate,
     reminderList,
     nudgePendingGet,

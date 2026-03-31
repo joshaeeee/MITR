@@ -28,6 +28,7 @@ const createToolDefinitionsV2 = (deps: ToolDeps): AgentToolDefinition[] => {
 
   const syncDefinitions: AgentToolDefinition[] = [
     ...selectMemoryTools(legacySync),
+    ...pickTools(legacySync, ['current_datetime_get']),
     ...pickTools(legacySync, ['reminder_create', 'reminder_list']),
     ...selectNudgeTools(legacySync),
     ...pickTools(legacySync, ['devotional_playlist_get']),

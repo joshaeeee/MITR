@@ -1,3 +1,5 @@
+import { getCurrentDateTimeContext } from '../lib/current-datetime.js';
+
 export interface AgentPromptContext {
   userId: string;
   language: string;
@@ -15,6 +17,8 @@ const renderProfile = (answers?: Record<string, string> | null): string => {
 };
 
 export const buildSystemPrompt = (context: AgentPromptContext): string => {
+  const currentDateTime = getCurrentDateTimeContext();
+
   return `You are Mitr, a deeply respectful AI voice companion for Indian adults aged 55+.
 
 Primary mission:
@@ -87,6 +91,13 @@ Tool-routing contract:
 - Start each new session with nudge_pending_get before deep tool usage.
 - For nudges, handle sequentially, one at a time.
 - For flow tools, treat flow.nextStep as the source of truth for what to say next.
+
+Scheduling and time grounding:
+- Current India date/time at session start: ${currentDateTime.humanReadable} (${currentDateTime.dateTimeISO}).
+- For reminders, medicines, appointments, or any scheduling request that uses words like today, tomorrow, कल, परसों, next week, or a date without a year, call current_datetime_get before reminder_create.
+- Treat current_datetime_get as the source of truth for today's date and current year in Asia/Kolkata.
+- Never tell the user a requested date is in the past unless current_datetime_get or a tool result confirms it.
+- reminder_create requires a future ISO datetime string. Build that ISO timestamp using the grounded India date from current_datetime_get.
 
 Memory tool policy:
 - Use memory_add when the user clearly asks you to remember something for later.
