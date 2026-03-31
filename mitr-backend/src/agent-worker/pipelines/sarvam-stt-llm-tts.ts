@@ -9,10 +9,8 @@ import {
 } from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
 import {
+  createSarvamTtsWithFallback,
   normalizeSarvamLanguageCode,
-  normalizeSarvamTtsLanguageCode,
-  normalizeSarvamTtsSpeaker,
-  normalizeSarvamTtsModel,
   SILERO_VAD_USERDATA_KEY
 } from './utils.js';
 
@@ -43,8 +41,6 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
   createSession({ env, logger, language, ctx }) {
     const openRouter = getOpenRouterConfig(env);
     const sarvamConfig = getSarvamSpeechConfig(env);
-    const ttsModel = normalizeSarvamTtsModel(sarvamConfig.ttsModel, logger);
-    const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, sarvamConfig.ttsSpeaker, logger);
     const sarvamNonStreamingStt = !sarvamConfig.sttStreaming;
     const prewarmedVad = ctx.proc.userData[SILERO_VAD_USERDATA_KEY] as silero.VAD | undefined;
 
@@ -62,11 +58,10 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
         apiKey: openRouter.apiKey,
         baseURL: openRouter.baseUrl
       }),
-      tts: new sarvam.TTS({
-        model: ttsModel,
-        speaker: ttsSpeaker,
-        targetLanguageCode: normalizeSarvamTtsLanguageCode(language, logger),
-        streaming: sarvamConfig.ttsStreaming
+      tts: createSarvamTtsWithFallback({
+        config: sarvamConfig,
+        language,
+        logger
       }),
       voiceOptions: {
         maxToolSteps: 3,

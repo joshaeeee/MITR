@@ -1,14 +1,11 @@
 import { Modality } from '@google/genai';
 import { voice } from '@livekit/agents';
 import * as google from '@livekit/agents-plugin-google';
-import * as sarvam from '@livekit/agents-plugin-sarvam';
 import { getGoogleRealtimeConfig, getSarvamSpeechConfig } from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
 import {
+  createSarvamTtsWithFallback,
   normalizeGoogleRealtimeModel,
-  normalizeSarvamTtsLanguageCode,
-  normalizeSarvamTtsSpeaker,
-  normalizeSarvamTtsModel
 } from './utils.js';
 
 const resolveGoogleRealtimeModel = (
@@ -52,19 +49,16 @@ export const geminiRealtimeTextSarvamTtsPipeline: VoicePipelineStrategy = {
     const googleConfig = getGoogleRealtimeConfig(env);
     const sarvamConfig = getSarvamSpeechConfig(env);
     const model = resolveGoogleRealtimeModel(googleConfig.model, logger);
-    const ttsModel = normalizeSarvamTtsModel(sarvamConfig.ttsModel, logger);
-    const ttsSpeaker = normalizeSarvamTtsSpeaker(ttsModel, sarvamConfig.ttsSpeaker, logger);
 
     return new voice.AgentSession({
       llm: new google.beta.realtime.RealtimeModel({
         model,
         modalities: [Modality.TEXT]
       }),
-      tts: new sarvam.TTS({
-        model: ttsModel,
-        speaker: ttsSpeaker,
-        targetLanguageCode: normalizeSarvamTtsLanguageCode(language, logger),
-        streaming: sarvamConfig.ttsStreaming
+      tts: createSarvamTtsWithFallback({
+        config: sarvamConfig,
+        language,
+        logger
       }),
       voiceOptions: {
         maxToolSteps: 3,

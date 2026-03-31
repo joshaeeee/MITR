@@ -1,4 +1,6 @@
+import { tts } from '@livekit/agents';
 import * as sarvam from '@livekit/agents-plugin-sarvam';
+import type { SarvamSpeechConfig } from '../../config/voice-pipeline-config.js';
 import type { PipelineLogger } from './types.js';
 export const SILERO_VAD_USERDATA_KEY = 'silero_vad';
 
@@ -115,3 +117,50 @@ export const normalizeGoogleRealtimeModel = (configuredModel: string): string =>
     .trim()
     .replace(/^models\//i, '')
     .replace(/^google\//i, '');
+
+export const createSarvamTtsWithFallback = ({
+  config,
+  language,
+  logger
+}: {
+  config: SarvamSpeechConfig;
+  language: string;
+  logger: PipelineLogger;
+}): tts.TTS => {
+  const model = normalizeSarvamTtsModel(config.ttsModel, logger);
+  const speaker = normalizeSarvamTtsSpeaker(model, config.ttsSpeaker, logger);
+  const targetLanguageCode = normalizeSarvamTtsLanguageCode(language, logger);
+  const baseOptions = {
+    model,
+    speaker,
+    targetLanguageCode
+  } as const;
+
+  if (!config.ttsStreaming) {
+    return new sarvam.TTS({
+      ...baseOptions,
+      streaming: false
+    });
+  }
+
+  logger.warn('Sarvam TTS streaming enabled with automatic REST fallback on WS failure', {
+    model,
+    speaker,
+    targetLanguageCode
+  });
+
+  return new tts.FallbackAdapter({
+    ttsInstances: [
+      new sarvam.TTS({
+        ...baseOptions,
+        streaming: true
+      }),
+      new sarvam.TTS({
+        ...baseOptions,
+        streaming: false
+      })
+    ],
+    maxRetryPerTTS: 0,
+    recoveryDelayMs: 10_000
+  });
+};
