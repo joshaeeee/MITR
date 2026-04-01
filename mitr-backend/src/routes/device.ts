@@ -50,6 +50,10 @@ const deviceSessionEndSchema = z.object({
   reason: z.string().optional()
 });
 
+const revokeDeviceSchema = z.object({
+  deviceId: z.string().min(1)
+});
+
 export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): void => {
   const device = new DeviceService();
   const control = new DeviceControlService();
@@ -80,6 +84,10 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
 
   app.post('/devices/claim/start', { preHandler: guard }, async (request, reply) => {
     return reply.send(await control.startClaim(request.auth!.user.id));
+  });
+
+  app.get('/devices/claimed', { preHandler: guard }, async (request, reply) => {
+    return reply.send({ items: await control.listDevicesForUser(request.auth!.user.id) });
   });
 
   app.post('/devices/claim/complete', async (request, reply) => {
@@ -157,5 +165,16 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
         reason: parsed.data.reason
       })
     );
+  });
+
+  app.post('/devices/revoke', { preHandler: guard }, async (request, reply) => {
+    const parsed = revokeDeviceSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    const ok = await control.revokeDeviceForUser(request.auth!.user.id, parsed.data.deviceId);
+    if (!ok) {
+      return reply.status(404).send({ error: 'Device not found or already revoked' });
+    }
+    return reply.send({ ok: true });
   });
 };

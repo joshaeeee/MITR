@@ -100,6 +100,36 @@ export class DeviceControlService {
     });
   }
 
+  async revokeDeviceForUser(userId: string, deviceId: string): Promise<boolean> {
+    const [device] = await db
+      .select()
+      .from(devices)
+      .where(and(eq(devices.userId, userId), eq(devices.deviceId, deviceId), isNull(devices.revokedAt)))
+      .limit(1);
+
+    if (!device) return false;
+
+    const now = new Date();
+    await db
+      .update(devices)
+      .set({
+        revokedAt: now,
+        updatedAt: now
+      })
+      .where(eq(devices.id, device.id));
+
+    await db
+      .update(deviceSessions)
+      .set({
+        status: 'ended',
+        endedAt: now,
+        endReason: 'device_revoked'
+      })
+      .where(and(eq(deviceSessions.deviceId, device.deviceId), or(eq(deviceSessions.status, 'issued'), eq(deviceSessions.status, 'active'))));
+
+    return true;
+  }
+
   async startClaim(userId: string): Promise<{ claimId: string; claimCode: string; expiresAt: number }> {
     const claimCode = createClaimCode();
     const expiresAt = Date.now() + CLAIM_TTL_MS;

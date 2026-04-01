@@ -121,6 +121,8 @@ The backend should provide:
 
 - `POST /devices/claim/start`
 - `POST /devices/claim/complete`
+- `GET /devices/claimed`
+- `POST /devices/revoke`
 - `POST /devices/token`
 - `POST /devices/heartbeat`
 - `POST /devices/telemetry`
