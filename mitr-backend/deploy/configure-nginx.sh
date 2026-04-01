@@ -18,7 +18,17 @@ ENABLE_HTTPS="$(get_env ENABLE_HTTPS)"
 PUBLIC_HOSTNAME="$(get_env PUBLIC_HOSTNAME)"
 CERT_DIR="/etc/letsencrypt/live/${PUBLIC_HOSTNAME}"
 
-if [[ "${ENABLE_HTTPS}" == "true" && -n "${PUBLIC_HOSTNAME}" && -f "${CERT_DIR}/fullchain.pem" && -f "${CERT_DIR}/privkey.pem" ]]; then
+cert_ready() {
+  local cert_dir="$1"
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo test -f "${cert_dir}/fullchain.pem" && sudo test -f "${cert_dir}/privkey.pem"
+  else
+    test -f "${cert_dir}/fullchain.pem" && test -f "${cert_dir}/privkey.pem"
+  fi
+}
+
+if [[ "${ENABLE_HTTPS}" == "true" && -n "${PUBLIC_HOSTNAME}" ]] && cert_ready "${CERT_DIR}"; then
   sed "s#__PUBLIC_HOSTNAME__#${PUBLIC_HOSTNAME}#g" "${HTTPS_TEMPLATE}" > "${TARGET_CONF}"
   echo "[nginx] configured HTTPS for ${PUBLIC_HOSTNAME}"
 else
