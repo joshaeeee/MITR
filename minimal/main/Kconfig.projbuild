@@ -9,7 +9,7 @@ menu "Mitr ESP32 Device"
 
     config LK_EXAMPLE_SPEAKER_VOLUME
         int "Default speaker volume (0-100%)"
-        default 85
+        default 100
         range 0 100
         help
             Initial output volume used by the LiveKit renderer path.
