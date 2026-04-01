@@ -15,6 +15,8 @@ get_env() {
 
 ENABLE_HTTPS="$(get_env ENABLE_HTTPS)"
 PUBLIC_HOSTNAME="$(get_env PUBLIC_HOSTNAME)"
+TLS_ADDITIONAL_HOSTNAMES="$(get_env TLS_ADDITIONAL_HOSTNAMES)"
+TLS_CERT_NAME="$(get_env TLS_CERT_NAME)"
 TLS_EMAIL="$(get_env TLS_EMAIL)"
 
 if [[ "${ENABLE_HTTPS}" != "true" ]]; then
@@ -26,6 +28,24 @@ if [[ -z "${PUBLIC_HOSTNAME}" || -z "${TLS_EMAIL}" ]]; then
   echo "[https] PUBLIC_HOSTNAME and TLS_EMAIL must be set"
   exit 1
 fi
+
+CERTBOT_DOMAINS=("${PUBLIC_HOSTNAME}")
+if [[ -n "${TLS_ADDITIONAL_HOSTNAMES}" ]]; then
+  IFS=',' read -r -a ADDITIONAL_HOSTS <<< "${TLS_ADDITIONAL_HOSTNAMES}"
+  for host in "${ADDITIONAL_HOSTS[@]}"; do
+    host="$(printf '%s' "${host}" | xargs)"
+    if [[ -n "${host}" ]]; then
+      CERTBOT_DOMAINS+=("${host}")
+    fi
+  done
+fi
+
+CERTBOT_DOMAIN_ARGS=()
+for host in "${CERTBOT_DOMAINS[@]}"; do
+  CERTBOT_DOMAIN_ARGS+=("-d" "${host}")
+done
+
+CERTBOT_CERT_NAME="${TLS_CERT_NAME:-${PUBLIC_HOSTNAME}}"
 
 if ! command -v certbot >/dev/null 2>&1; then
   sudo apt-get update
@@ -43,8 +63,10 @@ sudo certbot certonly \
   --webroot-path "${CERTBOT_WEBROOT}" \
   --non-interactive \
   --agree-tos \
+  --expand \
+  --cert-name "${CERTBOT_CERT_NAME}" \
   --email "${TLS_EMAIL}" \
-  -d "${PUBLIC_HOSTNAME}" \
+  "${CERTBOT_DOMAIN_ARGS[@]}" \
   --keep-until-expiring
 
 bash "${SCRIPT_DIR}/configure-nginx.sh"
