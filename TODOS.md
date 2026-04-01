@@ -9,6 +9,7 @@
 - [x] Add migration for `devices`, `device_claims`, `device_sessions`, `device_telemetry`, and `firmware_releases`
 - [x] Add smoke tooling for device claim -> token flow and firmware-release seeding
 - [x] Replace the old ESP-IDF browser-bridge demo with a LiveKit-native device starter wired to `/devices/token`, `/devices/heartbeat`, `/devices/telemetry`, and `/devices/session/end`
+- [x] Validate the LiveKit-native ESP-IDF starter with a real `idf.py build` on ESP-IDF `v5.4.2`
 - [ ] Run `drizzle:migrate` against the shared backend database
 - [ ] Wire the mobile/family-facing device UI to the new `productionDevices` status payload
 - [ ] Implement BLE-first provisioning with proof-of-possession and persistent `device_id`

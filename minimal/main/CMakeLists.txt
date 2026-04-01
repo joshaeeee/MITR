@@ -5,6 +5,20 @@ idf_component_register(
         "board.c"
         "media.c"
         "device_api.c"
+        "atomic_compat.c"
     INCLUDE_DIRS
         "."
+    PRIV_REQUIRES
+        esp_http_client
+        esp_netif
+        esp_wifi
+        json
+        espressif__esp_audio_codec
+        espressif__esp_capture
+        livekit__example_utils
+        livekit__livekit
+        tempotian__av_render
+        tempotian__codec_board
+        tempotian__media_lib_sal
+    WHOLE_ARCHIVE
 )

@@ -120,6 +120,8 @@ idf.py -p /dev/cu.usbmodem1101 monitor
 
 The first `idf.py build` after these manifest changes will refresh `dependencies.lock`.
 
+Verified locally on `2026-04-01` with `ESP-IDF v5.4.2`.
+
 ## Expected boot flow
 
 Healthy signs:
