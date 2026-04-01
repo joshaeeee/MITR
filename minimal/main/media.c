@@ -32,19 +32,18 @@ static int build_capturer_system(void)
     esp_codec_dev_handle_t record_handle = get_record_handle();
     NULL_CHECK(record_handle, "Failed to get record handle");
 
-    esp_capture_audio_aec_src_cfg_t codec_cfg = {
+    esp_capture_audio_dev_src_cfg_t codec_cfg = {
         .record_handle = record_handle,
-        .channel = 4,
-        .channel_mask = 1 | 2
     };
-    capturer_system.audio_source = esp_capture_new_audio_aec_src(&codec_cfg);
+    capturer_system.audio_source = esp_capture_new_audio_dev_src(&codec_cfg);
     NULL_CHECK(capturer_system.audio_source, "Failed to create audio source");
 
     esp_capture_cfg_t cfg = {
         .sync_mode = ESP_CAPTURE_SYNC_MODE_AUDIO,
         .audio_src = capturer_system.audio_source
     };
-    esp_capture_open(&cfg, &capturer_system.capturer_handle);
+    int ret = esp_capture_open(&cfg, &capturer_system.capturer_handle);
+    ESP_RETURN_ON_FALSE(ret == 0, -1, TAG, "Failed to open capture system");
     NULL_CHECK(capturer_system.capturer_handle, "Failed to open capture system");
     return 0;
 }
@@ -89,8 +88,8 @@ int media_init(void)
     esp_audio_dec_register_default();
 
     // Build capturer and renderer systems
-    build_capturer_system();
-    build_renderer_system();
+    ESP_RETURN_ON_FALSE(build_capturer_system() == 0, -1, TAG, "Capture init failed");
+    ESP_RETURN_ON_FALSE(build_renderer_system() == 0, -1, TAG, "Renderer init failed");
     return 0;
 }
 

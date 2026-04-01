@@ -5,6 +5,7 @@
 
 static portMUX_TYPE g_atomic_compat_lock = portMUX_INITIALIZER_UNLOCKED;
 
+__attribute__((weak))
 uint8_t __atomic_fetch_add_1(volatile void *ptr, uint8_t value, int memorder)
 {
     (void)memorder;
@@ -17,6 +18,7 @@ uint8_t __atomic_fetch_add_1(volatile void *ptr, uint8_t value, int memorder)
     return previous;
 }
 
+__attribute__((weak))
 uint8_t __atomic_fetch_sub_1(volatile void *ptr, uint8_t value, int memorder)
 {
     (void)memorder;

@@ -3,12 +3,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "livekit.h"
-#include "livekit_example_utils.h"
 
 #include "board.h"
 #include "device_api.h"
 #include "example.h"
 #include "media.h"
+#include "network.h"
 
 static const char *TAG = "mitr_device_main";
 
@@ -33,7 +33,7 @@ void app_main(void)
         mitr_device_hardware_rev(),
         mitr_device_language());
 
-    if (!lk_example_network_connect()) {
+    if (!mitr_network_connect()) {
         ESP_LOGE(TAG, "Wi-Fi connection failed");
         vTaskDelay(portMAX_DELAY);
         return;

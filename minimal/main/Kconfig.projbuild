@@ -1,11 +1,11 @@
 menu "Mitr ESP32 Device"
     config LK_EXAMPLE_CODEC_BOARD_TYPE
         string "Codec board type"
-        default "DUMMY_CODEC_BOARD"
+        default "MITR_ESP32_S3_RAW_I2S"
         help
             Supported codec board identifier from the codec_board component.
-            Keep DUMMY_CODEC_BOARD for compile-time scaffolding until the exact
-            board integration is wired to custom hardware.
+            Defaults to the raw I2S wiring used by the Mitr ESP32-S3-WROOM
+            bring-up board. Change this only when targeting different hardware.
 
     config LK_EXAMPLE_SPEAKER_VOLUME
         int "Default speaker volume (0-100%)"

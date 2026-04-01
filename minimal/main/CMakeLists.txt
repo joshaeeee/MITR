@@ -5,14 +5,17 @@ idf_component_register(
         "board.c"
         "media.c"
         "device_api.c"
+        "network.c"
         "atomic_compat.c"
     INCLUDE_DIRS
         "."
     PRIV_REQUIRES
         esp_http_client
+        esp_event
         esp_netif
         esp_wifi
         json
+        nvs_flash
         espressif__esp_audio_codec
         espressif__esp_capture
         livekit__example_utils
