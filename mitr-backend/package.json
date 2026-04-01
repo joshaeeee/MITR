@@ -28,6 +28,8 @@
     "stories:translate": "tsx scripts/translate-stories-sarvam.ts",
     "ingest:stories": "tsx scripts/ingest-stories-corpus.ts",
     "seed:dev-account": "tsx scripts/seed-dev-account.ts",
+    "seed:firmware-release": "tsx scripts/seed-firmware-release.ts",
+    "smoke:device-flow": "tsx scripts/smoke-device-flow.ts",
     "migrate:redis-to-postgres": "tsx scripts/migrate-redis-to-postgres.ts",
     "drizzle:generate": "drizzle-kit generate",
     "drizzle:migrate": "drizzle-kit migrate"

@@ -186,6 +186,20 @@ WHIP remains useful as a standards-based ingest option, but not as the core Mitr
 5. Run a small pilot on real home Wi-Fi.
 6. Decide whether the fallback path is necessary.
 
+## Developer Helpers
+
+The backend now includes helper scripts for exercising the control plane during development:
+
+- `pnpm seed:dev-account`
+  - creates a test user/family setup if needed
+- `pnpm smoke:device-flow -- --device-id mitr-esp32-001 --email tester@gmail.com`
+  - creates a claim
+  - completes the claim
+  - issues a device credential
+  - mints a LiveKit token for that device
+- `pnpm seed:firmware-release -- --hardware-rev esp32-s3-wroom --version v0.1.0`
+  - inserts or updates a firmware release row so heartbeat responses can recommend firmware
+
 ## Test Plan
 
 ### Functional

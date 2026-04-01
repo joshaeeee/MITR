@@ -2,6 +2,20 @@
 
 ## Infrastructure
 
+### ESP32 Production Rollout
+
+- [x] Preserve production architecture in repo docs with implementation references
+- [x] Add backend control-plane scaffold for device claim, auth, token minting, heartbeat, telemetry, and session end
+- [x] Add migration for `devices`, `device_claims`, `device_sessions`, `device_telemetry`, and `firmware_releases`
+- [x] Add smoke tooling for device claim -> token flow and firmware-release seeding
+- [ ] Run `drizzle:migrate` against the shared backend database
+- [ ] Wire the mobile/family-facing device UI to the new `productionDevices` status payload
+- [ ] Build the ESP-IDF firmware project for `ESP32-S3-WROOM` on top of the LiveKit custom hardware example
+- [ ] Implement BLE-first provisioning with proof-of-possession and persistent `device_id`
+- [ ] Integrate device firmware with `POST /devices/token`, `POST /devices/heartbeat`, `POST /devices/telemetry`, and `POST /devices/session/end`
+- [ ] Add data-channel control messages for mute, reconnect reason, and remote diagnostics
+- [ ] Run pilot soak testing on real home Wi-Fi and decide whether the Espressif gateway fallback is needed
+
 ### Split env.ts into scoped subsystem configs
 
 **What:** Split the monolithic env.ts (142 fields) into scoped config modules: db, mem0, retrieval, livekit, news, exa, sarvam, cartesia, panchang, auth, etc.

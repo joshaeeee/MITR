@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { and, desc, eq, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import { AccessToken, VideoGrant } from 'livekit-server-sdk';
 import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
 import { db } from '../../db/client.js';
@@ -22,6 +22,27 @@ export interface DeviceAuthRecord {
   metadataJson: Record<string, unknown>;
 }
 
+export interface ClaimedDeviceSummary {
+  deviceId: string;
+  displayName: string | null;
+  hardwareRev: string | null;
+  firmwareVersion: string | null;
+  claimedAt: number;
+  lastSeenAt: number | null;
+  revokedAt: number | null;
+  metadata: Record<string, unknown>;
+  lastSession: {
+    id: string;
+    roomName: string;
+    participantIdentity: string;
+    status: 'issued' | 'active' | 'ended';
+    startedAt: number;
+    lastHeartbeatAt: number;
+    endedAt: number | null;
+    endReason: string | null;
+  } | null;
+}
+
 const CLAIM_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_LANGUAGE = 'hi-IN';
 
@@ -34,6 +55,51 @@ const slug = (input: string): string => input.replace(/[^a-zA-Z0-9_-]/g, '-').sl
 const normalizeMetadata = (value: Record<string, unknown> | null | undefined): Record<string, unknown> => value ?? {};
 
 export class DeviceControlService {
+  async listDevicesForUser(userId: string): Promise<ClaimedDeviceSummary[]> {
+    const rows = await db.select().from(devices).where(eq(devices.userId, userId)).orderBy(desc(devices.claimedAt));
+    if (rows.length === 0) return [];
+
+    const deviceIds = rows.map((row) => row.deviceId);
+    const sessions = await db
+      .select()
+      .from(deviceSessions)
+      .where(and(eq(deviceSessions.userId, userId), inArray(deviceSessions.deviceId, deviceIds)))
+      .orderBy(desc(deviceSessions.startedAt));
+
+    const latestSessionByDevice = new Map<string, (typeof deviceSessions.$inferSelect)>();
+    for (const session of sessions) {
+      if (!latestSessionByDevice.has(session.deviceId)) {
+        latestSessionByDevice.set(session.deviceId, session);
+      }
+    }
+
+    return rows.map((row) => {
+      const lastSession = latestSessionByDevice.get(row.deviceId) ?? null;
+      return {
+        deviceId: row.deviceId,
+        displayName: row.displayName,
+        hardwareRev: row.hardwareRev,
+        firmwareVersion: row.firmwareVersion,
+        claimedAt: row.claimedAt.getTime(),
+        lastSeenAt: row.lastSeenAt?.getTime() ?? null,
+        revokedAt: row.revokedAt?.getTime() ?? null,
+        metadata: normalizeMetadata(row.metadataJson),
+        lastSession: lastSession
+          ? {
+              id: lastSession.id,
+              roomName: lastSession.roomName,
+              participantIdentity: lastSession.participantIdentity,
+              status: lastSession.status,
+              startedAt: lastSession.startedAt.getTime(),
+              lastHeartbeatAt: lastSession.lastHeartbeatAt.getTime(),
+              endedAt: lastSession.endedAt?.getTime() ?? null,
+              endReason: lastSession.endReason ?? null
+            }
+          : null
+      };
+    });
+  }
+
   async startClaim(userId: string): Promise<{ claimId: string; claimCode: string; expiresAt: number }> {
     const claimCode = createClaimCode();
     const expiresAt = Date.now() + CLAIM_TTL_MS;

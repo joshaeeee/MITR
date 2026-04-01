@@ -1,10 +1,20 @@
 import { ElderService } from '../elder/elder-service.js';
+import { DeviceControlService } from './device-control-service.js';
 
 export class DeviceService {
   private readonly elder = new ElderService();
+  private readonly control = new DeviceControlService();
 
   async status(userId: string) {
-    return this.elder.getDeviceStatus(userId);
+    const [legacyStatus, productionDevices] = await Promise.all([
+      this.elder.getDeviceStatus(userId),
+      this.control.listDevicesForUser(userId)
+    ]);
+
+    return {
+      ...legacyStatus,
+      productionDevices
+    };
   }
 
   async link(userId: string, input: { serialNumber: string; firmwareVersion?: string }) {
