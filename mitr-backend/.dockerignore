@@ -6,6 +6,4 @@ pnpm-debug.log*
 npm-debug.log*
 .DS_Store
 tools
-scripts
-drizzle
 README.md

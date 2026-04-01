@@ -148,6 +148,8 @@ Behavior:
 - Pushes to `main` (backend paths) run:
   - same CI gate
   - build + push API/agent images to GHCR (`sha-*` + `prod-latest`)
+  - baseline the Drizzle migration ledger if needed
+  - run production Drizzle migrations before the container restart
   - SSH deploy on EC2 via `deploy/deploy.sh`
   - rollback if healthcheck fails
   - public smoke check on `/healthz` and `/health/latency`
@@ -160,9 +162,12 @@ Required repo secrets:
 
 Optional repo secret:
 - `GHCR_USERNAME` (defaults to repository owner if omitted)
+- `PUBLIC_API_BASE_URL` (recommended, e.g. `https://api.heyreca.com`; otherwise smoke check falls back to `http://EC2_HOST`)
 
 Notes:
 - Deploy job rewrites `API_IMAGE`, `AGENT_IMAGE`, `REMINDER_IMAGE` in `deploy/.env.prod` to the new SHA-tagged images.
+- `deploy/.env.prod` should keep `RUN_DB_MIGRATIONS=true` unless you have a controlled reason to skip schema changes.
+- Automatic image rollback is intentionally disabled when migrations run, because old images may not be schema-compatible after a successful migration.
 - After deploy, it verifies running container image refs to prevent stale-image restarts.
 - If `ENABLE_HTTPS=true`, `PUBLIC_HOSTNAME`, and `TLS_EMAIL` are present in `.env.prod`, deploy also provisions/renews Let's Encrypt and exposes HTTPS on `443`.
 

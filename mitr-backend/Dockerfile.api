@@ -10,6 +10,9 @@ COPY package.json pnpm-lock.yaml ./
 RUN corepack enable && corepack prepare pnpm@10.6.5 --activate
 RUN pnpm install --frozen-lockfile
 
+COPY drizzle.config.ts ./
+COPY drizzle ./drizzle
+COPY scripts ./scripts
 COPY tsconfig.json ./
 COPY src ./src
 RUN pnpm build

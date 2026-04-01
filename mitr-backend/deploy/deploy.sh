@@ -7,6 +7,8 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.prod.yml"
 ENV_FILE="${SCRIPT_DIR}/.env.prod"
 HEALTHCHECK_SCRIPT="${SCRIPT_DIR}/healthcheck.sh"
+RUN_DB_MIGRATIONS="${RUN_DB_MIGRATIONS:-true}"
+ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="${ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS:-false}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[deploy] docker not found"
@@ -51,6 +53,16 @@ echo "  reminder=${PREV_REMINDER_IMAGE:-<none>}"
 echo "[deploy] pulling latest images"
 docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" pull
 
+if [[ "${RUN_DB_MIGRATIONS}" == "true" ]]; then
+  echo "[deploy] baselining drizzle ledger"
+  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" run --rm --no-deps api pnpm drizzle:baseline-ledger
+
+  echo "[deploy] applying drizzle migrations"
+  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" run --rm --no-deps api pnpm drizzle:migrate
+else
+  echo "[deploy] skipping database migrations"
+fi
+
 echo "[deploy] starting updated stack"
 docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans
 
@@ -62,6 +74,11 @@ if BASE_URL="${HEALTH_BASE_URL:-http://127.0.0.1}" "${HEALTHCHECK_SCRIPT}"; then
 fi
 
 echo "[deploy] healthcheck failed, attempting rollback"
+if [[ "${RUN_DB_MIGRATIONS}" == "true" && "${ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS}" != "true" ]]; then
+  echo "[deploy] automatic image rollback is disabled after migrations because schema changes may be incompatible"
+  exit 1
+fi
+
 if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_AGENT_IMAGE}" && -n "${PREV_REMINDER_IMAGE}" ]]; then
   API_IMAGE="${PREV_API_IMAGE}" \
   AGENT_IMAGE="${PREV_AGENT_IMAGE}" \
