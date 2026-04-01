@@ -1,40 +1,59 @@
-menu "ESP32 Audio Bridge"
-    config AUDIO_BRIDGE_URI
-        string "Bridge WebSocket URI"
-        default "ws://192.168.1.100:8787/esp32-audio"
+menu "Mitr ESP32 Device"
+    config LK_EXAMPLE_CODEC_BOARD_TYPE
+        string "Codec board type"
+        default "DUMMY_CODEC_BOARD"
         help
-            WebSocket bridge endpoint exposed by the MITR web simulator.
+            Supported codec board identifier from the codec_board component.
+            Keep DUMMY_CODEC_BOARD for compile-time scaffolding until the exact
+            board integration is wired to custom hardware.
 
-    config AUDIO_BRIDGE_ROOM
-        string "Bridge room name"
-        default "mitr-esp32-test"
+    config LK_EXAMPLE_SPEAKER_VOLUME
+        int "Default speaker volume (0-100%)"
+        default 85
+        range 0 100
         help
-            Must match the room name used in the web simulator so the bridge
-            routes the agent audio to this device.
+            Initial output volume used by the LiveKit renderer path.
 
-    config AUDIO_BRIDGE_SAMPLE_RATE
-        int "Playback sample rate"
-        default 16000
-        range 8000 48000
+    config MITR_DEVICE_BACKEND_BASE_URL
+        string "Mitr backend base URL"
+        default "http://192.168.1.100:8081"
         help
-            PCM sample rate expected from the browser audio bridge.
+            Backend API base URL. Use the backend's LAN IP for local testing or
+            the production HTTPS origin once device auth is deployed.
 
-    config AUDIO_BRIDGE_RINGBUF_BYTES
-        int "Audio ring buffer size (bytes)"
-        default 65536
-        range 8192 262144
+    config MITR_DEVICE_ACCESS_TOKEN
+        string "Device access token"
+        default ""
         help
-            Larger values reduce underruns at the cost of more latency.
+            Long-lived credential returned by POST /devices/claim/complete.
+            The device uses this bearer token to fetch short-lived LiveKit JWTs
+            from POST /devices/token and to send heartbeat/telemetry.
 
-    config AUDIO_BRIDGE_I2S_BCLK
-        int "I2S BCLK GPIO"
-        default 14
+    config MITR_DEVICE_LANGUAGE
+        string "Preferred language"
+        default "hi-IN"
+        help
+            Sent to POST /devices/token so backend dispatch metadata can select
+            the right voice pipeline and locale.
 
-    config AUDIO_BRIDGE_I2S_WS
-        int "I2S WS/LRC GPIO"
-        default 12
+    config MITR_DEVICE_HARDWARE_REV
+        string "Hardware revision"
+        default "esp32-s3-wroom"
+        help
+            Hardware revision string persisted in backend sessions and firmware
+            rollout targeting.
 
-    config AUDIO_BRIDGE_I2S_DOUT
-        int "I2S DOUT GPIO"
-        default 13
+    config MITR_DEVICE_FIRMWARE_VERSION
+        string "Firmware version"
+        default "v0.1.0-dev"
+        help
+            Current firmware version reported during token minting and heartbeat.
+
+    config MITR_DEVICE_HEARTBEAT_INTERVAL_SEC
+        int "Heartbeat interval (seconds)"
+        default 15
+        range 5 300
+        help
+            How often the device reports liveness to POST /devices/heartbeat
+            while the session remains active.
 endmenu

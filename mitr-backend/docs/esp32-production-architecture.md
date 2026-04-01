@@ -183,10 +183,11 @@ WHIP remains useful as a standards-based ingest option, but not as the core Mitr
 
 1. Preserve the current local breakthrough in Git history.
 2. Build the backend device control plane.
-3. Port firmware to the LiveKit-native embedded path on real hardware.
-4. Add session metadata integration and telemetry.
-5. Run a small pilot on real home Wi-Fi.
-6. Decide whether the fallback path is necessary.
+3. Replace the old firmware bridge demo with a backend-token + LiveKit-native embedded starter.
+4. Adapt board/media bring-up to the exact production `ESP32-S3-WROOM` hardware.
+5. Add session metadata integration and telemetry.
+6. Run a small pilot on real home Wi-Fi.
+7. Decide whether the fallback path is necessary.
 
 ## Developer Helpers
 
@@ -201,6 +202,9 @@ The backend now includes helper scripts for exercising the control plane during 
   - mints a LiveKit token for that device
 - `pnpm seed:firmware-release -- --hardware-rev esp32-s3-wroom --version v0.1.0`
   - inserts or updates a firmware release row so heartbeat responses can recommend firmware
+- `minimal/`
+  - now contains the LiveKit-native ESP-IDF starter that talks to the `/devices/*` control plane
+  - still requires hardware-specific board/media adaptation if the exact board is not covered by the codec board abstraction
 
 ## Test Plan
 

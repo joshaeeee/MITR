@@ -1,40 +1,63 @@
-# ESP32 Audio Bridge Demo
+# Mitr ESP32 LiveKit Device Starter
 
-This project turns the ESP32-S3 into a simple speaker endpoint for MITR.
+This ESP-IDF app replaces the old browser bridge demo with a production-oriented starter for `ESP32-S3-WROOM`.
 
 Path:
 
-1. MITR web simulator subscribes to the agent's audio
-2. Browser forwards PCM over WebSocket
-3. ESP32 receives PCM over Wi-Fi
-4. ESP32 plays audio over I2S to the MAX98357A
+1. Device connects to Wi-Fi
+2. Device authenticates to Mitr backend with its long-lived device credential
+3. Backend returns a short-lived LiveKit participant token via `POST /devices/token`
+4. Device joins a LiveKit room directly
+5. Device publishes mic audio and subscribes to speaker audio
+6. Device sends heartbeat, telemetry, and session-end events back to Mitr backend
 
-This is a demo path. It does not use LiveKit on the ESP32. It does not use the mic yet.
+This is the production starter path. The browser bridge is no longer the primary firmware flow here.
 
-## Hardware
+## What is implemented
 
-Current output wiring:
+- backend token fetch via `POST /devices/token`
+- direct LiveKit room join
+- audio publish + subscribe wiring through the LiveKit ESP32 SDK
+- heartbeat via `POST /devices/heartbeat`
+- telemetry via `POST /devices/telemetry`
+- session end via `POST /devices/session/end`
+- basic RPC hooks:
+  - `mitr_ping`
+  - `mitr_get_device_status`
 
-- `BCLK -> GPIO14`
-- `WS/LRC -> GPIO12`
-- `DIN -> GPIO13`
+## Important limitation
 
-MAX98357A:
+The transport/control-plane path is implemented here, but exact board bring-up is still hardware-specific.
 
-- `VIN -> 3.3V`
-- `GND -> GND`
-- `SD -> 3.3V`
+The repo currently uses the LiveKit example audio board abstraction in `main/board.c` and `main/media.c`. If your exact `ESP32-S3-WROOM` hardware uses a raw MAX98357A + I2S mic path instead of a supported codec board, you still need to adapt those files using the LiveKit `custom_hardware` example as the reference.
 
-## Important constraint
+The production control plane is now in place. The last hardware-specific step is the codec/I2S layer.
 
-ESP32-S3 only supports `2.4 GHz` Wi-Fi.
+## Backend prerequisites
 
-If you point it at a `..._5G` SSID, it will keep retrying and never join.
+Your Mitr backend must have:
 
-Use one of these:
+- LiveKit configured
+- the `/devices/*` routes migrated and running
 
-- your router's `2.4 GHz` SSID
-- a phone hotspot running on `2.4 GHz`
+Run the backend on a reachable LAN or production origin. For local development:
+
+```sh
+cd /Users/shivanshjoshi/Mitr/mitr-backend
+pnpm drizzle:migrate
+PORT=8081 pnpm dev:api
+```
+
+## Create a device credential
+
+Fastest local helper:
+
+```sh
+cd /Users/shivanshjoshi/Mitr/mitr-backend
+pnpm smoke:device-flow -- --device-id mitr-esp32-001 --email tester@example.com
+```
+
+That prints a `deviceAccessToken`. Put that token into the ESP32 firmware config.
 
 ## Configuration
 
@@ -44,52 +67,46 @@ Open:
 idf.py menuconfig
 ```
 
-Set these values:
+Set:
 
 ### LiveKit Example Utilities
 
 - Wi-Fi SSID
 - Wi-Fi password
 
-### ESP32 Audio Bridge
+### Mitr ESP32 Device
 
-- `Bridge URI`
-- `Room name`
-- `Sample rate`
-- `I2S BCLK`
-- `I2S WS`
-- `I2S DOUT`
+- `Codec board type`
+- `Default speaker volume`
+- `Mitr backend base URL`
+- `Device access token`
+- `Preferred language`
+- `Hardware revision`
+- `Firmware version`
+- `Heartbeat interval`
 
-Expected defaults:
+Important:
 
-```ini
-CONFIG_AUDIO_BRIDGE_ROOM="mitr-esp32-test"
-CONFIG_AUDIO_BRIDGE_SAMPLE_RATE=48000
-CONFIG_AUDIO_BRIDGE_I2S_BCLK=14
-CONFIG_AUDIO_BRIDGE_I2S_WS=12
-CONFIG_AUDIO_BRIDGE_I2S_DOUT=13
-```
-
-## Bridge URI
-
-The ESP32 must connect to your Mac's LAN IP, not `localhost`.
-
-Example:
+- `Mitr backend base URL` must be reachable by the device
+- use your backend LAN IP for local development, not `localhost`
+- for local dev it will usually look like:
 
 ```ini
-CONFIG_AUDIO_BRIDGE_URI="ws://192.168.x.x:8787/esp32-audio"
+CONFIG_MITR_DEVICE_BACKEND_BASE_URL="http://192.168.x.x:8081"
 ```
 
-Use the helper script to rewrite `sdkconfig` with your current Mac IP:
+## Helper script
+
+You can rewrite `sdkconfig` quickly with:
 
 ```sh
-./set-bridge-uri.sh
+./set-device-config.sh 192.168.x.x 8081 <device-access-token>
 ```
 
-Or override it manually:
+Optional extra args:
 
 ```sh
-./set-bridge-uri.sh 192.168.x.x 8787 mitr-esp32-test
+./set-device-config.sh 192.168.x.x 8081 <device-access-token> hi-IN esp32-s3-wroom v0.1.0-dev
 ```
 
 ## Build and flash
@@ -101,22 +118,24 @@ idf.py -p /dev/cu.usbmodem1101 flash
 idf.py -p /dev/cu.usbmodem1101 monitor
 ```
 
-## Expected boot logs
+The first `idf.py build` after these manifest changes will refresh `dependencies.lock`.
 
-Good signs:
+## Expected boot flow
 
-- `I2S ready: sample_rate=48000, bclk=14, ws=12, dout=13`
-- Wi-Fi connects successfully
-- `Bridge connected`
-- `Sent sink init for room=mitr-esp32-test`
+Healthy signs:
 
-If you see repeated `network_connect: Retry`, the SSID is wrong, the password is wrong, or the network is `5 GHz`.
+- board/audio init succeeds
+- Wi-Fi connects
+- device logs the backend URL and firmware metadata
+- token fetch succeeds
+- room state transitions to `CONNECTED`
+- agent participant joins the room
+- heartbeats continue successfully
 
-## Demo run
+You should also see backend-side `device_sessions`, `device_telemetry`, and heartbeat activity.
 
-1. Start the MITR API and agent worker
-2. Start the web simulator server on port `8787`
-3. Open the simulator in a browser
-4. Join room `mitr-esp32-test`
-5. Speak to the agent
-6. Agent audio should come out of the MAX98357A speaker
+## Repo references
+
+- production architecture: [mitr-backend/docs/esp32-production-architecture.md](/Users/shivanshjoshi/Mitr/mitr-backend/docs/esp32-production-architecture.md)
+- firmware entrypoint: [minimal/main/main.c](/Users/shivanshjoshi/Mitr/minimal/main/main.c)
+- backend device routes: [mitr-backend/src/routes/device.ts](/Users/shivanshjoshi/Mitr/mitr-backend/src/routes/device.ts)
