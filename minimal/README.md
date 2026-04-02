@@ -5,17 +5,20 @@ This ESP-IDF app replaces the old browser bridge demo with a production-oriented
 Path:
 
 1. Device connects to Wi-Fi
-2. Device authenticates to Mitr backend with its long-lived device credential
-3. Backend returns a short-lived LiveKit participant token via `POST /devices/token`
-4. Device joins a LiveKit room directly
-5. Device publishes mic audio and subscribes to speaker audio
-6. Device sends heartbeat, telemetry, and session-end events back to Mitr backend
+2. If needed, device exchanges a one-time pairing token with `POST /devices/bootstrap/complete`
+3. Device stores the long-lived device credential locally
+4. Device authenticates to Mitr backend with that long-lived credential
+5. Backend returns a short-lived LiveKit participant token via `POST /devices/token`
+6. Device joins a LiveKit room directly
+7. Device publishes mic audio and subscribes to speaker audio
+8. Device sends heartbeat, telemetry, and session-end events back to Mitr backend
 
 This is the production starter path. The browser bridge is no longer the primary firmware flow here.
 
 ## What is implemented
 
 - backend token fetch via `POST /devices/token`
+- bootstrap exchange via `POST /devices/bootstrap/complete`
 - direct LiveKit room join
 - audio publish + subscribe wiring through the LiveKit ESP32 SDK
 - heartbeat via `POST /devices/heartbeat`
@@ -48,7 +51,17 @@ pnpm drizzle:migrate
 PORT=8081 pnpm dev:api
 ```
 
-## Create a device credential
+## Device credentials
+
+There are now two supported bootstrapping modes:
+
+1. Direct access-token mode
+   - put the long-lived `deviceAccessToken` into firmware config
+2. Pairing-token bootstrap mode
+   - put the one-time pairing token into firmware config
+   - on first successful internet connection the device exchanges it for the long-lived credential and stores that locally
+
+### Create a device credential for local smoke testing
 
 Fastest local helper:
 
@@ -57,7 +70,7 @@ cd /Users/shivanshjoshi/Mitr/mitr-backend
 pnpm smoke:device-flow -- --device-id mitr-esp32-001 --email tester@example.com
 ```
 
-That prints a `deviceAccessToken`. Put that token into the ESP32 firmware config.
+That prints a `deviceAccessToken`. Put that token into the ESP32 firmware config, or use the new pairing APIs for the production bootstrap path.
 
 ## Configuration
 
@@ -79,7 +92,9 @@ Set:
 - `Codec board type`
 - `Default speaker volume`
 - `Mitr backend base URL`
+- `Device ID`
 - `Device access token`
+- `One-time pairing token`
 - `Preferred language`
 - `Hardware revision`
 - `Firmware version`
@@ -97,16 +112,22 @@ CONFIG_MITR_DEVICE_BACKEND_BASE_URL="http://192.168.x.x:8081"
 
 ## Helper script
 
-You can rewrite `sdkconfig` quickly with:
+You can rewrite `sdkconfig` quickly with an access token:
 
 ```sh
-./set-device-config.sh 192.168.x.x 8081 <device-access-token>
+./set-device-config.sh 192.168.x.x 8081 access:<device-access-token>
 ```
 
 Optional extra args:
 
 ```sh
-./set-device-config.sh 192.168.x.x 8081 <device-access-token> hi-IN esp32-s3-wroom v0.1.0-dev
+./set-device-config.sh 192.168.x.x 8081 access:<device-access-token> hi-IN esp32-s3-wroom v0.1.0-dev mitr-esp32-001
+```
+
+Or with a one-time pairing token:
+
+```sh
+./set-device-config.sh https://api.heyreca.com pairing:<pairing-token> hi-IN esp32-s3-wroom v0.1.0-dev mitr-esp32-001
 ```
 
 ## Build and flash
@@ -129,6 +150,7 @@ Healthy signs:
 - board/audio init succeeds
 - Wi-Fi connects
 - device logs the backend URL and firmware metadata
+- if only a pairing token is present, bootstrap completes and the long-lived credential is stored
 - token fetch succeeds
 - room state transitions to `CONNECTED`
 - agent participant joins the room

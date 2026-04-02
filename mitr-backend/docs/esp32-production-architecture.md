@@ -12,7 +12,7 @@ This document describes the production path for Mitr on `ESP32-S3-WROOM` after t
 
 ## Why This Direction
 
-The goal is not to build a custom realtime media stack from zero. The goal is to get a production-grade embedded voice client onto the existing Mitr voice platform with low latency, reconnect resilience, and a clean device-to-user identity model.
+The goal is not to build a custom realtime media stack from zero. The goal is to get a production-grade embedded voice client onto the existing Mitr voice platform with low latency, reconnect resilience, and a clean family/elder-aware device identity model.
 
 The key change in the ecosystem is that:
 
@@ -26,7 +26,7 @@ That changes the architecture decision. We should reuse those layers and keep ou
 - backend token minting
 - telemetry
 - firmware lifecycle
-- mapping `device_id -> user_id`
+- mapping `device_id -> family_id -> elder_id`
 
 ## Production Architecture
 
@@ -82,10 +82,15 @@ Keep the current split:
 
 ### Identity model
 
-- `user_id` is the source of truth for:
-  - memory
-  - reminders
-  - agent context
+- `elder_id` is the source of truth for:
+  - whose voice context the device should represent
+  - whose reminders/care state should be in focus
+
+- `family_id` is the source of truth for:
+  - ownership boundary
+  - which caregiver accounts may manage the device
+
+- `user_id` remains in the session metadata as a compatibility key for the existing agent stack during the migration period
 
 - `device_id` is the source of truth for:
   - hardware identity
@@ -94,7 +99,7 @@ Keep the current split:
   - telemetry
   - fleet operations
 
-Every production room/session must carry both.
+Every production room/session should carry `device_id`, `family_id`, `elder_id`, and the compatibility `user_id`.
 
 ### Room/session model
 
@@ -121,6 +126,9 @@ The backend should provide:
 
 - `POST /devices/claim/start`
 - `POST /devices/claim/complete`
+- `POST /devices/pairing/start`
+- `GET /devices/pairing/:pairingId`
+- `POST /devices/bootstrap/complete`
 - `GET /devices/claimed`
 - `POST /devices/revoke`
 - `POST /devices/token`
@@ -132,16 +140,17 @@ Core entities:
 
 - `devices`
 - `device_claims`
+- `device_pairings`
 - `device_sessions`
 - `device_telemetry`
 - `firmware_releases`
 
 Required behavior:
 
-- device stores a long-lived credential
+- device stores a long-lived credential after a one-time bootstrap exchange
 - backend mints a short-lived LiveKit JWT
 - backend decides dispatch metadata
-- backend preserves user-scoped agent behavior
+- backend preserves user-scoped agent behavior while adding elder/family metadata
 
 ## Transport Strategy
 

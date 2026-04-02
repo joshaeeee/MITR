@@ -5,17 +5,25 @@ import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
 import { db } from '../../db/client.js';
 import {
   deviceClaims,
+  devicePairings,
   devices,
   deviceSessions,
   deviceTelemetry,
+  elderProfiles,
   firmwareReleases
 } from '../../db/schema.js';
 import { getRequiredLivekitConfig } from '../../config/livekit-config.js';
+import { getFamilyRepository } from '../family/family-repository.js';
+
+type DevicePairingStatus = 'pending_device' | 'bootstrapping' | 'completed' | 'expired' | 'revoked';
 
 export interface DeviceAuthRecord {
   id: string;
   deviceId: string;
   userId: string;
+  familyId: string | null;
+  elderId: string | null;
+  claimedByUserId: string | null;
   displayName: string | null;
   hardwareRev: string | null;
   firmwareVersion: string | null;
@@ -24,6 +32,10 @@ export interface DeviceAuthRecord {
 
 export interface ClaimedDeviceSummary {
   deviceId: string;
+  userId: string;
+  familyId: string | null;
+  elderId: string | null;
+  claimedByUserId: string | null;
   displayName: string | null;
   hardwareRev: string | null;
   firmwareVersion: string | null;
@@ -43,7 +55,31 @@ export interface ClaimedDeviceSummary {
   } | null;
 }
 
+export interface DevicePairingSummary {
+  pairingId: string;
+  deviceId: string;
+  familyId: string;
+  elderId: string;
+  ownerUserId: string;
+  claimedByUserId: string;
+  displayName: string | null;
+  status: DevicePairingStatus;
+  expiresAt: number;
+  completedAt: number | null;
+  metadata: Record<string, unknown>;
+}
+
+interface ResolvedFamilyContext {
+  familyId: string;
+  ownerUserId: string;
+  claimedByUserId: string;
+  elderId: string | null;
+  elderName: string | null;
+  elderLanguage: string | null;
+}
+
 const CLAIM_TTL_MS = 10 * 60 * 1000;
+const PAIRING_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_LANGUAGE = 'hi-IN';
 
 const hashOpaqueToken = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -54,16 +90,90 @@ const slug = (input: string): string => input.replace(/[^a-zA-Z0-9_-]/g, '-').sl
 
 const normalizeMetadata = (value: Record<string, unknown> | null | undefined): Record<string, unknown> => value ?? {};
 
+const readMetadataString = (metadata: Record<string, unknown>, key: string): string | null => {
+  const value = metadata[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+};
+
 export class DeviceControlService {
+  private readonly familyRepo = getFamilyRepository();
+
+  private async resolveFamilyContextForUser(
+    userId: string,
+    elderId?: string,
+    options: { requireElder?: boolean } = {}
+  ): Promise<ResolvedFamilyContext> {
+    const requireElder = options.requireElder ?? true;
+    const family = (await this.familyRepo.getFamilyByUser(userId)) ?? (await this.familyRepo.getOrCreateFamilyForOwner(userId));
+    const claimedByUserId = userId;
+
+    let elderRow: typeof elderProfiles.$inferSelect | undefined;
+    if (elderId) {
+      [elderRow] = await db
+        .select()
+        .from(elderProfiles)
+        .where(and(eq(elderProfiles.id, elderId), eq(elderProfiles.familyId, family.id)))
+        .limit(1);
+      if (!elderRow) {
+        throw new Error('Selected elder profile does not belong to your family account');
+      }
+    } else {
+      [elderRow] = await db.select().from(elderProfiles).where(eq(elderProfiles.familyId, family.id)).limit(1);
+      if (!elderRow && requireElder) {
+        throw new Error('Create the elder profile before pairing a device');
+      }
+    }
+
+    return {
+      familyId: family.id,
+      ownerUserId: family.ownerUserId,
+      claimedByUserId,
+      elderId: elderRow?.id ?? null,
+      elderName: elderRow?.name ?? null,
+      elderLanguage: elderRow?.language ?? null
+    };
+  }
+
+  private async canUserAccessFamilyResource(userId: string, familyId: string | null): Promise<boolean> {
+    if (!familyId) return false;
+    const family = await this.familyRepo.getFamilyByUser(userId);
+    return family?.id === familyId;
+  }
+
+  private pairingSummary(row: typeof devicePairings.$inferSelect): DevicePairingSummary {
+    return {
+      pairingId: row.id,
+      deviceId: row.deviceId,
+      familyId: row.familyId,
+      elderId: row.elderId,
+      ownerUserId: row.ownerUserId,
+      claimedByUserId: row.claimedByUserId,
+      displayName: row.displayName,
+      status: row.status,
+      expiresAt: row.expiresAt.getTime(),
+      completedAt: row.completedAt?.getTime() ?? null,
+      metadata: normalizeMetadata(row.metadataJson)
+    };
+  }
+
   async listDevicesForUser(userId: string): Promise<ClaimedDeviceSummary[]> {
-    const rows = await db.select().from(devices).where(eq(devices.userId, userId)).orderBy(desc(devices.claimedAt));
+    const family = await this.familyRepo.getFamilyByUser(userId);
+    const whereClause = family
+      ? or(
+          eq(devices.familyId, family.id),
+          eq(devices.userId, family.ownerUserId),
+          eq(devices.claimedByUserId, userId)
+        )
+      : or(eq(devices.userId, userId), eq(devices.claimedByUserId, userId));
+
+    const rows = await db.select().from(devices).where(whereClause).orderBy(desc(devices.claimedAt));
     if (rows.length === 0) return [];
 
     const deviceIds = rows.map((row) => row.deviceId);
     const sessions = await db
       .select()
       .from(deviceSessions)
-      .where(and(eq(deviceSessions.userId, userId), inArray(deviceSessions.deviceId, deviceIds)))
+      .where(inArray(deviceSessions.deviceId, deviceIds))
       .orderBy(desc(deviceSessions.startedAt));
 
     const latestSessionByDevice = new Map<string, (typeof deviceSessions.$inferSelect)>();
@@ -77,6 +187,10 @@ export class DeviceControlService {
       const lastSession = latestSessionByDevice.get(row.deviceId) ?? null;
       return {
         deviceId: row.deviceId,
+        userId: row.userId,
+        familyId: row.familyId,
+        elderId: row.elderId,
+        claimedByUserId: row.claimedByUserId,
         displayName: row.displayName,
         hardwareRev: row.hardwareRev,
         firmwareVersion: row.firmwareVersion,
@@ -104,10 +218,15 @@ export class DeviceControlService {
     const [device] = await db
       .select()
       .from(devices)
-      .where(and(eq(devices.userId, userId), eq(devices.deviceId, deviceId), isNull(devices.revokedAt)))
+      .where(and(eq(devices.deviceId, deviceId), isNull(devices.revokedAt)))
       .limit(1);
 
     if (!device) return false;
+
+    const canAccess = device.familyId
+      ? await this.canUserAccessFamilyResource(userId, device.familyId)
+      : device.userId === userId || device.claimedByUserId === userId;
+    if (!canAccess) return false;
 
     const now = new Date();
     await db
@@ -149,6 +268,104 @@ export class DeviceControlService {
     };
   }
 
+  async startPairing(input: {
+    userId: string;
+    elderId?: string;
+    deviceId: string;
+    displayName?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<DevicePairingSummary & { pairingToken: string; elderName: string | null }> {
+    const deviceId = input.deviceId.trim();
+    if (!deviceId) {
+      throw new Error('deviceId is required');
+    }
+
+    const familyContext = await this.resolveFamilyContextForUser(input.userId, input.elderId, { requireElder: true });
+    if (!familyContext.elderId) {
+      throw new Error('Create the elder profile before pairing a device');
+    }
+
+    const [existing] = await db.select().from(devices).where(eq(devices.deviceId, deviceId)).limit(1);
+    if (existing && !existing.revokedAt) {
+      const sameFamily = existing.familyId
+        ? existing.familyId === familyContext.familyId
+        : existing.userId === familyContext.ownerUserId;
+      if (!sameFamily) {
+        throw new Error('Device is already claimed by another family');
+      }
+    }
+
+    const now = new Date();
+    await db
+      .update(devicePairings)
+      .set({
+        status: 'revoked',
+        updatedAt: now
+      })
+      .where(
+        and(
+          eq(devicePairings.deviceId, deviceId),
+          or(eq(devicePairings.status, 'pending_device'), eq(devicePairings.status, 'bootstrapping'))
+        )
+      );
+
+    const pairingToken = createOpaqueToken(24);
+    const expiresAt = Date.now() + PAIRING_TTL_MS;
+    const metadata = {
+      pairedVia: 'ble_qr',
+      qrVersion: 'v1',
+      transport: 'ble',
+      ...normalizeMetadata(input.metadata)
+    };
+
+    const [created] = await db
+      .insert(devicePairings)
+      .values({
+        pairingTokenHash: hashOpaqueToken(pairingToken),
+        deviceId,
+        familyId: familyContext.familyId,
+        elderId: familyContext.elderId,
+        ownerUserId: familyContext.ownerUserId,
+        claimedByUserId: familyContext.claimedByUserId,
+        displayName: input.displayName?.trim() || null,
+        status: 'pending_device',
+        expiresAt: toDate(expiresAt),
+        metadataJson: metadata
+      })
+      .returning();
+
+    return {
+      ...this.pairingSummary(created),
+      pairingToken,
+      elderName: familyContext.elderName
+    };
+  }
+
+  async getPairingStatusForUser(userId: string, pairingId: string): Promise<DevicePairingSummary> {
+    const [pairing] = await db.select().from(devicePairings).where(eq(devicePairings.id, pairingId)).limit(1);
+    if (!pairing) {
+      throw new Error('Pairing request not found');
+    }
+
+    const canAccess = await this.canUserAccessFamilyResource(userId, pairing.familyId);
+    if (!canAccess) {
+      throw new Error('Pairing request not found');
+    }
+
+    if (pairing.status === 'pending_device' && pairing.expiresAt.getTime() <= Date.now()) {
+      await db
+        .update(devicePairings)
+        .set({
+          status: 'expired',
+          updatedAt: new Date()
+        })
+        .where(eq(devicePairings.id, pairing.id));
+      pairing.status = 'expired';
+    }
+
+    return this.pairingSummary(pairing);
+  }
+
   async completeClaim(input: {
     claimCode: string;
     deviceId: string;
@@ -160,6 +377,9 @@ export class DeviceControlService {
     deviceId: string;
     deviceAccessToken: string;
     userId: string;
+    familyId: string | null;
+    elderId: string | null;
+    claimedByUserId: string | null;
     hardwareRev: string | null;
     firmwareVersion: string | null;
   }> {
@@ -170,10 +390,7 @@ export class DeviceControlService {
       .where(and(eq(deviceClaims.codeHash, codeHash), isNull(deviceClaims.consumedAt)))
       .limit(1);
 
-    if (!claim) {
-      throw new Error('Invalid or expired claim code');
-    }
-    if (claim.expiresAt.getTime() <= Date.now()) {
+    if (!claim || claim.expiresAt.getTime() <= Date.now()) {
       throw new Error('Invalid or expired claim code');
     }
 
@@ -182,22 +399,37 @@ export class DeviceControlService {
       throw new Error('deviceId is required');
     }
 
+    const familyContext = await this.resolveFamilyContextForUser(claim.userId, undefined, { requireElder: false }).catch(() => null);
+    const ownerUserId = familyContext?.ownerUserId ?? claim.userId;
+    const familyId = familyContext?.familyId ?? null;
+    const elderId = familyContext?.elderId ?? null;
+    const claimedByUserId = claim.userId;
+
     const [existing] = await db.select().from(devices).where(eq(devices.deviceId, deviceId)).limit(1);
-    if (existing && existing.userId !== claim.userId && !existing.revokedAt) {
-      throw new Error('Device is already claimed by another user');
+    if (existing && !existing.revokedAt) {
+      const sameFamily = familyId
+        ? existing.familyId === familyId || existing.userId === ownerUserId
+        : existing.userId === ownerUserId;
+      if (!sameFamily) {
+        throw new Error('Device is already claimed by another user');
+      }
     }
 
     const deviceAccessToken = createOpaqueToken(32);
     const nextMetadata = {
       ...normalizeMetadata(existing?.metadataJson),
-      ...normalizeMetadata(input.metadata)
+      ...normalizeMetadata(input.metadata),
+      claimMethod: 'legacy_code'
     };
 
     if (existing) {
       await db
         .update(devices)
         .set({
-          userId: claim.userId,
+          userId: ownerUserId,
+          familyId,
+          elderId,
+          claimedByUserId,
           displayName: input.displayName?.trim() || existing.displayName,
           hardwareRev: input.hardwareRev?.trim() || existing.hardwareRev,
           firmwareVersion: input.firmwareVersion?.trim() || existing.firmwareVersion,
@@ -211,7 +443,10 @@ export class DeviceControlService {
     } else {
       await db.insert(devices).values({
         deviceId,
-        userId: claim.userId,
+        userId: ownerUserId,
+        familyId,
+        elderId,
+        claimedByUserId,
         displayName: input.displayName?.trim() || null,
         hardwareRev: input.hardwareRev?.trim() || null,
         firmwareVersion: input.firmwareVersion?.trim() || null,
@@ -226,7 +461,126 @@ export class DeviceControlService {
     return {
       deviceId,
       deviceAccessToken,
-      userId: claim.userId,
+      userId: ownerUserId,
+      familyId,
+      elderId,
+      claimedByUserId,
+      hardwareRev: input.hardwareRev?.trim() || existing?.hardwareRev || null,
+      firmwareVersion: input.firmwareVersion?.trim() || existing?.firmwareVersion || null
+    };
+  }
+
+  async completeBootstrap(input: {
+    pairingToken: string;
+    deviceId: string;
+    displayName?: string;
+    hardwareRev?: string;
+    firmwareVersion?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    deviceId: string;
+    deviceAccessToken: string;
+    userId: string;
+    familyId: string;
+    elderId: string;
+    claimedByUserId: string;
+    hardwareRev: string | null;
+    firmwareVersion: string | null;
+  }> {
+    const tokenHash = hashOpaqueToken(input.pairingToken);
+    const [pairing] = await db
+      .select()
+      .from(devicePairings)
+      .where(and(eq(devicePairings.pairingTokenHash, tokenHash), or(eq(devicePairings.status, 'pending_device'), eq(devicePairings.status, 'bootstrapping'))))
+      .limit(1);
+
+    if (!pairing) {
+      throw new Error('Invalid or expired pairing token');
+    }
+    if (pairing.expiresAt.getTime() <= Date.now()) {
+      await db
+        .update(devicePairings)
+        .set({ status: 'expired', updatedAt: new Date() })
+        .where(eq(devicePairings.id, pairing.id));
+      throw new Error('Invalid or expired pairing token');
+    }
+
+    const deviceId = input.deviceId.trim();
+    if (!deviceId || deviceId !== pairing.deviceId) {
+      throw new Error('Device ID does not match pairing request');
+    }
+
+    const [existing] = await db.select().from(devices).where(eq(devices.deviceId, deviceId)).limit(1);
+    if (existing && !existing.revokedAt) {
+      const sameFamily = existing.familyId
+        ? existing.familyId === pairing.familyId
+        : existing.userId === pairing.ownerUserId;
+      if (!sameFamily) {
+        throw new Error('Device is already claimed by another family');
+      }
+    }
+
+    const deviceAccessToken = createOpaqueToken(32);
+    const now = new Date();
+    const nextMetadata = {
+      ...normalizeMetadata(existing?.metadataJson),
+      ...normalizeMetadata(pairing.metadataJson),
+      ...normalizeMetadata(input.metadata),
+      pairingId: pairing.id,
+      pairingCompletedAt: now.toISOString(),
+      pairedVia: 'ble_qr'
+    };
+
+    if (existing) {
+      await db
+        .update(devices)
+        .set({
+          userId: pairing.ownerUserId,
+          familyId: pairing.familyId,
+          elderId: pairing.elderId,
+          claimedByUserId: pairing.claimedByUserId,
+          displayName: input.displayName?.trim() || pairing.displayName || existing.displayName,
+          hardwareRev: input.hardwareRev?.trim() || existing.hardwareRev,
+          firmwareVersion: input.firmwareVersion?.trim() || existing.firmwareVersion,
+          deviceAccessTokenHash: hashOpaqueToken(deviceAccessToken),
+          metadataJson: nextMetadata,
+          revokedAt: null,
+          updatedAt: now,
+          lastSeenAt: now
+        })
+        .where(eq(devices.id, existing.id));
+    } else {
+      await db.insert(devices).values({
+        deviceId,
+        userId: pairing.ownerUserId,
+        familyId: pairing.familyId,
+        elderId: pairing.elderId,
+        claimedByUserId: pairing.claimedByUserId,
+        displayName: input.displayName?.trim() || pairing.displayName || null,
+        hardwareRev: input.hardwareRev?.trim() || null,
+        firmwareVersion: input.firmwareVersion?.trim() || null,
+        deviceAccessTokenHash: hashOpaqueToken(deviceAccessToken),
+        metadataJson: nextMetadata,
+        lastSeenAt: now
+      });
+    }
+
+    await db
+      .update(devicePairings)
+      .set({
+        status: 'completed',
+        completedAt: now,
+        updatedAt: now
+      })
+      .where(eq(devicePairings.id, pairing.id));
+
+    return {
+      deviceId,
+      deviceAccessToken,
+      userId: pairing.ownerUserId,
+      familyId: pairing.familyId,
+      elderId: pairing.elderId,
+      claimedByUserId: pairing.claimedByUserId,
       hardwareRev: input.hardwareRev?.trim() || existing?.hardwareRev || null,
       firmwareVersion: input.firmwareVersion?.trim() || existing?.firmwareVersion || null
     };
@@ -246,6 +600,9 @@ export class DeviceControlService {
       id: device.id,
       deviceId: device.deviceId,
       userId: device.userId,
+      familyId: device.familyId,
+      elderId: device.elderId,
+      claimedByUserId: device.claimedByUserId,
       displayName: device.displayName,
       hardwareRev: device.hardwareRev,
       firmwareVersion: device.firmwareVersion,
@@ -276,7 +633,8 @@ export class DeviceControlService {
 
     const roomName = input.roomName?.trim() || `mitr-device-${slug(input.device.deviceId)}-${Date.now()}`;
     const identity = `device-${slug(input.device.deviceId)}-${Math.floor(Math.random() * 10_000)}`;
-    const language = input.language?.trim() || DEFAULT_LANGUAGE;
+    const metadataLanguage = readMetadataString(input.device.metadataJson, 'elderLanguage');
+    const language = input.language?.trim() || metadataLanguage || DEFAULT_LANGUAGE;
     const firmwareVersion = input.firmwareVersion?.trim() || input.device.firmwareVersion || null;
     const hardwareRev = input.hardwareRev?.trim() || input.device.hardwareRev || null;
 
@@ -295,6 +653,9 @@ export class DeviceControlService {
 
     const dispatchMetadata = {
       user_id: input.device.userId,
+      family_id: input.device.familyId,
+      elder_id: input.device.elderId,
+      claimed_by_user_id: input.device.claimedByUserId,
       device_id: input.device.deviceId,
       language,
       firmware_version: firmwareVersion,
@@ -318,6 +679,9 @@ export class DeviceControlService {
       .values({
         deviceId: input.device.deviceId,
         userId: input.device.userId,
+        familyId: input.device.familyId,
+        elderId: input.device.elderId,
+        claimedByUserId: input.device.claimedByUserId,
         roomName,
         participantIdentity: identity,
         language,
@@ -418,6 +782,9 @@ export class DeviceControlService {
     await db.insert(deviceTelemetry).values({
       deviceId: input.device.deviceId,
       userId: input.device.userId,
+      familyId: input.device.familyId,
+      elderId: input.device.elderId,
+      claimedByUserId: input.device.claimedByUserId,
       sessionId: input.sessionId ?? null,
       eventType: input.eventType,
       level: input.level ?? 'info',

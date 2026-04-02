@@ -26,10 +26,14 @@ typedef struct {
 } mitr_device_heartbeat_t;
 
 const char *mitr_device_backend_base_url(void);
+const char *mitr_device_device_id(void);
 const char *mitr_device_language(void);
 const char *mitr_device_hardware_rev(void);
 const char *mitr_device_firmware_version(void);
+bool mitr_device_has_access_token(void);
+bool mitr_device_has_pairing_token(void);
 
+esp_err_t mitr_device_complete_bootstrap(void);
 esp_err_t mitr_device_request_token(mitr_device_token_response_t *out);
 void mitr_device_token_response_free(mitr_device_token_response_t *response);
 

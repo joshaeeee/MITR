@@ -21,6 +21,13 @@ menu "Mitr ESP32 Device"
             Backend API base URL. Use the backend's LAN IP for local testing or
             the production HTTPS origin once device auth is deployed.
 
+    config MITR_DEVICE_DEVICE_ID
+        string "Device ID"
+        default "mitr-esp32-001"
+        help
+            Stable hardware identity printed in the device QR code. This is sent
+            to the backend during pairing/bootstrap and used for device sessions.
+
     config MITR_DEVICE_ACCESS_TOKEN
         string "Device access token"
         default ""
@@ -28,6 +35,14 @@ menu "Mitr ESP32 Device"
             Long-lived credential returned by POST /devices/claim/complete.
             The device uses this bearer token to fetch short-lived LiveKit JWTs
             from POST /devices/token and to send heartbeat/telemetry.
+
+    config MITR_DEVICE_PAIRING_TOKEN
+        string "One-time pairing token"
+        default ""
+        help
+            Short-lived bootstrap token returned by POST /devices/pairing/start.
+            The device exchanges this once with POST /devices/bootstrap/complete
+            to receive the long-lived device access token that is then stored.
 
     config MITR_DEVICE_LANGUAGE
         string "Preferred language"

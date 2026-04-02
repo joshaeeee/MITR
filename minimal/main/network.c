@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
 
 #include "network.h"
 
@@ -43,7 +44,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 "Disconnected: reason=%d attempt=%d ssid=%s",
                 event ? event->reason : -1,
                 state.retry_attempt + 1,
-                CONFIG_LK_EXAMPLE_WIFI_SSID);
+                strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) > 0 ? CONFIG_LK_EXAMPLE_WIFI_SSID : "<saved>");
 
             if (CONFIG_LK_EXAMPLE_NETWORK_MAX_RETRIES < 0 ||
                 state.retry_attempt < CONFIG_LK_EXAMPLE_NETWORK_MAX_RETRIES) {
@@ -72,6 +73,9 @@ static esp_err_t init_common(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
     }
+    if (err == ESP_ERR_NVS_INVALID_STATE) {
+        err = ESP_OK;
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init NVS: %s", esp_err_to_name(err));
         return err;
@@ -98,11 +102,6 @@ static esp_err_t init_common(void)
 
 bool mitr_network_connect(void)
 {
-    if (strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) == 0) {
-        ESP_LOGE(TAG, "WiFi SSID is empty");
-        return false;
-    }
-
     ESP_ERROR_CHECK(init_common());
     esp_netif_create_default_wifi_sta();
 
@@ -111,23 +110,33 @@ bool mitr_network_connect(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
 
+    const bool has_static_wifi = strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) > 0;
     wifi_config_t wifi_config = {0};
-    strlcpy((char *)wifi_config.sta.ssid, CONFIG_LK_EXAMPLE_WIFI_SSID, sizeof(wifi_config.sta.ssid));
-    strlcpy((char *)wifi_config.sta.password, CONFIG_LK_EXAMPLE_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
-    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    wifi_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
-    wifi_config.sta.pmf_cfg.capable = true;
-    wifi_config.sta.pmf_cfg.required = false;
+    if (has_static_wifi) {
+        strlcpy((char *)wifi_config.sta.ssid, CONFIG_LK_EXAMPLE_WIFI_SSID, sizeof(wifi_config.sta.ssid));
+        strlcpy((char *)wifi_config.sta.password, CONFIG_LK_EXAMPLE_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
+        wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+        wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+        wifi_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
+        wifi_config.sta.pmf_cfg.capable = true;
+        wifi_config.sta.pmf_cfg.required = false;
+    }
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    if (has_static_wifi) {
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    }
 
     state.retry_attempt = 0;
     xEventGroupClearBits(state.event_group, NETWORK_EVENT_CONNECTED | NETWORK_EVENT_FAILED);
 
-    ESP_LOGI(TAG, "Connecting WiFi: ssid=%s auth_threshold=%d", wifi_config.sta.ssid, wifi_config.sta.threshold.authmode);
+    ESP_LOGI(
+        TAG,
+        "Connecting WiFi: ssid=%s auth_threshold=%d",
+        has_static_wifi ? (const char *)wifi_config.sta.ssid : "<saved-from-provisioning>",
+        has_static_wifi ? wifi_config.sta.threshold.authmode : -1);
     ESP_ERROR_CHECK(esp_wifi_start());
 
     while (true) {

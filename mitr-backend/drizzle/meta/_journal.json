@@ -71,6 +71,13 @@
       "when": 1774987321825,
       "tag": "0009_vengeful_white_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1775139800000,
+      "tag": "0010_device_pairings",
+      "breakpoints": true
     }
   ]
 }

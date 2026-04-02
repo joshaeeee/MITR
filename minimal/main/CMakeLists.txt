@@ -5,6 +5,7 @@ idf_component_register(
         "board.c"
         "media.c"
         "device_api.c"
+        "device_storage.c"
         "network.c"
         "atomic_compat.c"
     INCLUDE_DIRS

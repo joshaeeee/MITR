@@ -11,6 +11,7 @@
 #include "sdkconfig.h"
 
 #include "device_api.h"
+#include "device_storage.h"
 
 static const char *TAG = "mitr_device_api";
 
@@ -20,8 +21,6 @@ typedef struct {
     size_t capacity;
 } response_buffer_t;
 
-static const char *const DEVICE_BACKEND_BASE_URL = CONFIG_MITR_DEVICE_BACKEND_BASE_URL;
-static const char *const DEVICE_ACCESS_TOKEN = CONFIG_MITR_DEVICE_ACCESS_TOKEN;
 static const char *const DEVICE_LANGUAGE = CONFIG_MITR_DEVICE_LANGUAGE;
 static const char *const DEVICE_HARDWARE_REV = CONFIG_MITR_DEVICE_HARDWARE_REV;
 static const char *const DEVICE_FIRMWARE_VERSION = CONFIG_MITR_DEVICE_FIRMWARE_VERSION;
@@ -74,7 +73,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *event)
 
 static char *join_url(const char *path)
 {
-    const char *base = DEVICE_BACKEND_BASE_URL;
+    const char *base = mitr_device_storage_backend_base_url();
     const bool base_has_slash = base[strlen(base) - 1] == '/';
     const bool path_has_slash = path[0] == '/';
     const char *normalized_path = path_has_slash ? path + 1 : path;
@@ -91,10 +90,14 @@ static char *join_url(const char *path)
     return url;
 }
 
-static esp_err_t ensure_device_configured(void)
+static esp_err_t ensure_device_configured(bool require_access_token)
 {
-    ESP_RETURN_ON_FALSE(strlen(DEVICE_BACKEND_BASE_URL) > 0, ESP_ERR_INVALID_STATE, TAG, "Missing backend base URL");
-    ESP_RETURN_ON_FALSE(strlen(DEVICE_ACCESS_TOKEN) > 0, ESP_ERR_INVALID_STATE, TAG, "Missing device access token");
+    ESP_RETURN_ON_ERROR(mitr_device_storage_init(), TAG, "Failed to initialize device storage");
+    ESP_RETURN_ON_FALSE(strlen(mitr_device_storage_backend_base_url()) > 0, ESP_ERR_INVALID_STATE, TAG, "Missing backend base URL");
+    ESP_RETURN_ON_FALSE(strlen(mitr_device_storage_device_id()) > 0, ESP_ERR_INVALID_STATE, TAG, "Missing device ID");
+    if (require_access_token) {
+        ESP_RETURN_ON_FALSE(strlen(mitr_device_storage_access_token()) > 0, ESP_ERR_INVALID_STATE, TAG, "Missing device access token");
+    }
     return ESP_OK;
 }
 
@@ -106,7 +109,7 @@ static char *dup_json_string(const cJSON *node)
     return strdup(node->valuestring);
 }
 
-static esp_err_t http_post_json(const char *path, const char *body, cJSON **response_json, int *status_code)
+static esp_err_t http_post_json(const char *path, const char *body, const char *bearer_token, cJSON **response_json, int *status_code)
 {
     esp_err_t err = ESP_OK;
     *response_json = NULL;
@@ -114,7 +117,7 @@ static esp_err_t http_post_json(const char *path, const char *body, cJSON **resp
         *status_code = 0;
     }
 
-    ESP_RETURN_ON_ERROR(ensure_device_configured(), TAG, "Device config is incomplete");
+    ESP_RETURN_ON_ERROR(ensure_device_configured(bearer_token != NULL), TAG, "Device config is incomplete");
 
     char *url = join_url(path);
     ESP_RETURN_ON_FALSE(url != NULL, ESP_ERR_NO_MEM, TAG, "Failed to build request URL");
@@ -140,18 +143,20 @@ static esp_err_t http_post_json(const char *path, const char *body, cJSON **resp
         goto cleanup;
     }
 
-    char auth_header[512];
-    int auth_len = snprintf(auth_header, sizeof(auth_header), "Bearer %s", DEVICE_ACCESS_TOKEN);
-    if (!(auth_len > 7 && auth_len < (int)sizeof(auth_header))) {
-        err = ESP_ERR_INVALID_SIZE;
-        ESP_LOGE(TAG, "Device access token is too large");
-        goto cleanup;
-    }
+    if (bearer_token != NULL) {
+        char auth_header[512];
+        int auth_len = snprintf(auth_header, sizeof(auth_header), "Bearer %s", bearer_token);
+        if (!(auth_len > 7 && auth_len < (int)sizeof(auth_header))) {
+            err = ESP_ERR_INVALID_SIZE;
+            ESP_LOGE(TAG, "Device access token is too large");
+            goto cleanup;
+        }
 
-    err = esp_http_client_set_header(client, "Authorization", auth_header);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set auth header: %s", esp_err_to_name(err));
-        goto cleanup;
+        err = esp_http_client_set_header(client, "Authorization", auth_header);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set auth header: %s", esp_err_to_name(err));
+            goto cleanup;
+        }
     }
     err = esp_http_client_set_header(client, "Content-Type", "application/json");
     if (err != ESP_OK) {
@@ -223,7 +228,12 @@ static cJSON *build_metadata_payload(void)
 
 const char *mitr_device_backend_base_url(void)
 {
-    return DEVICE_BACKEND_BASE_URL;
+    return mitr_device_storage_backend_base_url();
+}
+
+const char *mitr_device_device_id(void)
+{
+    return mitr_device_storage_device_id();
 }
 
 const char *mitr_device_language(void)
@@ -239,6 +249,52 @@ const char *mitr_device_hardware_rev(void)
 const char *mitr_device_firmware_version(void)
 {
     return DEVICE_FIRMWARE_VERSION;
+}
+
+bool mitr_device_has_access_token(void)
+{
+    return mitr_device_storage_has_access_token();
+}
+
+bool mitr_device_has_pairing_token(void)
+{
+    return mitr_device_storage_has_pairing_token();
+}
+
+esp_err_t mitr_device_complete_bootstrap(void)
+{
+    ESP_RETURN_ON_ERROR(ensure_device_configured(false), TAG, "Device config is incomplete");
+    ESP_RETURN_ON_FALSE(mitr_device_storage_has_pairing_token(), ESP_ERR_INVALID_STATE, TAG, "Missing pairing token");
+
+    cJSON *body = cJSON_CreateObject();
+    ESP_RETURN_ON_FALSE(body != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create bootstrap body");
+    cJSON_AddStringToObject(body, "pairingToken", mitr_device_storage_pairing_token());
+    cJSON_AddStringToObject(body, "deviceId", mitr_device_storage_device_id());
+    cJSON_AddStringToObject(body, "hardwareRev", DEVICE_HARDWARE_REV);
+    cJSON_AddStringToObject(body, "firmwareVersion", DEVICE_FIRMWARE_VERSION);
+    cJSON *metadata = build_metadata_payload();
+    if (metadata != NULL) {
+        cJSON_AddItemToObject(body, "metadata", metadata);
+    }
+
+    char *body_string = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize bootstrap body");
+
+    cJSON *response = NULL;
+    esp_err_t err = http_post_json("/devices/bootstrap/complete", body_string, NULL, &response, NULL);
+    free(body_string);
+    ESP_RETURN_ON_ERROR(err, TAG, "Bootstrap completion failed");
+
+    char *device_access_token = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "deviceAccessToken"));
+    char *device_id = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "deviceId"));
+    cJSON_Delete(response);
+
+    ESP_RETURN_ON_FALSE(device_access_token != NULL, ESP_FAIL, TAG, "Bootstrap response missing deviceAccessToken");
+    err = mitr_device_storage_store_access_token(device_access_token, device_id ? device_id : mitr_device_storage_device_id());
+    free(device_access_token);
+    free(device_id);
+    return err;
 }
 
 esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
@@ -261,7 +317,7 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize token request body");
 
     cJSON *response = NULL;
-    esp_err_t err = http_post_json("/devices/token", body_string, &response, NULL);
+    esp_err_t err = http_post_json("/devices/token", body_string, mitr_device_storage_access_token(), &response, NULL);
     free(body_string);
     ESP_RETURN_ON_ERROR(err, TAG, "Token request failed");
 
@@ -276,6 +332,9 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
     if (cJSON_IsObject(dispatch)) {
         out->device_id = dup_json_string(cJSON_GetObjectItemCaseSensitive(dispatch, "device_id"));
         out->user_id = dup_json_string(cJSON_GetObjectItemCaseSensitive(dispatch, "user_id"));
+        if (!out->device_id) {
+            out->device_id = strdup(mitr_device_storage_device_id());
+        }
     }
 
     cJSON_Delete(response);
@@ -336,7 +395,7 @@ esp_err_t mitr_device_send_heartbeat(const mitr_device_heartbeat_t *heartbeat)
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize heartbeat body");
 
     cJSON *response = NULL;
-    esp_err_t err = http_post_json("/devices/heartbeat", body_string, &response, NULL);
+    esp_err_t err = http_post_json("/devices/heartbeat", body_string, mitr_device_storage_access_token(), &response, NULL);
     free(body_string);
     if (response) {
         cJSON_Delete(response);
@@ -375,7 +434,7 @@ esp_err_t mitr_device_send_telemetry(
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize telemetry body");
 
     cJSON *response = NULL;
-    esp_err_t err = http_post_json("/devices/telemetry", body_string, &response, NULL);
+    esp_err_t err = http_post_json("/devices/telemetry", body_string, mitr_device_storage_access_token(), &response, NULL);
     free(body_string);
     if (response) {
         cJSON_Delete(response);
@@ -397,7 +456,7 @@ esp_err_t mitr_device_end_session(const char *session_id, const char *reason)
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize end-session body");
 
     cJSON *response = NULL;
-    esp_err_t err = http_post_json("/devices/session/end", body_string, &response, NULL);
+    esp_err_t err = http_post_json("/devices/session/end", body_string, mitr_device_storage_access_token(), &response, NULL);
     free(body_string);
     if (response) {
         cJSON_Delete(response);

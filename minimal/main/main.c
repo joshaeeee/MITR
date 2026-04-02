@@ -6,6 +6,7 @@
 
 #include "board.h"
 #include "device_api.h"
+#include "device_storage.h"
 #include "example.h"
 #include "media.h"
 #include "network.h"
@@ -17,6 +18,7 @@ static void mitr_device_task(void *arg)
     esp_log_level_set("*", ESP_LOG_INFO);
 
     ESP_ERROR_CHECK(livekit_system_init());
+    ESP_ERROR_CHECK(mitr_device_storage_init());
     board_init();
     ESP_ERROR_CHECK(media_init());
 
@@ -37,6 +39,24 @@ static void mitr_device_task(void *arg)
         ESP_LOGE(TAG, "Wi-Fi connection failed");
         vTaskDelay(portMAX_DELAY);
         return;
+    }
+
+    if (!mitr_device_has_access_token()) {
+        if (!mitr_device_has_pairing_token()) {
+            ESP_LOGE(TAG, "Device is missing both a long-lived access token and a pairing token");
+            vTaskDelay(portMAX_DELAY);
+            return;
+        }
+
+        while (!mitr_device_has_access_token()) {
+            esp_err_t err = mitr_device_complete_bootstrap();
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "Device bootstrap completed; long-lived credential stored");
+                break;
+            }
+            ESP_LOGW(TAG, "Device bootstrap failed: %s. Retrying in 10 seconds", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(10 * 1000));
+        }
     }
 
     while (!join_room()) {

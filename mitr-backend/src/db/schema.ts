@@ -385,6 +385,9 @@ export const devices = pgTable('devices', {
   id: uuid('id').defaultRandom().primaryKey(),
   deviceId: text('device_id').notNull(),
   userId: text('user_id').notNull(),
+  familyId: uuid('family_id'),
+  elderId: uuid('elder_id'),
+  claimedByUserId: text('claimed_by_user_id'),
   displayName: text('display_name'),
   hardwareRev: text('hardware_rev'),
   firmwareVersion: text('firmware_version'),
@@ -397,7 +400,9 @@ export const devices = pgTable('devices', {
 }, (table) => ({
   deviceIdUnique: uniqueIndex('devices_device_id_uq').on(table.deviceId),
   accessTokenUnique: uniqueIndex('devices_access_token_uq').on(table.deviceAccessTokenHash),
-  userClaimedIdx: index('devices_user_claimed_idx').on(table.userId, table.claimedAt)
+  userClaimedIdx: index('devices_user_claimed_idx').on(table.userId, table.claimedAt),
+  familyClaimedIdx: index('devices_family_claimed_idx').on(table.familyId, table.claimedAt),
+  elderClaimedIdx: index('devices_elder_claimed_idx').on(table.elderId, table.claimedAt)
 }));
 
 export const deviceClaims = pgTable('device_claims', {
@@ -413,10 +418,38 @@ export const deviceClaims = pgTable('device_claims', {
   userCreatedIdx: index('device_claims_user_created_idx').on(table.userId, table.createdAt)
 }));
 
+export const devicePairings = pgTable('device_pairings', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  pairingTokenHash: text('pairing_token_hash').notNull(),
+  deviceId: text('device_id').notNull(),
+  familyId: uuid('family_id').notNull(),
+  elderId: uuid('elder_id').notNull(),
+  ownerUserId: text('owner_user_id').notNull(),
+  claimedByUserId: text('claimed_by_user_id').notNull(),
+  displayName: text('display_name'),
+  status: text('status')
+    .$type<'pending_device' | 'bootstrapping' | 'completed' | 'expired' | 'revoked'>()
+    .default('pending_device')
+    .notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  pairingTokenUnique: uniqueIndex('device_pairings_token_hash_uq').on(table.pairingTokenHash),
+  deviceCreatedIdx: index('device_pairings_device_created_idx').on(table.deviceId, table.createdAt),
+  familyCreatedIdx: index('device_pairings_family_created_idx').on(table.familyId, table.createdAt),
+  elderCreatedIdx: index('device_pairings_elder_created_idx').on(table.elderId, table.createdAt)
+}));
+
 export const deviceSessions = pgTable('device_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
   deviceId: text('device_id').notNull(),
   userId: text('user_id').notNull(),
+  familyId: uuid('family_id'),
+  elderId: uuid('elder_id'),
+  claimedByUserId: text('claimed_by_user_id'),
   roomName: text('room_name').notNull(),
   participantIdentity: text('participant_identity').notNull(),
   language: text('language').default('hi-IN').notNull(),
@@ -431,6 +464,8 @@ export const deviceSessions = pgTable('device_sessions', {
 }, (table) => ({
   deviceStartedIdx: index('device_sessions_device_started_idx').on(table.deviceId, table.startedAt),
   userStartedIdx: index('device_sessions_user_started_idx').on(table.userId, table.startedAt),
+  familyStartedIdx: index('device_sessions_family_started_idx').on(table.familyId, table.startedAt),
+  elderStartedIdx: index('device_sessions_elder_started_idx').on(table.elderId, table.startedAt),
   deviceStatusIdx: index('device_sessions_device_status_idx').on(table.deviceId, table.status, table.startedAt)
 }));
 
@@ -438,6 +473,9 @@ export const deviceTelemetry = pgTable('device_telemetry', {
   id: uuid('id').defaultRandom().primaryKey(),
   deviceId: text('device_id').notNull(),
   userId: text('user_id').notNull(),
+  familyId: uuid('family_id'),
+  elderId: uuid('elder_id'),
+  claimedByUserId: text('claimed_by_user_id'),
   sessionId: uuid('session_id'),
   eventType: text('event_type').notNull(),
   level: text('level').$type<'debug' | 'info' | 'warn' | 'error'>().default('info').notNull(),
@@ -445,6 +483,8 @@ export const deviceTelemetry = pgTable('device_telemetry', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 }, (table) => ({
   deviceCreatedIdx: index('device_telemetry_device_created_idx').on(table.deviceId, table.createdAt),
+  familyCreatedIdx: index('device_telemetry_family_created_idx').on(table.familyId, table.createdAt),
+  elderCreatedIdx: index('device_telemetry_elder_created_idx').on(table.elderId, table.createdAt),
   sessionCreatedIdx: index('device_telemetry_session_created_idx').on(table.sessionId, table.createdAt)
 }));
 

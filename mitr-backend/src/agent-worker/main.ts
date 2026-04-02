@@ -62,6 +62,12 @@ dotenv.config({ path: '.env.local' });
 
 type DispatchMetadata = {
   user_id?: string;
+  family_id?: string | null;
+  elder_id?: string | null;
+  claimed_by_user_id?: string | null;
+  device_id?: string | null;
+  hardware_rev?: string | null;
+  firmware_version?: string | null;
   language?: string;
   profile_answers?: Record<string, string> | null;
   [key: string]: unknown;
@@ -673,6 +679,9 @@ export default defineAgent({
     const sessionId = `${roomName}:${userId}`;
     const hardwareRev = asNonEmptyString(metadata.hardware_rev);
     const deviceId = asNonEmptyString(metadata.device_id);
+    const familyId = asNonEmptyString(metadata.family_id);
+    const elderId = asNonEmptyString(metadata.elder_id);
+    const claimedByUserId = asNonEmptyString(metadata.claimed_by_user_id);
     const isEsp32Session =
       !!deviceId ||
       (hardwareRev ? hardwareRev.toLowerCase().includes('esp32') : false);
@@ -713,6 +722,9 @@ export default defineAgent({
       logger.info('ESP32 session detected; disabling server-side background voice cancellation', {
         sessionId,
         userId,
+        familyId,
+        elderId,
+        claimedByUserId,
         deviceId,
         hardwareRev
       });
@@ -1881,13 +1893,17 @@ export default defineAgent({
           endedAt: event.createdAt,
           usageSummaryJson: {
             usage: usageCollector.getSummary(),
-            sessionReason: event.reason,
-            language,
-            pipeline: selectedVoicePipeline,
-            roomName
-          },
-          sessionReason: event.reason
-        })
+          sessionReason: event.reason,
+          language,
+          pipeline: selectedVoicePipeline,
+          roomName,
+          familyId,
+          elderId,
+          claimedByUserId,
+          deviceId
+        },
+        sessionReason: event.reason
+      })
         .catch((error) => {
           logger.warn('Failed to persist device usage session', {
             sessionId,

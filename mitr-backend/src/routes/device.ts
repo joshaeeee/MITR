@@ -20,6 +20,26 @@ const claimCompleteSchema = z.object({
   metadata: z.record(z.unknown()).optional()
 });
 
+const pairingStartSchema = z.object({
+  elderId: z.string().uuid().optional(),
+  deviceId: z.string().min(1),
+  displayName: z.string().optional(),
+  metadata: z.record(z.unknown()).optional()
+});
+
+const pairingStatusParamsSchema = z.object({
+  pairingId: z.string().uuid()
+});
+
+const bootstrapCompleteSchema = z.object({
+  pairingToken: z.string().min(8),
+  deviceId: z.string().min(1),
+  displayName: z.string().optional(),
+  hardwareRev: z.string().optional(),
+  firmwareVersion: z.string().optional(),
+  metadata: z.record(z.unknown()).optional()
+});
+
 const deviceTokenSchema = z.object({
   language: z.string().optional(),
   roomName: z.string().optional(),
@@ -86,6 +106,37 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
     return reply.send(await control.startClaim(request.auth!.user.id));
   });
 
+  app.post('/devices/pairing/start', { preHandler: guard }, async (request, reply) => {
+    const parsed = pairingStartSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    try {
+      return reply.send(
+        await control.startPairing({
+          userId: request.auth!.user.id,
+          ...parsed.data
+        })
+      );
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message.includes('already claimed') ? 409 : 400;
+      return reply.status(status).send({ error: message });
+    }
+  });
+
+  app.get('/devices/pairing/:pairingId', { preHandler: guard }, async (request, reply) => {
+    const parsed = pairingStatusParamsSchema.safeParse(request.params ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    try {
+      return reply.send(await control.getPairingStatusForUser(request.auth!.user.id, parsed.data.pairingId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message.includes('not found') ? 404 : 400;
+      return reply.status(status).send({ error: message });
+    }
+  });
+
   app.get('/devices/claimed', { preHandler: guard }, async (request, reply) => {
     return reply.send({ items: await control.listDevicesForUser(request.auth!.user.id) });
   });
@@ -96,6 +147,19 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
 
     try {
       return reply.send(await control.completeClaim(parsed.data));
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message.includes('already claimed') ? 409 : 400;
+      return reply.status(status).send({ error: message });
+    }
+  });
+
+  app.post('/devices/bootstrap/complete', async (request, reply) => {
+    const parsed = bootstrapCompleteSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    try {
+      return reply.send(await control.completeBootstrap(parsed.data));
     } catch (error) {
       const message = (error as Error).message;
       const status = message.includes('already claimed') ? 409 : 400;
