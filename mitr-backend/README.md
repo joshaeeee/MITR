@@ -171,6 +171,23 @@ Notes:
 - After deploy, it verifies running container image refs to prevent stale-image restarts.
 - If `ENABLE_HTTPS=true`, `PUBLIC_HOSTNAME`, and `TLS_EMAIL` are present in `.env.prod`, deploy also provisions/renews Let's Encrypt and exposes HTTPS on `443`.
 
+### CloudWatch on EC2
+
+- Container logs ship directly from Docker to CloudWatch Logs through the `awslogs` driver in [docker-compose.prod.yml](/Users/shivanshjoshi/Mitr/mitr-backend/deploy/docker-compose.prod.yml).
+- Set `AWS_REGION` and `CLOUDWATCH_LOG_GROUP` in `deploy/.env.prod`.
+- Attach an EC2 IAM role with `CloudWatchAgentServerPolicy`.
+- Host metrics can be enabled with the config in [cloudwatch-agent.json](/Users/shivanshjoshi/Mitr/mitr-backend/deploy/cloudwatch-agent.json):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y amazon-cloudwatch-agent
+sudo mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+sudo cp deploy/cloudwatch-agent.json /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+```
+
 ## Ingestion / data utilities
 - Religious corpus:
 ```bash

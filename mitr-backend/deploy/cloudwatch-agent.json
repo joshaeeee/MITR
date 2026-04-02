@@ -1,0 +1,46 @@
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "root"
+  },
+  "metrics": {
+    "namespace": "Mitr/EC2",
+    "append_dimensions": {
+      "InstanceId": "${aws:InstanceId}",
+      "InstanceType": "${aws:InstanceType}",
+      "AutoScalingGroupName": "${aws:AutoScalingGroupName}"
+    },
+    "metrics_collected": {
+      "cpu": {
+        "resources": [
+          "*"
+        ],
+        "measurement": [
+          "cpu_usage_idle",
+          "cpu_usage_user",
+          "cpu_usage_system"
+        ],
+        "totalcpu": true
+      },
+      "disk": {
+        "resources": [
+          "/"
+        ],
+        "measurement": [
+          "used_percent"
+        ]
+      },
+      "mem": {
+        "measurement": [
+          "mem_used_percent"
+        ]
+      },
+      "netstat": {
+        "measurement": [
+          "tcp_established",
+          "tcp_time_wait"
+        ]
+      }
+    }
+  }
+}
