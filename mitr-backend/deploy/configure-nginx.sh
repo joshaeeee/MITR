@@ -172,6 +172,10 @@ EOF
       root /var/www/certbot;
     }
 
+    location = /privacy-policy {
+      try_files /privacy-policy/index.html =404;
+    }
+
     location / {
       try_files \$uri \$uri/ /index.html;
     }
