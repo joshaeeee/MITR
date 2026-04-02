@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, or } from 'drizzle-orm';
 import { AccessToken, VideoGrant } from 'livekit-server-sdk';
 import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
 import { db } from '../../db/client.js';
@@ -154,6 +154,39 @@ export class DeviceControlService {
       completedAt: row.completedAt?.getTime() ?? null,
       metadata: normalizeMetadata(row.metadataJson)
     };
+  }
+
+  async getCurrentFamilyContextForUser(
+    userId: string
+  ): Promise<{ familyId: string; elderId: string | null } | null> {
+    const context = await this.resolveFamilyContextForUser(userId, undefined, { requireElder: false });
+    return {
+      familyId: context.familyId,
+      elderId: context.elderId
+    };
+  }
+
+  async getLatestActivePairingForUser(userId: string): Promise<DevicePairingSummary | null> {
+    const context = await this.resolveFamilyContextForUser(userId, undefined, { requireElder: false });
+    const now = new Date();
+    const filters = [
+      eq(devicePairings.familyId, context.familyId),
+      inArray(devicePairings.status, ['pending_device', 'bootstrapping']),
+      gt(devicePairings.expiresAt, now)
+    ];
+
+    if (context.elderId) {
+      filters.push(eq(devicePairings.elderId, context.elderId));
+    }
+
+    const [row] = await db
+      .select()
+      .from(devicePairings)
+      .where(and(...filters))
+      .orderBy(desc(devicePairings.createdAt))
+      .limit(1);
+
+    return row ? this.pairingSummary(row) : null;
   }
 
   async listDevicesForUser(userId: string): Promise<ClaimedDeviceSummary[]> {

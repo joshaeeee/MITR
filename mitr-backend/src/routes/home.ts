@@ -3,6 +3,7 @@ import { requireAuth } from '../services/auth/auth-middleware.js';
 import type { AuthService } from '../services/auth/auth-service.js';
 import { AlertsService } from '../services/alerts/alerts-service.js';
 import { CareService } from '../services/care/care-service.js';
+import { DeviceService } from '../services/device/device-service.js';
 import { ElderService } from '../services/elder/elder-service.js';
 import { RealtimeHomeService } from '../services/insights/realtime-home-service.js';
 import { NudgesService } from '../services/nudges/nudges-service.js';
@@ -13,6 +14,7 @@ const colorForTimeline = (type: 'nudge' | 'reminder'): string => (type === 'nudg
 export const registerHomeRoutes = (app: FastifyInstance, auth: AuthService): void => {
   const guard = requireAuth(auth);
   const elder = new ElderService();
+  const devices = new DeviceService();
   const alerts = new AlertsService();
   const care = new CareService();
   const nudges = new NudgesService();
@@ -21,9 +23,10 @@ export const registerHomeRoutes = (app: FastifyInstance, auth: AuthService): voi
   app.get('/home/summary', { preHandler: guard }, async (request, reply) => {
     const userId = request.auth!.user.id;
 
-    const [profile, deviceStatus, alertItems, nudgeItems, reminderItems, realtimeDigest] = await Promise.all([
+    const [profile, deviceStatus, productionStatus, alertItems, nudgeItems, reminderItems, realtimeDigest] = await Promise.all([
       elder.getProfile(userId),
       elder.getDeviceStatus(userId),
+      devices.status(userId, { includeLegacy: false }),
       alerts.list(userId),
       nudges.history(userId),
       care.listReminders(userId),
@@ -54,6 +57,7 @@ export const registerHomeRoutes = (app: FastifyInstance, auth: AuthService): voi
       user: request.auth!.user,
       profile,
       deviceStatus,
+      productionDevice: productionStatus.productionDevice,
       deviceUsageSummary: deviceStatus.snapshot.deviceUsageSummary,
       alerts: alertItems,
       timeline: [...nudgeEvents, ...reminderEvents],

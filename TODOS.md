@@ -11,7 +11,7 @@
 - [x] Replace the old ESP-IDF browser-bridge demo with a LiveKit-native device starter wired to `/devices/token`, `/devices/heartbeat`, `/devices/telemetry`, and `/devices/session/end`
 - [x] Validate the LiveKit-native ESP-IDF starter with a real `idf.py build` on ESP-IDF `v5.4.2`
 - [ ] Run `drizzle:migrate` against the shared backend database
-- [ ] Wire the mobile/family-facing device UI to the new `productionDevices` status payload
+- [x] Wire the mobile/family-facing device UI to the new `productionDevices` status payload
 - [x] Add family/elder-scoped pairing and bootstrap APIs (`/devices/pairing/start`, `/devices/pairing/:id`, `/devices/bootstrap/complete`)
 - [x] Refactor firmware to support one-time pairing-token bootstrap into a persisted device credential
 - [x] Wire the real BLE-first provisioning bridge and custom provisioning endpoint so the app can actually deliver Wi-Fi credentials + pairing token to the ESP32
