@@ -12,7 +12,7 @@
 
 static const char *TAG = "mitr_device_main";
 
-void app_main(void)
+static void mitr_device_task(void *arg)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
 
@@ -51,4 +51,18 @@ void app_main(void)
     ESP_LOGW(TAG, "Session became inactive; device will stay idle until reboot");
     leave_room();
     vTaskDelay(portMAX_DELAY);
+}
+
+void app_main(void)
+{
+    BaseType_t created = xTaskCreatePinnedToCore(
+        mitr_device_task,
+        "mitr_device_task",
+        12288,
+        NULL,
+        5,
+        NULL,
+        tskNO_AFFINITY);
+
+    ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_FAIL);
 }
