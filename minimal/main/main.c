@@ -17,15 +17,7 @@ static void mitr_device_task(void *arg)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
 
-    ESP_ERROR_CHECK(livekit_system_init());
     ESP_ERROR_CHECK(mitr_device_storage_init());
-    board_init();
-    ESP_ERROR_CHECK(media_init());
-
-    esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
-        2,
-        ESP_SNTP_SERVER_LIST("time.google.com", "pool.ntp.org"));
-    esp_netif_sntp_init(&sntp_config);
 
     ESP_LOGI(
         TAG,
@@ -58,6 +50,15 @@ static void mitr_device_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(10 * 1000));
         }
     }
+
+    ESP_ERROR_CHECK(livekit_system_init());
+    board_init();
+    ESP_ERROR_CHECK(media_init());
+
+    esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+        2,
+        ESP_SNTP_SERVER_LIST("time.google.com", "pool.ntp.org"));
+    esp_netif_sntp_init(&sntp_config);
 
     while (!join_room()) {
         ESP_LOGW(TAG, "Session bootstrap failed; retrying in 10 seconds");

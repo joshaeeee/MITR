@@ -22,6 +22,7 @@ typedef struct {
     char device_access_token[STORAGE_TOKEN_CAPACITY];
     char pairing_token[STORAGE_TOKEN_CAPACITY];
     char device_id[STORAGE_DEVICE_ID_CAPACITY];
+    char language[32];
 } storage_state_t;
 
 static storage_state_t state = {0};
@@ -77,6 +78,7 @@ esp_err_t mitr_device_storage_init(void)
     load_value(handle, "device_token", state.device_access_token, sizeof(state.device_access_token), CONFIG_MITR_DEVICE_ACCESS_TOKEN);
     load_value(handle, "pairing_token", state.pairing_token, sizeof(state.pairing_token), CONFIG_MITR_DEVICE_PAIRING_TOKEN);
     load_value(handle, "device_id", state.device_id, sizeof(state.device_id), CONFIG_MITR_DEVICE_DEVICE_ID);
+    load_value(handle, "language", state.language, sizeof(state.language), CONFIG_MITR_DEVICE_LANGUAGE);
 
     nvs_close(handle);
     state.initialized = true;
@@ -103,6 +105,11 @@ const char *mitr_device_storage_pairing_token(void)
     return state.pairing_token;
 }
 
+const char *mitr_device_storage_language(void)
+{
+    return state.language;
+}
+
 bool mitr_device_storage_has_access_token(void)
 {
     return state.device_access_token[0] != '\0';
@@ -116,7 +123,8 @@ bool mitr_device_storage_has_pairing_token(void)
 esp_err_t mitr_device_storage_store_bootstrap(
     const char *backend_base_url,
     const char *pairing_token,
-    const char *device_id)
+    const char *device_id,
+    const char *language)
 {
     ESP_RETURN_ON_ERROR(mitr_device_storage_init(), TAG, "Storage is unavailable");
 
@@ -147,6 +155,14 @@ esp_err_t mitr_device_storage_store_bootstrap(
             goto exit;
         }
         copy_string(state.device_id, sizeof(state.device_id), device_id);
+    }
+    if (language && language[0] != '\0') {
+        err = nvs_set_str(handle, "language", language);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to store preferred language: %s", esp_err_to_name(err));
+            goto exit;
+        }
+        copy_string(state.language, sizeof(state.language), language);
     }
 
     err = nvs_commit(handle);

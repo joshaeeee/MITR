@@ -14,8 +14,8 @@
 - [ ] Wire the mobile/family-facing device UI to the new `productionDevices` status payload
 - [x] Add family/elder-scoped pairing and bootstrap APIs (`/devices/pairing/start`, `/devices/pairing/:id`, `/devices/bootstrap/complete`)
 - [x] Refactor firmware to support one-time pairing-token bootstrap into a persisted device credential
-- [ ] Wire the real BLE-first provisioning bridge and custom provisioning endpoint so the app can actually deliver Wi-Fi credentials + pairing token to the ESP32
-- [ ] Add QR camera scanning in the native mobile onboarding flow instead of manual QR payload paste
+- [x] Wire the real BLE-first provisioning bridge and custom provisioning endpoint so the app can actually deliver Wi-Fi credentials + pairing token to the ESP32
+- [x] Add QR camera scanning in the native mobile onboarding flow instead of manual QR payload paste
 - [ ] Adapt `minimal/main/board.c` and `minimal/main/media.c` to the exact `ESP32-S3-WROOM` production audio hardware
 - [ ] Add data-channel control messages for mute, reconnect reason, and remote diagnostics
 - [ ] Run pilot soak testing on real home Wi-Fi and decide whether the Espressif gateway fallback is needed

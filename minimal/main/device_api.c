@@ -21,7 +21,6 @@ typedef struct {
     size_t capacity;
 } response_buffer_t;
 
-static const char *const DEVICE_LANGUAGE = CONFIG_MITR_DEVICE_LANGUAGE;
 static const char *const DEVICE_HARDWARE_REV = CONFIG_MITR_DEVICE_HARDWARE_REV;
 static const char *const DEVICE_FIRMWARE_VERSION = CONFIG_MITR_DEVICE_FIRMWARE_VERSION;
 
@@ -238,7 +237,7 @@ const char *mitr_device_device_id(void)
 
 const char *mitr_device_language(void)
 {
-    return DEVICE_LANGUAGE;
+    return mitr_device_storage_language();
 }
 
 const char *mitr_device_hardware_rev(void)
@@ -304,7 +303,7 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
 
     cJSON *body = cJSON_CreateObject();
     ESP_RETURN_ON_FALSE(body != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create token request body");
-    cJSON_AddStringToObject(body, "language", DEVICE_LANGUAGE);
+    cJSON_AddStringToObject(body, "language", mitr_device_language());
     cJSON_AddStringToObject(body, "firmwareVersion", DEVICE_FIRMWARE_VERSION);
     cJSON_AddStringToObject(body, "hardwareRev", DEVICE_HARDWARE_REV);
     cJSON *metadata = build_metadata_payload();

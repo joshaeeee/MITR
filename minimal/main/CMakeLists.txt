@@ -7,6 +7,7 @@ idf_component_register(
         "device_api.c"
         "device_storage.c"
         "network.c"
+        "provisioning.c"
         "atomic_compat.c"
     INCLUDE_DIRS
         "."
@@ -15,6 +16,8 @@ idf_component_register(
         esp_event
         esp_netif
         esp_wifi
+        protocomm
+        wifi_provisioning
         json
         nvs_flash
         espressif__esp_audio_codec

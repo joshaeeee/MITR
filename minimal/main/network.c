@@ -10,6 +10,7 @@
 #include "sdkconfig.h"
 
 #include "network.h"
+#include "provisioning.h"
 
 static const char *TAG = "mitr_network";
 
@@ -107,10 +108,10 @@ bool mitr_network_connect(void)
 
     wifi_init_config_t wifi_init_config = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_init_config));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
 
     const bool has_static_wifi = strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) > 0;
+    bool provisioning_started = false;
     wifi_config_t wifi_config = {0};
     if (has_static_wifi) {
         strlcpy((char *)wifi_config.sta.ssid, CONFIG_LK_EXAMPLE_WIFI_SSID, sizeof(wifi_config.sta.ssid));
@@ -120,24 +121,31 @@ bool mitr_network_connect(void)
         wifi_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
         wifi_config.sta.pmf_cfg.capable = true;
         wifi_config.sta.pmf_cfg.required = false;
-    }
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    if (has_static_wifi) {
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    } else {
+        ESP_ERROR_CHECK(mitr_provisioning_start_if_needed(&provisioning_started));
     }
 
     state.retry_attempt = 0;
     xEventGroupClearBits(state.event_group, NETWORK_EVENT_CONNECTED | NETWORK_EVENT_FAILED);
 
-    ESP_LOGI(
-        TAG,
-        "Connecting WiFi: ssid=%s auth_threshold=%d",
-        has_static_wifi ? (const char *)wifi_config.sta.ssid : "<saved-from-provisioning>",
-        has_static_wifi ? wifi_config.sta.threshold.authmode : -1);
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (provisioning_started) {
+        ESP_LOGI(TAG, "Device is not provisioned yet; waiting for BLE onboarding to provide Wi-Fi credentials");
+    } else {
+        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
+        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+        if (has_static_wifi) {
+            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+        }
+
+        ESP_LOGI(
+            TAG,
+            "Connecting WiFi: ssid=%s auth_threshold=%d",
+            has_static_wifi ? (const char *)wifi_config.sta.ssid : "<saved-from-provisioning>",
+            has_static_wifi ? wifi_config.sta.threshold.authmode : -1);
+        ESP_ERROR_CHECK(esp_wifi_start());
+    }
 
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(
