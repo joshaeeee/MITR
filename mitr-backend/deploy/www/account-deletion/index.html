@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Account Deletion | Mitr Family Care App</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f2ea;
+        --surface: rgba(255, 255, 255, 0.92);
+        --text: #18212b;
+        --muted: #5f6975;
+        --line: #dce2e8;
+        --accent: #0f766e;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at top left, rgba(15, 118, 110, 0.10), transparent 28%),
+          linear-gradient(180deg, #faf8f2 0%, var(--bg) 100%);
+        color: var(--text);
+        font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      }
+
+      .shell {
+        width: min(980px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 40px 0 72px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: var(--surface);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 24px 80px rgba(24, 33, 43, 0.08);
+        overflow: hidden;
+      }
+
+      header {
+        padding: 36px 32px 24px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(32px, 5vw, 54px);
+        line-height: 1.02;
+      }
+
+      .lede {
+        margin: 16px 0 0;
+        max-width: 58ch;
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1.65;
+      }
+
+      main {
+        padding: 8px 32px 40px;
+      }
+
+      h2 {
+        margin: 28px 0 12px;
+        font-size: 22px;
+        line-height: 1.25;
+      }
+
+      p,
+      li {
+        color: var(--text);
+        font-size: 16px;
+        line-height: 1.75;
+      }
+
+      p.muted {
+        color: var(--muted);
+      }
+
+      ul,
+      ol {
+        margin: 12px 0 0;
+        padding-left: 24px;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .top-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 18px;
+        color: var(--accent);
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .contact,
+      .note {
+        padding: 20px 22px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+      }
+
+      .contact {
+        background: rgba(15, 118, 110, 0.04);
+      }
+
+      .note {
+        background: rgba(24, 33, 43, 0.03);
+      }
+
+      @media (max-width: 640px) {
+        header,
+        main {
+          padding-left: 20px;
+          padding-right: 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="card">
+        <header>
+          <a class="top-link" href="/">← Back to Mitr</a>
+          <p class="eyebrow">Mitr Family Care App</p>
+          <h1>Account Deletion</h1>
+          <p class="lede">
+            This page explains how users of the Mitr Family Care App can request deletion of their
+            account and what data is deleted or retained after a verified request.
+          </p>
+        </header>
+
+        <main>
+          <h2>How to request deletion</h2>
+          <ol>
+            <li>
+              Send an email to
+              <a href="mailto:joshi.shivansh01@gmail.com">joshi.shivansh01@gmail.com</a>
+              from the email address associated with your Mitr Family Care App account.
+            </li>
+            <li>
+              Use the subject line:
+              <strong>Account Deletion Request</strong>.
+            </li>
+            <li>
+              Include enough information for us to identify your account, such as your registered
+              email address and name.
+            </li>
+          </ol>
+
+          <div class="note">
+            <p class="muted">
+              We may ask you to verify ownership of the account before processing the deletion
+              request.
+            </p>
+          </div>
+
+          <h2>What data will be deleted</h2>
+          <p>After a verified request, we will delete or de-identify the data associated with your account from active systems where reasonably possible, including:</p>
+          <ul>
+            <li>account profile information such as your name and email address;</li>
+            <li>caregiving profile information you entered in the app;</li>
+            <li>family member and care-recipient information stored for app use;</li>
+            <li>reminders, care-plan entries, and related app content linked to your account;</li>
+            <li>stored push-notification tokens associated with your account; and</li>
+            <li>voice-note or audio metadata associated with your account, where applicable.</li>
+          </ul>
+
+          <h2>What data may be retained</h2>
+          <p>We may retain limited information after account deletion where retention is required for legitimate business or legal reasons, including:</p>
+          <ul>
+            <li>security, fraud-prevention, abuse-prevention, and audit records;</li>
+            <li>records needed to comply with legal, regulatory, tax, or dispute-resolution obligations; and</li>
+            <li>temporary encrypted backups that are automatically rotated out in the normal course of operations.</li>
+          </ul>
+
+          <h2>Retention period</h2>
+          <p>
+            We aim to process verified deletion requests within 30 days.
+          </p>
+          <p>
+            Residual backup copies and limited compliance or security records may be retained for up
+            to 90 days after the deletion request is completed, or longer where required by law.
+          </p>
+
+          <h2>Contact</h2>
+          <div class="contact">
+            <p class="muted">If you need help with account deletion for Mitr Family Care App, contact:</p>
+            <p>
+              <strong>Joshaeeee</strong><br />
+              <a href="mailto:joshi.shivansh01@gmail.com">joshi.shivansh01@gmail.com</a>
+            </p>
+          </div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>
