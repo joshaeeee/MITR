@@ -671,6 +671,11 @@ export default defineAgent({
     const roomNameFromJob = (ctx.job as { room?: { name?: string } }).room?.name;
     const roomName = roomNameFromJob ?? (ctx.room as { name?: string } | undefined)?.name ?? 'unknown-room';
     const sessionId = `${roomName}:${userId}`;
+    const hardwareRev = asNonEmptyString(metadata.hardware_rev);
+    const deviceId = asNonEmptyString(metadata.device_id);
+    const isEsp32Session =
+      !!deviceId ||
+      (hardwareRev ? hardwareRev.toLowerCase().includes('esp32') : false);
     let lastFinalTranscript: string | null = null;
     const MAX_AUTO_ADVANCE_TURNS = 6;
     const autoFlowState: {
@@ -703,6 +708,15 @@ export default defineAgent({
     let lastUserSpeechStoppedAt: number | null = null;
     const turnLatencyById = new Map<number, TurnLatencyTrace>();
     const speechToTurnId = new Map<string, number>();
+
+    if (isEsp32Session) {
+      logger.info('ESP32 session detected; disabling server-side background voice cancellation', {
+        sessionId,
+        userId,
+        deviceId,
+        hardwareRev
+      });
+    }
 
     const resolveTurnForTimestamp = (timestamp: number): TurnLatencyTrace | null => {
       const active = activeTurnId ? turnLatencyById.get(activeTurnId) ?? null : null;
@@ -1917,7 +1931,7 @@ export default defineAgent({
       inputOptions: {
         audioEnabled: true,
         textEnabled: true,
-        noiseCancellation: BackgroundVoiceCancellation()
+        ...(isEsp32Session ? {} : { noiseCancellation: BackgroundVoiceCancellation() })
       },
       outputOptions: {
         audioEnabled: true,
@@ -1935,6 +1949,7 @@ validateEnv();
 cli.runApp(
   new ServerOptions({
     agent: fileURLToPath(import.meta.url),
-    agentName: livekitConfig.agentName
+    agentName: livekitConfig.agentName,
+    initializeProcessTimeout: 60 * 1000
   })
 );
