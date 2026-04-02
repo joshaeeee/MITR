@@ -179,13 +179,7 @@ Notes:
 - Host metrics can be enabled with the config in [cloudwatch-agent.json](/Users/shivanshjoshi/Mitr/mitr-backend/deploy/cloudwatch-agent.json):
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y amazon-cloudwatch-agent
-sudo mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
-sudo cp deploy/cloudwatch-agent.json /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config -m ec2 -s \
-  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+bash deploy/setup-cloudwatch.sh
 ```
 
 ## Ingestion / data utilities
