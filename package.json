@@ -5,7 +5,9 @@
   "scripts": {
     "dev:api": "pnpm --dir mitr-backend dev:api",
     "dev:agent": "pnpm --dir mitr-backend dev:agent",
-    "dev:mobile": "pnpm --dir mitr-mobile start",
+    "dev:mobile": "pnpm --dir mitr-mobile/expo start",
+    "dev:mobile:web": "pnpm --dir mitr-mobile/expo start --web",
+    "dev:mobile:proxy": "pnpm --dir mitr-mobile/expo start:heyreca-proxy",
     "typecheck": "pnpm -r typecheck"
   }
 }
