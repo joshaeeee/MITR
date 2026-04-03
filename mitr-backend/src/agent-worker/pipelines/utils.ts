@@ -2,6 +2,20 @@ import * as sarvam from '@livekit/agents-plugin-sarvam';
 import type { PipelineLogger } from './types.js';
 export const SILERO_VAD_USERDATA_KEY = 'silero_vad';
 
+type VoiceOptionsShape = {
+  maxToolSteps: number;
+  preemptiveGeneration: boolean;
+  minInterruptionDuration: number;
+  minInterruptionWords: number;
+  minEndpointingDelay?: number;
+  userAwayTimeout?: null;
+};
+
+export const withDeviceVoiceOptions = (
+  voiceOptions: VoiceOptionsShape,
+  isDeviceSession: boolean
+): VoiceOptionsShape => (isDeviceSession ? { ...voiceOptions, userAwayTimeout: null } : voiceOptions);
+
 export const normalizeSarvamLanguageCode = (language: string): string => {
   const trimmed = language.trim();
   if (!trimmed) return 'hi-IN';

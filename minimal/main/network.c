@@ -20,6 +20,11 @@ static const char *TAG = "mitr_network";
 typedef struct {
     EventGroupHandle_t event_group;
     int retry_attempt;
+    bool connected;
+    bool wifi_initialized;
+    bool handlers_registered;
+    bool wifi_started;
+    esp_netif_t *sta_netif;
 } network_state_t;
 
 static network_state_t state = {0};
@@ -29,6 +34,7 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "Connected: ip=" IPSTR ", gateway=" IPSTR, IP2STR(&event->ip_info.ip), IP2STR(&event->ip_info.gw));
     state.retry_attempt = 0;
+    state.connected = true;
     xEventGroupSetBits(state.event_group, NETWORK_EVENT_CONNECTED);
 }
 
@@ -40,6 +46,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             break;
         case WIFI_EVENT_STA_DISCONNECTED: {
             const wifi_event_sta_disconnected_t *event = (const wifi_event_sta_disconnected_t *)event_data;
+            state.connected = false;
             ESP_LOGW(
                 TAG,
                 "Disconnected: reason=%d attempt=%d ssid=%s",
@@ -104,11 +111,20 @@ static esp_err_t init_common(void)
 bool mitr_network_connect(void)
 {
     ESP_ERROR_CHECK(init_common());
-    esp_netif_create_default_wifi_sta();
+    if (state.sta_netif == NULL) {
+        state.sta_netif = esp_netif_create_default_wifi_sta();
+    }
 
-    wifi_init_config_t wifi_init_config = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&wifi_init_config));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
+    if (!state.wifi_initialized) {
+        wifi_init_config_t wifi_init_config = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&wifi_init_config));
+        state.wifi_initialized = true;
+    }
+    if (!state.handlers_registered) {
+        ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
+        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+        state.handlers_registered = true;
+    }
 
     const bool has_static_wifi = strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) > 0;
     bool provisioning_started = false;
@@ -128,10 +144,13 @@ bool mitr_network_connect(void)
     state.retry_attempt = 0;
     xEventGroupClearBits(state.event_group, NETWORK_EVENT_CONNECTED | NETWORK_EVENT_FAILED);
 
+    if (state.connected) {
+        return true;
+    }
+
     if (provisioning_started) {
         ESP_LOGI(TAG, "Device is not provisioned yet; waiting for BLE onboarding to provide Wi-Fi credentials");
     } else {
-        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
         ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
@@ -144,7 +163,12 @@ bool mitr_network_connect(void)
             "Connecting WiFi: ssid=%s auth_threshold=%d",
             has_static_wifi ? (const char *)wifi_config.sta.ssid : "<saved-from-provisioning>",
             has_static_wifi ? wifi_config.sta.threshold.authmode : -1);
-        ESP_ERROR_CHECK(esp_wifi_start());
+        if (!state.wifi_started) {
+            ESP_ERROR_CHECK(esp_wifi_start());
+            state.wifi_started = true;
+        } else {
+            ESP_ERROR_CHECK(esp_wifi_connect());
+        }
     }
 
     while (true) {

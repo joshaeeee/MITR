@@ -668,15 +668,6 @@ export default defineAgent({
     const familyRepo = getFamilyRepository();
     const sessionStartedAt = Date.now();
     const selectedVoicePipeline = getSelectedVoicePipeline(env);
-    validateVoicePipeline({
-      env,
-      logger,
-      language,
-      ctx
-    });
-    const roomNameFromJob = (ctx.job as { room?: { name?: string } }).room?.name;
-    const roomName = roomNameFromJob ?? (ctx.room as { name?: string } | undefined)?.name ?? 'unknown-room';
-    const sessionId = `${roomName}:${userId}`;
     const hardwareRev = asNonEmptyString(metadata.hardware_rev);
     const deviceId = asNonEmptyString(metadata.device_id);
     const familyId = asNonEmptyString(metadata.family_id);
@@ -685,6 +676,16 @@ export default defineAgent({
     const isEsp32Session =
       !!deviceId ||
       (hardwareRev ? hardwareRev.toLowerCase().includes('esp32') : false);
+    validateVoicePipeline({
+      env,
+      logger,
+      language,
+      ctx,
+      isDeviceSession: isEsp32Session
+    });
+    const roomNameFromJob = (ctx.job as { room?: { name?: string } }).room?.name;
+    const roomName = roomNameFromJob ?? (ctx.room as { name?: string } | undefined)?.name ?? 'unknown-room';
+    const sessionId = `${roomName}:${userId}`;
     let lastFinalTranscript: string | null = null;
     const MAX_AUTO_ADVANCE_TURNS = 6;
     const autoFlowState: {
@@ -1555,7 +1556,8 @@ export default defineAgent({
       env,
       logger,
       language,
-      ctx
+      ctx,
+      isDeviceSession: isEsp32Session
     });
     logger.info('Voice pipeline selected', {
       sessionId,

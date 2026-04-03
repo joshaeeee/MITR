@@ -58,6 +58,13 @@ Build firmware in four layers:
    - OTA
    - data-channel control handlers
 
+### Runtime expectations
+
+- the physical device stays online; LiveKit rooms are disposable
+- room failures trigger fresh token minting and fresh room creation without reboot
+- device sessions disable `userAwayTimeout`; the firmware supervisor owns idle and reconnect policy
+- OTA uses ESP-IDF A/B partitions with rollback enabled and only marks a new build valid after sustained healthy heartbeats
+
 ### Cloud layers
 
 Keep the current split:
@@ -118,7 +125,7 @@ Every production room/session should carry `device_id`, `family_id`, `elder_id`,
 - mono
 - `16 kHz`
 - AEC enabled
-- device joins rooms only for active sessions, not permanent idle presence
+- device uses an always-connected runtime with automatic room/session recovery
 
 ## Backend Control Plane
 
@@ -165,7 +172,7 @@ Implementation target:
 - connect to our own backend token endpoint
 - publish mic audio
 - subscribe speaker audio
-- use data channel or RPC for device control/telemetry
+- use LiveKit RPC and data packets for device control, telemetry, mute, restart, and diagnostics
 
 ### Fallback path: Espressif gateway
 

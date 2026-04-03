@@ -4,7 +4,7 @@ import * as cartesia from '@livekit/agents-plugin-cartesia';
 import * as google from '@livekit/agents-plugin-google';
 import { getCartesiaConfig, getGoogleRealtimeConfig } from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
-import { normalizeGoogleRealtimeModel } from './utils.js';
+import { normalizeGoogleRealtimeModel, withDeviceVoiceOptions } from './utils.js';
 
 const resolveGoogleRealtimeModel = (
   configuredModel: string,
@@ -43,7 +43,7 @@ export const geminiRealtimeTextCartesiaTtsPipeline: VoicePipelineStrategy = {
       throw new Error('CARTESIA_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_cartesia_tts');
     }
   },
-  createSession({ env, logger }) {
+  createSession({ env, logger, isDeviceSession }) {
     const googleConfig = getGoogleRealtimeConfig(env);
     const cartesiaConfig = getCartesiaConfig(env);
     const model = resolveGoogleRealtimeModel(googleConfig.model, logger);
@@ -61,13 +61,13 @@ export const geminiRealtimeTextCartesiaTtsPipeline: VoicePipelineStrategy = {
         baseUrl: cartesiaConfig.baseUrl,
         chunkTimeout: cartesiaConfig.chunkTimeoutMs
       }),
-      voiceOptions: {
+      voiceOptions: withDeviceVoiceOptions({
         maxToolSteps: 3,
         preemptiveGeneration: true,
         minInterruptionDuration: 400,
         minInterruptionWords: 2,
         minEndpointingDelay: 200
-      }
+      }, isDeviceSession)
     });
   }
 };

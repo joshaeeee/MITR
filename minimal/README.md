@@ -24,17 +24,23 @@ This is the production starter path. The browser bridge is no longer the primary
 - heartbeat via `POST /devices/heartbeat`
 - telemetry via `POST /devices/telemetry`
 - session end via `POST /devices/session/end`
+- always-connected session recovery with fresh-room retries instead of reboot-on-failure
+- A/B OTA partition layout with pending-verify rollback support
 - basic RPC hooks:
   - `mitr_ping`
   - `mitr_get_device_status`
+  - `mitr_get_diagnostics`
+  - `mitr_set_mute`
+  - `mitr_restart_session`
+- device events on the data channel topic `mitr.device_event`
 
-## Important limitation
+## What still needs real hardware validation
 
-The transport/control-plane path is implemented here, but exact board bring-up is still hardware-specific.
+The transport/control-plane path, recovery loop, and OTA plumbing are now implemented in repo. The remaining release work is physical validation:
 
-The repo currently uses the LiveKit example audio board abstraction in `main/board.c` and `main/media.c`. If your exact `ESP32-S3-WROOM` hardware uses a raw MAX98357A + I2S mic path instead of a supported codec board, you still need to adapt those files using the LiveKit `custom_hardware` example as the reference.
-
-The production control plane is now in place. The last hardware-specific step is the codec/I2S layer.
+- verify BLE onboarding on real Android and iOS devices
+- verify the OTA update + rollback path on real hardware
+- run soak tests on real home Wi-Fi and confirm the reconnect policy is stable enough for pilot
 
 ## Backend prerequisites
 
@@ -155,6 +161,9 @@ Healthy signs:
 - room state transitions to `CONNECTED`
 - agent participant joins the room
 - heartbeats continue successfully
+- room failures trigger recovery and fresh-room retries instead of parking until reboot
+- diagnostics RPCs return Wi-Fi / heap / OTA state
+- OTA recommendations appear in heartbeat responses when `firmware_releases` recommends a newer version
 
 You should also see backend-side `device_sessions`, `device_telemetry`, and heartbeat activity.
 

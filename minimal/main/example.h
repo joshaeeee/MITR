@@ -10,6 +10,7 @@ extern "C" {
 bool join_room(void);
 void leave_room();
 bool session_is_active(void);
+int session_reconnect_window_sec(void);
 
 #ifdef __cplusplus
 }

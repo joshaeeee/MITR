@@ -6,7 +6,7 @@ import {
   isSelectedVoicePipeline
 } from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
-import { SILERO_VAD_USERDATA_KEY } from './utils.js';
+import { SILERO_VAD_USERDATA_KEY, withDeviceVoiceOptions } from './utils.js';
 
 const normalizeInferenceLanguage = (language: string): string => {
   const trimmed = language.trim();
@@ -35,7 +35,7 @@ export const livekitInferencePipeline: VoicePipelineStrategy = {
       );
     }
   },
-  createSession({ env, language, ctx }) {
+  createSession({ env, language, ctx, isDeviceSession }) {
     const inferenceConfig = getInferenceConfig(env);
     const cartesiaConfig = getCartesiaConfig(env);
     const normalizedLanguage = normalizeInferenceLanguage(language);
@@ -56,13 +56,13 @@ export const livekitInferencePipeline: VoicePipelineStrategy = {
         voice: cartesiaConfig.voiceId,
         language: normalizedLanguage
       }),
-      voiceOptions: {
+      voiceOptions: withDeviceVoiceOptions({
         maxToolSteps: 3,
         preemptiveGeneration: true,
         minInterruptionDuration: 400,
         minInterruptionWords: 2,
         minEndpointingDelay: 200
-      }
+      }, isDeviceSession)
     });
   }
 };

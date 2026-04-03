@@ -81,6 +81,9 @@ interface ResolvedFamilyContext {
 const CLAIM_TTL_MS = 10 * 60 * 1000;
 const PAIRING_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_LANGUAGE = 'hi-IN';
+const DEFAULT_RECONNECT_WINDOW_SEC = 180;
+const DEFAULT_HEARTBEAT_INTERVAL_SEC = 15;
+const DEFAULT_TELEMETRY_BACKOFF_SEC = 30;
 
 const hashOpaqueToken = (value: string): string => createHash('sha256').update(value).digest('hex');
 const createOpaqueToken = (bytes = 32): string => randomBytes(bytes).toString('hex');
@@ -94,6 +97,9 @@ const readMetadataString = (metadata: Record<string, unknown>, key: string): str
   const value = metadata[key];
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 };
+
+const pickMetadataValue = (metadata: Record<string, unknown>, key: string): unknown =>
+  Object.prototype.hasOwnProperty.call(metadata, key) ? metadata[key] : undefined;
 
 export class DeviceControlService {
   private readonly familyRepo = getFamilyRepository();
@@ -751,12 +757,45 @@ export class DeviceControlService {
     sessionId?: string;
     firmwareVersion?: string;
     payload?: Record<string, unknown>;
-  }): Promise<{ ok: true; recommendedFirmware: { version: string; downloadUrl: string | null; mandatory: boolean } | null }> {
-    const now = new Date();
-    const metadata = {
-      ...normalizeMetadata(input.device.metadataJson),
-      lastHeartbeat: input.payload ?? {}
+  }): Promise<{
+    ok: true;
+    recommendedFirmware: {
+      version: string;
+      downloadUrl: string | null;
+      mandatory: boolean;
+      releaseNotes: string | null;
+      metadata: Record<string, unknown>;
+    } | null;
+    sessionPolicy: {
+      alwaysConnected: true;
+      reconnectWindowSec: number;
+      heartbeatIntervalSec: number;
+      telemetryBackoffSec: number;
     };
+  }> {
+    const now = new Date();
+    const payload = input.payload ?? {};
+    const metadata: Record<string, unknown> = {
+      ...normalizeMetadata(input.device.metadataJson),
+      lastHeartbeat: payload
+    };
+    for (const key of [
+      'lastFailureReason',
+      'reconnectState',
+      'reconnectAttemptCount',
+      'lastEndReason',
+      'otaState',
+      'otaTargetVersion',
+      'lastBootOk',
+      'muted',
+      'speakerMuted',
+      'speakerVolume'
+    ]) {
+      const value = pickMetadataValue(payload, key);
+      if (value !== undefined) {
+        metadata[key] = value;
+      }
+    }
 
     await db
       .update(devices)
@@ -799,9 +838,17 @@ export class DeviceControlService {
         ? {
             version: recommended.version,
             downloadUrl: recommended.downloadUrl,
-            mandatory: recommended.isMandatory
+            mandatory: recommended.isMandatory,
+            releaseNotes: recommended.releaseNotes,
+            metadata: normalizeMetadata(recommended.metadataJson)
           }
-        : null
+        : null,
+      sessionPolicy: {
+        alwaysConnected: true,
+        reconnectWindowSec: DEFAULT_RECONNECT_WINDOW_SEC,
+        heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC,
+        telemetryBackoffSec: DEFAULT_TELEMETRY_BACKOFF_SEC
+      }
     };
   }
 

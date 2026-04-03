@@ -15,6 +15,7 @@ export type PipelineContext = {
   logger: PipelineLogger;
   language: string;
   ctx: JobContext;
+  isDeviceSession: boolean;
 };
 
 export type PipelinePrewarmContext = {

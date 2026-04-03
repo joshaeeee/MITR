@@ -10,7 +10,7 @@ import {
   isSelectedVoicePipeline
 } from '../../config/voice-pipeline-config.js';
 import type { VoicePipelineStrategy } from './types.js';
-import { normalizeSarvamLanguageCode, SILERO_VAD_USERDATA_KEY } from './utils.js';
+import { normalizeSarvamLanguageCode, SILERO_VAD_USERDATA_KEY, withDeviceVoiceOptions } from './utils.js';
 
 export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
   id: 'sarvam_stt_llm_cartesia_tts',
@@ -44,7 +44,7 @@ export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
       );
     }
   },
-  createSession({ env, ctx, language }) {
+  createSession({ env, ctx, language, isDeviceSession }) {
     const openRouter = getOpenRouterConfig(env);
     const sarvamConfig = getSarvamSpeechConfig(env);
     const cartesiaConfig = getCartesiaConfig(env);
@@ -73,13 +73,13 @@ export const sarvamSttLlmCartesiaTtsPipeline: VoicePipelineStrategy = {
         baseUrl: cartesiaConfig.baseUrl,
         chunkTimeout: cartesiaConfig.chunkTimeoutMs
       }),
-      voiceOptions: {
+      voiceOptions: withDeviceVoiceOptions({
         maxToolSteps: 3,
         preemptiveGeneration: true,
         minInterruptionDuration: 400,
         minInterruptionWords: 2,
         minEndpointingDelay: 200
-      }
+      }, isDeviceSession)
     });
   }
 };

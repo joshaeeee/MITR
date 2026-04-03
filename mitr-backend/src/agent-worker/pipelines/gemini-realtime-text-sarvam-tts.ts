@@ -8,7 +8,8 @@ import {
   normalizeGoogleRealtimeModel,
   normalizeSarvamTtsLanguageCode,
   normalizeSarvamTtsSpeaker,
-  normalizeSarvamTtsModel
+  normalizeSarvamTtsModel,
+  withDeviceVoiceOptions
 } from './utils.js';
 
 const resolveGoogleRealtimeModel = (
@@ -48,7 +49,7 @@ export const geminiRealtimeTextSarvamTtsPipeline: VoicePipelineStrategy = {
       throw new Error('SARVAM_API_KEY is required when AGENT_VOICE_PIPELINE=gemini_realtime_text_sarvam_tts');
     }
   },
-  createSession({ env, logger, language }) {
+  createSession({ env, logger, language, isDeviceSession }) {
     const googleConfig = getGoogleRealtimeConfig(env);
     const sarvamConfig = getSarvamSpeechConfig(env);
     const model = resolveGoogleRealtimeModel(googleConfig.model, logger);
@@ -66,13 +67,13 @@ export const geminiRealtimeTextSarvamTtsPipeline: VoicePipelineStrategy = {
         targetLanguageCode: normalizeSarvamTtsLanguageCode(language, logger),
         streaming: sarvamConfig.ttsStreaming
       }),
-      voiceOptions: {
+      voiceOptions: withDeviceVoiceOptions({
         maxToolSteps: 3,
         preemptiveGeneration: true,
         minInterruptionDuration: 400,
         minInterruptionWords: 2,
         minEndpointingDelay: 200
-      }
+      }, isDeviceSession)
     });
   }
 };

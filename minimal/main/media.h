@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include "esp_err.h"
 #include "esp_capture.h"
 #include "av_render.h"
 
@@ -33,7 +34,12 @@ esp_capture_handle_t media_get_capturer(void);
 ///
 av_render_handle_t media_get_renderer(void);
 
+esp_err_t media_set_input_muted(bool muted);
+bool media_is_input_muted(void);
+esp_err_t media_set_output_muted(bool muted);
+bool media_is_output_muted(void);
+int media_get_output_volume(void);
+
 #ifdef __cplusplus
 }
 #endif
-

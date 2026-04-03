@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -23,7 +25,42 @@ typedef struct {
     const char *network_type;
     const char *ip_address;
     const char *connection_state;
+    const char *last_failure_reason;
+    const char *last_end_reason;
+    const char *reconnect_state;
+    int reconnect_attempt_count;
+    const char *ota_state;
+    const char *ota_target_version;
+    bool last_boot_ok;
+    bool muted;
+    bool speaker_muted;
+    int speaker_volume;
 } mitr_device_heartbeat_t;
+
+typedef struct {
+    bool has_recommended_firmware;
+    char version[64];
+    char download_url[256];
+    bool mandatory;
+    char release_notes[256];
+    char sha256[96];
+    int min_battery_pct;
+    int rollout_percentage;
+    int size_bytes;
+} mitr_device_recommended_firmware_t;
+
+typedef struct {
+    bool has_session_policy;
+    bool always_connected;
+    int reconnect_window_sec;
+    int heartbeat_interval_sec;
+    int telemetry_backoff_sec;
+} mitr_device_session_policy_t;
+
+typedef struct {
+    mitr_device_recommended_firmware_t recommended_firmware;
+    mitr_device_session_policy_t session_policy;
+} mitr_device_heartbeat_response_t;
 
 const char *mitr_device_backend_base_url(void);
 const char *mitr_device_device_id(void);
@@ -37,7 +74,9 @@ esp_err_t mitr_device_complete_bootstrap(void);
 esp_err_t mitr_device_request_token(mitr_device_token_response_t *out);
 void mitr_device_token_response_free(mitr_device_token_response_t *response);
 
-esp_err_t mitr_device_send_heartbeat(const mitr_device_heartbeat_t *heartbeat);
+esp_err_t mitr_device_send_heartbeat(
+    const mitr_device_heartbeat_t *heartbeat,
+    mitr_device_heartbeat_response_t *response);
 esp_err_t mitr_device_send_telemetry(
     const char *session_id,
     const char *event_type,

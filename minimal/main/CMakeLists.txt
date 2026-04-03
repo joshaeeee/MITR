@@ -8,14 +8,17 @@ idf_component_register(
         "device_storage.c"
         "network.c"
         "provisioning.c"
+        "ota_manager.c"
         "atomic_compat.c"
     INCLUDE_DIRS
         "."
     PRIV_REQUIRES
         esp_http_client
+        esp_https_ota
         esp_event
         esp_netif
         esp_wifi
+        app_update
         protocomm
         wifi_provisioning
         json

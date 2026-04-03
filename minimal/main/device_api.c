@@ -108,6 +108,34 @@ static char *dup_json_string(const cJSON *node)
     return strdup(node->valuestring);
 }
 
+static void copy_json_string(const cJSON *node, char *dest, size_t capacity)
+{
+    if (!dest || capacity == 0) {
+        return;
+    }
+    dest[0] = '\0';
+    if (!cJSON_IsString(node) || !node->valuestring) {
+        return;
+    }
+    strlcpy(dest, node->valuestring, capacity);
+}
+
+static int read_json_int(const cJSON *node, int fallback)
+{
+    if (!cJSON_IsNumber(node)) {
+        return fallback;
+    }
+    return node->valueint;
+}
+
+static bool read_json_bool(const cJSON *node, bool fallback)
+{
+    if (cJSON_IsBool(node)) {
+        return cJSON_IsTrue(node);
+    }
+    return fallback;
+}
+
 static esp_err_t http_post_json(const char *path, const char *body, const char *bearer_token, cJSON **response_json, int *status_code)
 {
     esp_err_t err = ESP_OK;
@@ -363,9 +391,14 @@ void mitr_device_token_response_free(mitr_device_token_response_t *response)
     memset(response, 0, sizeof(*response));
 }
 
-esp_err_t mitr_device_send_heartbeat(const mitr_device_heartbeat_t *heartbeat)
+esp_err_t mitr_device_send_heartbeat(
+    const mitr_device_heartbeat_t *heartbeat,
+    mitr_device_heartbeat_response_t *out_response)
 {
     ESP_RETURN_ON_FALSE(heartbeat != NULL, ESP_ERR_INVALID_ARG, TAG, "Missing heartbeat payload");
+    if (out_response) {
+        memset(out_response, 0, sizeof(*out_response));
+    }
     cJSON *body = cJSON_CreateObject();
     ESP_RETURN_ON_FALSE(body != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create heartbeat body");
 
@@ -386,6 +419,26 @@ esp_err_t mitr_device_send_heartbeat(const mitr_device_heartbeat_t *heartbeat)
         if (heartbeat->connection_state) {
             cJSON_AddStringToObject(metadata, "connectionState", heartbeat->connection_state);
         }
+        if (heartbeat->last_failure_reason && heartbeat->last_failure_reason[0] != '\0') {
+            cJSON_AddStringToObject(metadata, "lastFailureReason", heartbeat->last_failure_reason);
+        }
+        if (heartbeat->last_end_reason && heartbeat->last_end_reason[0] != '\0') {
+            cJSON_AddStringToObject(metadata, "lastEndReason", heartbeat->last_end_reason);
+        }
+        if (heartbeat->reconnect_state && heartbeat->reconnect_state[0] != '\0') {
+            cJSON_AddStringToObject(metadata, "reconnectState", heartbeat->reconnect_state);
+        }
+        cJSON_AddNumberToObject(metadata, "reconnectAttemptCount", heartbeat->reconnect_attempt_count);
+        if (heartbeat->ota_state && heartbeat->ota_state[0] != '\0') {
+            cJSON_AddStringToObject(metadata, "otaState", heartbeat->ota_state);
+        }
+        if (heartbeat->ota_target_version && heartbeat->ota_target_version[0] != '\0') {
+            cJSON_AddStringToObject(metadata, "otaTargetVersion", heartbeat->ota_target_version);
+        }
+        cJSON_AddBoolToObject(metadata, "lastBootOk", heartbeat->last_boot_ok);
+        cJSON_AddBoolToObject(metadata, "muted", heartbeat->muted);
+        cJSON_AddBoolToObject(metadata, "speakerMuted", heartbeat->speaker_muted);
+        cJSON_AddNumberToObject(metadata, "speakerVolume", heartbeat->speaker_volume);
         cJSON_AddItemToObject(body, "metadata", metadata);
     }
 
@@ -393,13 +446,64 @@ esp_err_t mitr_device_send_heartbeat(const mitr_device_heartbeat_t *heartbeat)
     cJSON_Delete(body);
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize heartbeat body");
 
-    cJSON *response = NULL;
-    esp_err_t err = http_post_json("/devices/heartbeat", body_string, mitr_device_storage_access_token(), &response, NULL);
+    cJSON *response_json = NULL;
+    esp_err_t err = http_post_json("/devices/heartbeat", body_string, mitr_device_storage_access_token(), &response_json, NULL);
     free(body_string);
-    if (response) {
-        cJSON_Delete(response);
+    if (err != ESP_OK) {
+        if (response_json) {
+            cJSON_Delete(response_json);
+        }
+        return err;
     }
-    return err;
+
+    if (response_json && out_response) {
+        const cJSON *recommended = cJSON_GetObjectItemCaseSensitive(response_json, "recommendedFirmware");
+        const cJSON *session_policy = cJSON_GetObjectItemCaseSensitive(response_json, "sessionPolicy");
+        mitr_device_heartbeat_response_t *parsed = out_response;
+        if (recommended != NULL && cJSON_IsObject(recommended)) {
+            parsed->recommended_firmware.has_recommended_firmware = true;
+            copy_json_string(cJSON_GetObjectItemCaseSensitive(recommended, "version"), parsed->recommended_firmware.version, sizeof(parsed->recommended_firmware.version));
+            copy_json_string(cJSON_GetObjectItemCaseSensitive(recommended, "downloadUrl"), parsed->recommended_firmware.download_url, sizeof(parsed->recommended_firmware.download_url));
+            parsed->recommended_firmware.mandatory = read_json_bool(
+                cJSON_GetObjectItemCaseSensitive(recommended, "mandatory"),
+                false);
+            copy_json_string(cJSON_GetObjectItemCaseSensitive(recommended, "releaseNotes"), parsed->recommended_firmware.release_notes, sizeof(parsed->recommended_firmware.release_notes));
+
+            const cJSON *metadata_json = cJSON_GetObjectItemCaseSensitive(recommended, "metadata");
+            if (metadata_json != NULL && cJSON_IsObject(metadata_json)) {
+                copy_json_string(cJSON_GetObjectItemCaseSensitive(metadata_json, "sha256"), parsed->recommended_firmware.sha256, sizeof(parsed->recommended_firmware.sha256));
+                parsed->recommended_firmware.min_battery_pct = read_json_int(
+                    cJSON_GetObjectItemCaseSensitive(metadata_json, "minBatteryPct"),
+                    0);
+                parsed->recommended_firmware.rollout_percentage = read_json_int(
+                    cJSON_GetObjectItemCaseSensitive(metadata_json, "rolloutPercentage"),
+                    100);
+                parsed->recommended_firmware.size_bytes = read_json_int(
+                    cJSON_GetObjectItemCaseSensitive(metadata_json, "sizeBytes"),
+                    0);
+            }
+        }
+
+        if (session_policy != NULL && cJSON_IsObject(session_policy)) {
+            parsed->session_policy.has_session_policy = true;
+            parsed->session_policy.always_connected = read_json_bool(
+                cJSON_GetObjectItemCaseSensitive(session_policy, "alwaysConnected"),
+                true);
+            parsed->session_policy.reconnect_window_sec = read_json_int(
+                cJSON_GetObjectItemCaseSensitive(session_policy, "reconnectWindowSec"),
+                180);
+            parsed->session_policy.heartbeat_interval_sec = read_json_int(
+                cJSON_GetObjectItemCaseSensitive(session_policy, "heartbeatIntervalSec"),
+                CONFIG_MITR_DEVICE_HEARTBEAT_INTERVAL_SEC);
+            parsed->session_policy.telemetry_backoff_sec = read_json_int(
+                cJSON_GetObjectItemCaseSensitive(session_policy, "telemetryBackoffSec"),
+                30);
+        }
+    }
+    if (response_json) {
+        cJSON_Delete(response_json);
+    }
+    return ESP_OK;
 }
 
 esp_err_t mitr_device_send_telemetry(

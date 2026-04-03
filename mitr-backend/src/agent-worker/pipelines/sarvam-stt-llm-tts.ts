@@ -13,7 +13,8 @@ import {
   normalizeSarvamTtsLanguageCode,
   normalizeSarvamTtsSpeaker,
   normalizeSarvamTtsModel,
-  SILERO_VAD_USERDATA_KEY
+  SILERO_VAD_USERDATA_KEY,
+  withDeviceVoiceOptions
 } from './utils.js';
 
 export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
@@ -40,7 +41,7 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
       );
     }
   },
-  createSession({ env, logger, language, ctx }) {
+  createSession({ env, logger, language, ctx, isDeviceSession }) {
     const openRouter = getOpenRouterConfig(env);
     const sarvamConfig = getSarvamSpeechConfig(env);
     const ttsModel = normalizeSarvamTtsModel(sarvamConfig.ttsModel, logger);
@@ -68,13 +69,13 @@ export const sarvamSttLlmTtsPipeline: VoicePipelineStrategy = {
         targetLanguageCode: normalizeSarvamTtsLanguageCode(language, logger),
         streaming: sarvamConfig.ttsStreaming
       }),
-      voiceOptions: {
+      voiceOptions: withDeviceVoiceOptions({
         maxToolSteps: 3,
         preemptiveGeneration: true,
         minInterruptionDuration: 400,
         minInterruptionWords: 2,
         minEndpointingDelay: 200
-      }
+      }, isDeviceSession)
     });
   }
 };

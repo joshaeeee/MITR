@@ -10,14 +10,17 @@
 - [x] Add smoke tooling for device claim -> token flow and firmware-release seeding
 - [x] Replace the old ESP-IDF browser-bridge demo with a LiveKit-native device starter wired to `/devices/token`, `/devices/heartbeat`, `/devices/telemetry`, and `/devices/session/end`
 - [x] Validate the LiveKit-native ESP-IDF starter with a real `idf.py build` on ESP-IDF `v5.4.2`
-- [ ] Run `drizzle:migrate` against the shared backend database
+- [x] Run `drizzle:migrate` against the shared backend database
 - [x] Wire the mobile/family-facing device UI to the new `productionDevices` status payload
 - [x] Add family/elder-scoped pairing and bootstrap APIs (`/devices/pairing/start`, `/devices/pairing/:id`, `/devices/bootstrap/complete`)
 - [x] Refactor firmware to support one-time pairing-token bootstrap into a persisted device credential
 - [x] Wire the real BLE-first provisioning bridge and custom provisioning endpoint so the app can actually deliver Wi-Fi credentials + pairing token to the ESP32
 - [x] Add QR camera scanning in the native mobile onboarding flow instead of manual QR payload paste
-- [ ] Adapt `minimal/main/board.c` and `minimal/main/media.c` to the exact `ESP32-S3-WROOM` production audio hardware
-- [ ] Add data-channel control messages for mute, reconnect reason, and remote diagnostics
+- [x] Adapt `minimal/main/board.c` and `minimal/main/media.c` to the working `ESP32-S3-WROOM` raw-I2S production profile
+- [x] Add data-channel control messages for mute, reconnect reason, and remote diagnostics
+- [x] Add always-connected session recovery, device-session away-timeout override, and A/B OTA rollback plumbing
+- [ ] Validate native Android and iOS BLE onboarding against the production backend on physical devices
+- [ ] Validate OTA install + rollback on physical hardware
 - [ ] Run pilot soak testing on real home Wi-Fi and decide whether the Espressif gateway fallback is needed
 
 ### Split env.ts into scoped subsystem configs

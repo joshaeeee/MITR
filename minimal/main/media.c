@@ -17,11 +17,16 @@ static const char *TAG = "media";
 typedef struct {
     esp_capture_sink_handle_t capturer_handle;
     esp_capture_audio_src_if_t *audio_source;
+    esp_codec_dev_handle_t record_device;
+    bool input_muted;
 } capture_system_t;
 
 typedef struct {
+    esp_codec_dev_handle_t render_device;
     audio_render_handle_t audio_renderer;
     av_render_handle_t av_renderer_handle;
+    bool output_muted;
+    int output_volume;
 } renderer_system_t;
 
 static capture_system_t  capturer_system;
@@ -31,6 +36,7 @@ static int build_capturer_system(void)
 {
     esp_codec_dev_handle_t record_handle = get_record_handle();
     NULL_CHECK(record_handle, "Failed to get record handle");
+    capturer_system.record_device = record_handle;
 
     esp_capture_audio_dev_src_cfg_t codec_cfg = {
         .record_handle = record_handle,
@@ -52,6 +58,7 @@ static int build_renderer_system(void)
 {
     esp_codec_dev_handle_t render_device = get_playback_handle();
     NULL_CHECK(render_device, "Failed to get render device handle");
+    renderer_system.render_device = render_device;
 
     i2s_render_cfg_t i2s_cfg = {
         .play_handle = render_device
@@ -61,6 +68,8 @@ static int build_renderer_system(void)
 
     // Set initial speaker volume
     esp_codec_dev_set_out_vol(i2s_cfg.play_handle, CONFIG_LK_EXAMPLE_SPEAKER_VOLUME);
+    renderer_system.output_volume = CONFIG_LK_EXAMPLE_SPEAKER_VOLUME;
+    renderer_system.output_muted = false;
 
     av_render_cfg_t render_cfg = {
         .audio_render = renderer_system.audio_renderer,
@@ -101,4 +110,37 @@ esp_capture_handle_t media_get_capturer(void)
 av_render_handle_t media_get_renderer(void)
 {
     return renderer_system.av_renderer_handle;
+}
+
+esp_err_t media_set_input_muted(bool muted)
+{
+    NULL_CHECK(capturer_system.record_device, "Failed to get record handle");
+    int ret = esp_codec_dev_set_in_mute(capturer_system.record_device, muted);
+    ESP_RETURN_ON_FALSE(ret == 0, ESP_FAIL, TAG, "Failed to set input mute");
+    capturer_system.input_muted = muted;
+    return ESP_OK;
+}
+
+bool media_is_input_muted(void)
+{
+    return capturer_system.input_muted;
+}
+
+esp_err_t media_set_output_muted(bool muted)
+{
+    NULL_CHECK(renderer_system.render_device, "Failed to get playback handle");
+    int ret = esp_codec_dev_set_out_mute(renderer_system.render_device, muted);
+    ESP_RETURN_ON_FALSE(ret == 0, ESP_FAIL, TAG, "Failed to set output mute");
+    renderer_system.output_muted = muted;
+    return ESP_OK;
+}
+
+bool media_is_output_muted(void)
+{
+    return renderer_system.output_muted;
+}
+
+int media_get_output_volume(void)
+{
+    return renderer_system.output_volume;
 }
