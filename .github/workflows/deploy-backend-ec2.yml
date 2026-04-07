@@ -200,12 +200,37 @@ jobs:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          EC2_SG_ID: ${{ secrets.EC2_SG_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           set -euo pipefail
           test -n "${EC2_HOST}" || { echo "Missing secret: EC2_HOST"; exit 1; }
           test -n "${EC2_USER}" || { echo "Missing secret: EC2_USER"; exit 1; }
           test -n "${EC2_SSH_KEY}" || { echo "Missing secret: EC2_SSH_KEY"; exit 1; }
           test -n "${GHCR_TOKEN}" || { echo "Missing secret: GHCR_TOKEN"; exit 1; }
+          test -n "${EC2_SG_ID}" || { echo "Missing secret: EC2_SG_ID"; exit 1; }
+          test -n "${AWS_ACCESS_KEY_ID}" || { echo "Missing secret: AWS_ACCESS_KEY_ID"; exit 1; }
+          test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "Missing secret: AWS_SECRET_ACCESS_KEY"; exit 1; }
+          test -n "${AWS_REGION}" || { echo "Missing secret: AWS_REGION"; exit 1; }
+
+      - name: Add runner IP to security group
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          RUNNER_IP=$(curl -sf https://checkip.amazonaws.com)
+          echo "RUNNER_IP=${RUNNER_IP}" >> $GITHUB_ENV
+          aws ec2 authorize-security-group-ingress \
+            --group-id ${{ secrets.EC2_SG_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr "${RUNNER_IP}/32" \
+            --tag-specifications "ResourceType=security-group-rule,Tags=[{Key=Name,Value=github-actions-temp}]"
+          echo "Allowed SSH from ${RUNNER_IP}/32"
 
       - name: Deploy on EC2 over SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -284,6 +309,21 @@ jobs:
               echo "Agent image mismatch. expected=${{ needs.build-agent.outputs.image_ref }} actual=${ACTUAL_AGENT_IMAGE}"
               exit 1
             fi
+
+      - name: Remove runner IP from security group
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          aws ec2 revoke-security-group-ingress \
+            --group-id ${{ secrets.EC2_SG_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr "${RUNNER_IP}/32" || true
+          echo "Removed SSH access for ${RUNNER_IP}/32"
 
   smoke-public:
     name: Public smoke check
