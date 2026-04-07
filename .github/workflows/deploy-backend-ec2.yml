@@ -228,8 +228,7 @@ jobs:
             --group-id ${{ secrets.EC2_SG_ID }} \
             --protocol tcp \
             --port 22 \
-            --cidr "${RUNNER_IP}/32" \
-            --tag-specifications "ResourceType=security-group-rule,Tags=[{Key=Name,Value=github-actions-temp}]"
+            --cidr "${RUNNER_IP}/32"
           echo "Allowed SSH from ${RUNNER_IP}/32"
 
       - name: Deploy on EC2 over SSH
