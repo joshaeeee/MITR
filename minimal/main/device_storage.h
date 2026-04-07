@@ -27,6 +27,7 @@ esp_err_t mitr_device_storage_store_bootstrap(
 esp_err_t mitr_device_storage_store_access_token(
     const char *device_access_token,
     const char *device_id);
+esp_err_t mitr_device_storage_clear_access_token(void);
 
 #ifdef __cplusplus
 }

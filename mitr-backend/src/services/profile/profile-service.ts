@@ -42,8 +42,8 @@ export class ProfileService {
     const profile = await this.getProfile(userId);
     if (!profile) return false;
 
-    const required = this.getQuestions().filter((q) => q.required).map((q) => q.id);
-    return required.every((key) => Boolean(profile.answers[key]));
+    const a = profile.answers;
+    return Boolean(a['elderName']) && Boolean(a['elderLanguage']);
   }
 
   async saveAnswers(userId: string, answers: Record<string, string>): Promise<UserProfile> {

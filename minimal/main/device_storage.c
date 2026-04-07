@@ -165,6 +165,16 @@ esp_err_t mitr_device_storage_store_bootstrap(
         copy_string(state.language, sizeof(state.language), language);
     }
 
+    // Clear any stale access token so ensure_device_bootstrapped() calls
+    // mitr_device_complete_bootstrap() with the new pairing token instead of
+    // skipping straight to the (now-invalid) old token.
+    err = nvs_erase_key(handle, "device_token");
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "Failed to clear stale access token on re-provisioning: %s", esp_err_to_name(err));
+        goto exit;
+    }
+    state.device_access_token[0] = '\0';
+
     err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit bootstrap config: %s", esp_err_to_name(err));
@@ -172,6 +182,27 @@ esp_err_t mitr_device_storage_store_bootstrap(
     }
 
 exit:
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t mitr_device_storage_clear_access_token(void)
+{
+    ESP_RETURN_ON_ERROR(mitr_device_storage_init(), TAG, "Storage is unavailable");
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NAMESPACE, NVS_READWRITE, &handle);
+    ESP_RETURN_ON_ERROR(err, TAG, "Failed to open device storage");
+
+    err = nvs_erase_key(handle, "device_token");
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "Failed to clear access token: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+    state.device_access_token[0] = '\0';
+
+    err = nvs_commit(handle);
     nvs_close(handle);
     return err;
 }

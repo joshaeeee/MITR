@@ -8,6 +8,8 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
 #include "sdkconfig.h"
 
 #include "device_api.h"
@@ -344,9 +346,18 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize token request body");
 
     cJSON *response = NULL;
-    esp_err_t err = http_post_json("/devices/token", body_string, mitr_device_storage_access_token(), &response, NULL);
+    int token_http_status = 0;
+    esp_err_t err = http_post_json("/devices/token", body_string, mitr_device_storage_access_token(), &response, &token_http_status);
     free(body_string);
-    ESP_RETURN_ON_ERROR(err, TAG, "Token request failed");
+    if (err != ESP_OK) {
+        if (token_http_status == 401) {
+            ESP_LOGE(TAG, "Device access token revoked (HTTP 401). Clearing credentials and restarting into provisioning mode.");
+            mitr_device_storage_clear_access_token();
+            esp_wifi_restore();
+            esp_restart();
+        }
+        ESP_RETURN_ON_ERROR(err, TAG, "Token request failed");
+    }
 
     out->session_id = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "sessionId"));
     out->server_url = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "serverUrl"));
