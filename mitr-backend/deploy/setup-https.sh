@@ -48,8 +48,15 @@ done
 CERTBOT_CERT_NAME="${TLS_CERT_NAME:-${PUBLIC_HOSTNAME}}"
 
 if ! command -v certbot >/dev/null 2>&1; then
-  sudo apt-get update
-  sudo apt-get install -y certbot
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y certbot
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y certbot
+  else
+    echo "[https] Cannot install certbot: no apt-get or dnf found"
+    exit 1
+  fi
 fi
 
 sudo mkdir -p "${CERTBOT_WEBROOT}"
