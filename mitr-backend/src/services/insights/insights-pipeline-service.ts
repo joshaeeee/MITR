@@ -59,6 +59,16 @@ type DailyAggregate = {
 
 const toNumber = (value: number): number => clamp(Number.isFinite(value) ? value : 0);
 
+const toIsoString = (value: Date | string | null | undefined): string | null => {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+};
+
 const average = (values: number[]): number => {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -1078,17 +1088,17 @@ export class InsightsReadService {
     return {
       elderId: elder?.id ?? null,
       transcriptCount: Number(transcriptStats.transcriptCount ?? 0),
-      latestTranscriptAt: transcriptStats.latestTranscriptAt?.toISOString() ?? null,
-      latestScoreComputedAt: latestScore?.lastComputedAt?.toISOString() ?? null,
-      latestDigestGeneratedAt: latestDigest?.generatedAt?.toISOString() ?? null,
+      latestTranscriptAt: toIsoString(transcriptStats.latestTranscriptAt),
+      latestScoreComputedAt: toIsoString(latestScore?.lastComputedAt),
+      latestDigestGeneratedAt: toIsoString(latestDigest?.generatedAt),
       latestDigestConfidence: latestDigest?.confidence ?? null,
       latestDigestDataSufficiency: latestDigest?.dataSufficiency ?? null,
       recentRuns: runs.map((run) => ({
         id: run.id,
         status: run.status,
         runType: run.runType,
-        startedAt: run.startedAt.toISOString(),
-        endedAt: run.endedAt?.toISOString() ?? null,
+        startedAt: toIsoString(run.startedAt),
+        endedAt: toIsoString(run.endedAt),
         queueLagMs: run.queueLagMs,
         errorMessage: run.errorMessage
       }))
