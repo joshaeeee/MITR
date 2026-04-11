@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mitr-device-hero.jpg" alt="MITR Device" width="600"/>
+  <img src="docs-images/mitr-device-hero.jpg" alt="MITR Device" width="600"/>
 </p>
 
 <h1 align="center">MITR</h1>
@@ -19,9 +19,9 @@ India's elderly population is 140 million and growing. Many live alone or with l
 **MITR** (Hindi: मित्र, meaning *friend*) is that companion. A pebble-shaped voice device that sits on a bedside table and is always ready to listen, talk, pray, sing, remind, and care.
 
 <p align="center">
-  <img src="assets/mitr-device-bedside.jpg" alt="MITR on a bedside table" width="350"/>
+  <img src="docs-images/mitr-device-bedside.jpg" alt="MITR on a bedside table" width="350"/>
   &nbsp;&nbsp;&nbsp;
-  <img src="assets/mitr-device-in-hand.jpg" alt="An elder holding MITR" width="350"/>
+  <img src="docs-images/mitr-device-in-hand.jpg" alt="An elder holding MITR" width="350"/>
 </p>
 
 ## Why This Exists
@@ -92,7 +92,7 @@ Family members install a companion app to stay connected:
 Voice-recorded journal entries. MITR prompts with questions and records answers as an ongoing audio memoir — preserving stories that would otherwise be lost.
 
 <p align="center">
-  <img src="assets/mitr-device-artistic.jpg" alt="MITR device" width="500"/>
+  <img src="docs-images/mitr-device-artistic.jpg" alt="MITR device" width="500"/>
 </p>
 
 ## Architecture
@@ -171,7 +171,7 @@ curl http://localhost:8080/healthz
 ## The Device
 
 <p align="center">
-  <img src="assets/mitr-device-front.jpg" alt="MITR device front view" width="450"/>
+  <img src="docs-images/mitr-device-front.jpg" alt="MITR device front view" width="450"/>
 </p>
 
 MITR is shaped like a river pebble — smooth, warm, and familiar. No screen to navigate, no buttons to learn. Just touch and talk. It sits naturally on a bedside table, a prayer shelf, or in the palm of a hand.
