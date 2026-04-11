@@ -1,239 +1,189 @@
-# MITR
+<p align="center">
+  <img src="assets/mitr-device-hero.jpg" alt="MITR Device" width="600"/>
+</p>
 
-Voice-first spiritual companion backend built on LiveKit + OpenAI Realtime, with async tools for low-latency responses.
+<h1 align="center">MITR</h1>
 
-## What This Supports
-- Real-time Hindi/English voice conversation
-- Structured satsang flow (`flow_start` / `flow_next` / `flow_stop`)
-- Async media/news/retrieval followups
-- Memory, reminders, diary, panchang, festivals, stories, breathing, brain games
-- Auto ambience track during satsang (server-published LiveKit audio track)
+<p align="center">
+  <strong>A voice-first companion for India's elders — spiritual, warm, and always present.</strong>
+</p>
 
-## Project Layout
-- `mitr-backend/` — API + Agent worker + tools/services
-- `mitr-mobile/` — iOS family caregiver app (Expo Router)
-- `stories_curated.jsonl` — curated story corpus data
-- `features.txt` — feature notes
+<p align="center">
+  Built with LiveKit Realtime Voice &middot; OpenAI &middot; Expo &middot; Node.js
+</p>
 
-## Quick Start
-1. Install deps (workspace)
+---
+
+India's elderly population is 140 million and growing. Many live alone or with limited daily interaction. They don't need another screen — they need someone to talk to. Someone who speaks their language, knows their prayers, remembers their grandchildren's names, and plays the right bhajan at the right time of day.
+
+**MITR** (Hindi: मित्र, meaning *friend*) is that companion. A pebble-shaped voice device that sits on a bedside table and is always ready to listen, talk, pray, sing, remind, and care.
+
+<p align="center">
+  <img src="assets/mitr-device-bedside.jpg" alt="MITR on a bedside table" width="350"/>
+  &nbsp;&nbsp;&nbsp;
+  <img src="assets/mitr-device-in-hand.jpg" alt="An elder holding MITR" width="350"/>
+</p>
+
+## Why This Exists
+
+Most AI companions are built for young, English-speaking, tech-savvy users. India's elders are none of those things — and they're the ones who need companionship the most.
+
+MITR is designed from the ground up for people who:
+- Speak Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Kannada, Punjabi, or Odia
+- Have deep spiritual and cultural lives that generic assistants cannot serve
+- Need medication reminders, not productivity hacks
+- Want to hear the Ramayana, not a podcast
+
+This isn't Alexa with a temple skin. Every feature is built around Indian elder care.
+
+## Features
+
+### Conversation & Companionship
+The core of MITR. No wake word, no task required — just talk. MITR carries open-ended conversation in the user's native language, recognizes emotional tone, and adapts. If someone sounds lonely, it shifts toward comfort. It never ends a conversation abruptly.
+
+### Satsang (Spiritual Sessions)
+Interactive scripture sessions with structured flow control. MITR can lead a user through the Bhagavad Gita verse by verse, explain each shloka in simple language, and play ambient devotional music in the background — all through voice alone.
+
+- Guided scripture walkthroughs with `flow_start` / `flow_next` / `flow_stop`
+- Covers all 18 Mahapuranas, Ramayana (regional versions), Mahabharata, Bhagavata
+- Multi-faith: Hinduism, Sikhism, Jainism, and Islam at depth
+- Auto-published ambient audio track during satsang via LiveKit
+
+### Stories & Oral Tradition
+Stories from Panchatantra, Jataka tales, lives of saints (Mirabai, Kabir, Tukaram, Guru Nanak, Vivekananda), and regional folk mythology. The same story can be told in 2 minutes or 20, depending on mood.
+
+### Music & Devotion
+- Bhajan library — by deity, saint, language, or occasion
+- Classical ragas matched to time of day, with explanations of why
+- Guided devotional playlists and YouTube media playback
+- Festival-specific music and meditation tracks rooted in Indian tradition
+
+### Memory That Matters
+MITR remembers everything across conversations — names, preferences, health concerns, family details, past stories shared. It proactively surfaces memories at the right time:
+
+> *"You asked me to remind you about your daughter's anniversary — it's in three days."*
+
+### Reminders & Daily Routine
+- Medication reminders — persistent until acknowledged
+- Prayer time reminders aligned to specific traditions
+- Water, meal, and doctor appointment reminders
+- Morning briefing: *"Good morning. Today is Tuesday, Hanuman's day. Your blood pressure medicine reminder is at 9am. Shall I tell you today's shloka?"*
+
+### Panchang & Festivals
+Location-aware Hindu calendar integration — tithi, nakshatra, Rahu Kaal, sunrise/sunset. Automatic festival awareness with significance explanations.
+
+### Health & Wellness
+- Guided pranayama (Anulom Vilom, Bhramari, Kapalbhati) explained in traditional terms
+- Yoga nidra for sleep
+- Mood check-ins — casual, never clinical
+- Identifies concerning patterns and can alert family
+
+### Brain Games & Mental Stimulation
+Memory games, name-that-deity, shayari completion, riddles from Indian folk tradition — keeping minds sharp through culture, not clinical exercises.
+
+### Family Connection (Mobile App)
+Family members install a companion app to stay connected:
+- Send voice messages that play on the device at a set time
+- Receive voice replies from the elder
+- See gentle activity summaries (*"Nani spoke for 45 minutes today"*)
+- SOS button for immediate family calls
+
+### Personal Diary
+Voice-recorded journal entries. MITR prompts with questions and records answers as an ongoing audio memoir — preserving stories that would otherwise be lost.
+
+<p align="center">
+  <img src="assets/mitr-device-artistic.jpg" alt="MITR device" width="500"/>
+</p>
+
+## Architecture
+
+```
+mitr-backend/          API server + LiveKit agent worker + all tools/services
+mitr-mobile/           Family caregiver app (Expo Router, iOS)
+stories_curated.jsonl  Curated story corpus
+```
+
+The backend runs two processes:
+1. **API Server** — REST endpoints for auth, elder management, family connections, device status, and health checks
+2. **Agent Worker** — LiveKit agent that handles real-time voice via OpenAI Realtime API, with 20+ async tools for low-latency response
+
+### Tool Surface
+All tools are optimized for voice latency — async tools return a fast acknowledgment first, then deliver detailed results as a follow-up:
+
+| Category | Tools |
+|---|---|
+| Spiritual | `flow_start`, `flow_next`, `flow_stop`, `religious_retrieve`, `festival_context_get` |
+| Stories | `story_retrieve` |
+| Memory | `memory_add`, `memory_get` |
+| Reminders | `reminder_create`, `reminder_list` |
+| Music | `devotional_playlist_get`, `youtube_media_get` |
+| Information | `news_retrieve`, `panchang_get`, `daily_briefing_get` |
+| Wellness | `pranayama_guide_get`, `brain_game_get` |
+| Journal | `diary_add`, `diary_list` |
+| Health | `medication_adherence_setup` |
+
+## Getting Started
+
+### Prerequisites
+- Node.js 18+
+- pnpm
+- PostgreSQL & Redis
+- ffmpeg (for satsang ambience audio)
+- LiveKit server credentials
+- OpenAI API key
+
+### Setup
+
 ```bash
-cd /path/to/Mitr
+# Install dependencies
 pnpm install
-```
 
-2. Configure env
-```bash
-cp .env.example .env
-# fill API keys and LiveKit credentials
-```
+# Configure environment
+cp mitr-backend/.env.example mitr-backend/.env
+# Fill in API keys and LiveKit credentials
 
-3. Run API
-```bash
+# Start API server
 pnpm dev:api
-```
 
-4. Run Agent worker (new terminal)
-```bash
+# Start agent worker (new terminal)
 pnpm dev:agent
-```
 
-5. Run iOS app (new terminal)
-```bash
+# Start mobile app (new terminal)
 pnpm dev:mobile
+
+# Optional: web voice simulator
+cd mitr-backend && pnpm test:web
+# Open http://localhost:8787
 ```
 
-6. Optional web simulator
+### Verify It Works
+
 ```bash
-cd mitr-backend
-pnpm test:web
+# Health check
+curl http://localhost:8080/healthz
+
+# Connect via web simulator and say:
+# "Satsang shuru karo" → starts a guided scripture session
+# "Koi kahani sunao" → tells a story
+# "Kal subah 7 baje dawa ka reminder" → sets a medication reminder
 ```
 
-## Local Testing (End-to-End)
-Use this section when you want to verify the full stack locally without guessing.
+## The Device
 
-### 1) Preflight
-- Ensure `mitr-backend/.env` is configured from `.env.example`.
-- Required services/keys should be valid: LiveKit, OpenAI Realtime, Postgres, Redis, and any enabled tool providers (Exa, Mem0, Prokerala, etc.).
-- Ensure `ffmpeg` is installed (required for satsang ambience track publishing).
+<p align="center">
+  <img src="assets/mitr-device-front.jpg" alt="MITR device front view" width="450"/>
+</p>
 
-Quick checks:
-```bash
-cd mitr-backend
-pnpm typecheck
-pnpm build
-```
+MITR is shaped like a river pebble — smooth, warm, and familiar. No screen to navigate, no buttons to learn. Just touch and talk. It sits naturally on a bedside table, a prayer shelf, or in the palm of a hand.
 
-### 2) Start all local processes
-Terminal A:
-```bash
-cd /path/to/Mitr
-pnpm dev:api
-```
+The design is intentional: technology should disappear. What remains is a friend.
 
-Terminal B:
-```bash
-cd /path/to/Mitr
-pnpm dev:agent
-```
+## License
 
-Terminal C (web simulator):
-```bash
-cd mitr-backend
-pnpm test:web
-```
-Open `http://localhost:8787`.
+This project is source-available. See [LICENSE](LICENSE) for details.
 
-Terminal D (mobile app):
-```bash
-cd /path/to/Mitr
-pnpm dev:mobile
-```
+---
 
-### 3) Connect and run voice test
-In web simulator:
-1. Set host as your API host (`http://localhost:<api-port>` if local API).
-2. Enter a test `userId`.
-3. Click `Connect`.
-4. Speak the prompts from the tool matrix below.
-
-### 4) Fast smoke test checklist
-Run these in order:
-1. Health: `GET /healthz` should return healthy.
-2. Voice connect: simulator connects and microphone is active.
-3. Basic satsang: say “Satsang shuru karo” and verify `flow_start`.
-4. Continue flow: say “Agle shlok par jao” and verify `flow_next`.
-5. Stop flow: say “Satsang stop karo” and verify `flow_stop`.
-6. Async news: say “Latest Maharashtra news batao” and verify pending-first + followup.
-7. Async YouTube: ask for a bhajan and verify pending-first + playback-ready event.
-8. Memory roundtrip: save memory, then ask recall.
-9. Reminder roundtrip: create future reminder, then list reminders.
-
-### 5) Log signals to confirm success
-Look for these in `pnpm dev:agent` logs:
-- `Agent tools registered`
-- `received tool call from the realtime API`
-- `Tool call execution finished` with `isError: false`
-- For async tools: first `status: pending`, then corresponding `*_ready`
-- For satsang ambience:
-  - `Satsang ambience track started`
-  - `Satsang ambience track stopped`
-
-### 6) Optional direct API checks
-```bash
-# auth me (replace token)
-curl -s -H "Authorization: Bearer <accessToken>" http://localhost:8080/auth/me
-
-# elder status
-curl -s -H "Authorization: Bearer <accessToken>" http://localhost:8080/elder/device/status
-```
-
-### 7) If something fails
-1. Validate env vars in `mitr-backend/.env`.
-2. Confirm Redis/Postgres are reachable.
-3. Restart agent worker after env or code changes.
-4. Check tool timeout warnings in logs and verify provider credentials.
-5. Re-run `pnpm typecheck && pnpm build` to catch structural issues.
-
-## Tool Test Prompts (Say These)
-Use these utterances to force different tools/features.
-
-### 1) Satsang Flow (`flow_*`)
-- "Sat­sang shuru karo Bhagavad Gita par."
-- "Isko continuous mode me chalao."
-- "Agle shlok par jao."
-- "Is satsang ko stop karo."
-
-Expected:
-- `flow_start` called
-- `flow_next` on continue
-- `flow_stop` on stop
-- Ambient background audio auto-start/stop with satsang
-
-### 2) Religious Retrieval (`religious_retrieve`)
-- "Gussa control karne par Gita ka pramaan do."
-- "Bhakti par do chhote shastriya references do."
-
-Expected:
-- quick ack (if async pending)
-- grounded citations in followup
-
-### 3) Story Retrieval (`story_retrieve`)
-- "Koi chhoti prernaadayak kahani sunao."
-- "Lok katha sunao, North India wali."
-
-Expected:
-- async retrieval result + narrated story summary
-
-### 4) Memory (`memory_add`, `memory_get`)
-- "Yaad rakhna, meri maa ka janmadin 12 March hai."
-- "Maine jo birthday bataya tha, yaad hai?"
-
-Expected:
-- memory save confirmation
-- memory recall
-
-### 5) Reminders (`reminder_create`, `reminder_list`)
-- "Kal subah 7 baje dawa lene ka reminder laga do."
-- "Mere active reminders batao."
-
-Expected:
-- create success for future time
-- explicit error for past datetime
-
-### 6) News (`news_retrieve`, async)
-- "Maharashtra ki latest news detail me batao."
-- "Aaj Uttarakhand ki badi khabrein kya hain?"
-
-Expected:
-- fast pending response
-- background fetch + followup with items
-
-### 7) Panchang (`panchang_get`, async)
-- "Aaj ka tithi kya hai?"
-- "Aaj Rahu Kaal kab hai?"
-- "Aaj ka nakshatra aur sunrise/sunset batao."
-
-Expected:
-- location-aware panchang response via followup
-
-### 8) Devotional Media (`devotional_playlist_get`, `youtube_media_get`)
-- "Aaj ke liye koi bhajan recommend karo."
-- "Hanuman Chalisa ka audio chalao."
-- "Purane hindi bhajan lagao."
-
-Expected:
-- playlist suggestion
-- async YouTube resolve (pending -> ready)
-
-### 9) Daily Briefing (`daily_briefing_get`)
-- "Mera morning briefing do."
-- "Aaj ka daily spiritual briefing batao."
-
-### 10) Diary (`diary_add`, `diary_list`)
-- "Diary me likho: aaj maine 20 minute dhyan kiya."
-- "Meri recent diary entries sunao."
-
-### 11) Pranayama (`pranayama_guide_get`)
-- "5 minute ka simple pranayama routine do."
-- "Anulom vilom ka safe guide batao."
-
-### 12) Brain Game (`brain_game_get`)
-- "Koi short brain game khelo mere saath."
-- "Memory game do."
-
-### 13) Festival Context (`festival_context_get`)
-- "Mahashivratri ka mahatva batao."
-- "Aaj koi vrat/festival hai kya?"
-
-### 14) Medication Support (`medication_adherence_setup`)
-- "Meri medicine routine set karne me help karo."
-
-## Notes for Testing
-- Some tools are intentionally async for fast voice latency.
-- In async cases, first response can be "pending" and detailed output comes in followup.
-- Satsang ambience is published as a separate LiveKit audio track by the backend.
-- Crazy Crazy
-
-## Current Tool Surface
-`religious_retrieve`, `story_retrieve`, `memory_add`, `memory_get`, `reminder_create`, `reminder_list`, `news_retrieve`, `panchang_get`, `devotional_playlist_get`, `youtube_media_get`, `daily_briefing_get`, `diary_add`, `diary_list`, `flow_start`, `flow_next`, `flow_stop`, `pranayama_guide_get`, `brain_game_get`, `festival_context_get`, `medication_adherence_setup`
+<p align="center">
+  <em>Built with care for the people who raised us.</em>
+</p>
