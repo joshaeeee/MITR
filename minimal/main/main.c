@@ -2,6 +2,7 @@
 #include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "livekit.h"
 
@@ -12,13 +13,28 @@
 #include "media.h"
 #include "network.h"
 #include "ota_manager.h"
+#include "session_timeout.h"
+#include "sounds.h"
+#include "wake_word.h"
 
 static const char *TAG = "mitr_device_main";
+
+// ---------------------------------------------------------------------------
+// State machine event group
+// ---------------------------------------------------------------------------
+// Bits set by wake_word.cc and session_timeout.c respectively.
+#define EG_WAKE_DETECTED    (EventBits_t)BIT0
+#define EG_SESSION_TIMEOUT  (EventBits_t)BIT1
+
+// ---------------------------------------------------------------------------
+// Retry / timing constants (unchanged from original)
+// ---------------------------------------------------------------------------
 static const int ROOM_RETRY_BACKOFFS_SEC[] = {2, 5, 10, 30};
 static const int ROOM_RETRY_CAP_SEC = 60;
 static const int BOOTSTRAP_RETRY_SEC = 10;
 static const int NETWORK_RETRY_SEC = 30;
 static const int CONFIG_RETRY_SEC = 60;
+static const int SESSION_INACTIVITY_SEC = 20;
 
 static int64_t now_ms(void)
 {
@@ -61,7 +77,8 @@ static bool ensure_device_bootstrapped(void)
             return true;
         }
 
-        ESP_LOGW(TAG, "Device bootstrap failed: %s. Retrying in %d seconds", esp_err_to_name(err), BOOTSTRAP_RETRY_SEC);
+        ESP_LOGW(TAG, "Device bootstrap failed: %s. Retrying in %d seconds",
+                 esp_err_to_name(err), BOOTSTRAP_RETRY_SEC);
         sleep_seconds(BOOTSTRAP_RETRY_SEC);
     }
 
@@ -79,6 +96,10 @@ static void maybe_apply_pending_update(void)
         ESP_LOGW(TAG, "Pending OTA update was not applied: %s", esp_err_to_name(err));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Main device task
+// ---------------------------------------------------------------------------
 
 static void mitr_device_task(void *arg)
 {
@@ -98,14 +119,20 @@ static void mitr_device_task(void *arg)
         mitr_device_hardware_rev(),
         mitr_device_language());
 
+    /* Initialise wake word engine and sound effects */
+    if (wake_word_init() != 0) {
+        ESP_LOGE(TAG, "wake_word_init() failed — continuing without wake word detection");
+    }
+    sounds_init();
+
     esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
         2,
         ESP_SNTP_SERVER_LIST("time.google.com", "pool.ntp.org"));
     esp_netif_sntp_init(&sntp_config);
 
-    int room_retry_attempt = 0;
-    int64_t recovery_started_at_ms = 0;
-
+    /* ---------------------------------------------------------------------------
+     * Network / bootstrap (run once before entering the wake-word loop)
+     * --------------------------------------------------------------------------- */
     while (true) {
         if (!mitr_network_connect()) {
             ESP_LOGW(TAG, "Wi-Fi connection failed; retrying in %d seconds", NETWORK_RETRY_SEC);
@@ -114,53 +141,99 @@ static void mitr_device_task(void *arg)
         }
 
         if (!ensure_device_bootstrapped()) {
-            ESP_LOGW(TAG, "Device bootstrap prerequisites are incomplete; retrying in %d seconds", CONFIG_RETRY_SEC);
+            ESP_LOGW(TAG, "Device bootstrap prerequisites are incomplete; retrying in %d seconds",
+                     CONFIG_RETRY_SEC);
             sleep_seconds(CONFIG_RETRY_SEC);
             continue;
         }
 
         maybe_apply_pending_update();
+        break;  /* Network and bootstrap are good — enter the wake-word state machine */
+    }
+
+    /* ---------------------------------------------------------------------------
+     * SLEEPING / ACTIVE state machine
+     * --------------------------------------------------------------------------- */
+    EventGroupHandle_t eg = xEventGroupCreate();
+    if (!eg) {
+        ESP_LOGE(TAG, "Failed to create state event group — halting");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int room_retry_attempt    = 0;
+    int64_t recovery_start_ms = 0;
+
+    while (true) {
+        /* ================================================================
+         * SLEEPING — wake word listening, no LiveKit session
+         * ================================================================ */
+        ESP_LOGI(TAG, "[STATE] Entering SLEEPING — starting wake word listener");
+        xEventGroupClearBits(eg, EG_WAKE_DETECTED | EG_SESSION_TIMEOUT);
+        wake_word_start(eg, EG_WAKE_DETECTED);
+
+        /* Block until wake word detected (indefinitely) */
+        xEventGroupWaitBits(eg, EG_WAKE_DETECTED, pdTRUE, pdFALSE, portMAX_DELAY);
+        wake_word_stop();
+
+        ESP_LOGI(TAG, "[STATE] Wake word confirmed — transitioning to ACTIVE");
+        sounds_play_chime();
+
+        /* ================================================================
+         * ACTIVE — LiveKit session running
+         * ================================================================ */
+        ESP_LOGI(TAG, "[STATE] Entering ACTIVE — joining LiveKit room");
+
+        /* Make sure we have a live Wi-Fi connection before joining */
+        if (!mitr_network_connect()) {
+            ESP_LOGW(TAG, "[STATE] Wi-Fi lost; returning to SLEEPING");
+            sleep_seconds(2);
+            continue;
+        }
+
+        xEventGroupClearBits(eg, EG_SESSION_TIMEOUT);
+        session_timeout_start(SESSION_INACTIVITY_SEC, eg, EG_SESSION_TIMEOUT);
 
         if (!join_room()) {
-            if (recovery_started_at_ms == 0) {
-                recovery_started_at_ms = now_ms();
-            }
-            const int delay_sec = next_room_retry_delay_sec(room_retry_attempt, recovery_started_at_ms);
-            ESP_LOGW(
-                TAG,
-                "Session bootstrap failed; retrying in %d seconds (attempt=%d, reconnectWindowSec=%d)",
-                delay_sec,
-                room_retry_attempt + 1,
-                session_reconnect_window_sec());
-            room_retry_attempt += 1;
+            if (recovery_start_ms == 0) recovery_start_ms = now_ms();
+            const int delay_sec = next_room_retry_delay_sec(room_retry_attempt, recovery_start_ms);
+            ESP_LOGW(TAG, "[STATE] join_room() failed; retry in %d s (attempt %d)",
+                     delay_sec, room_retry_attempt + 1);
+            room_retry_attempt++;
+            session_timeout_stop();
+            sounds_play_beep();
             sleep_seconds(delay_sec);
             continue;
         }
 
         room_retry_attempt = 0;
-        recovery_started_at_ms = 0;
+        recovery_start_ms  = 0;
+        ESP_LOGI(TAG, "[STATE] Room joined — waiting for inactivity timeout or disconnect");
 
-        while (session_is_active()) {
-            sleep_seconds(1);
+        /* Wait for inactivity timeout OR LiveKit session ending on its own */
+        while (true) {
+            EventBits_t bits = xEventGroupWaitBits(
+                eg, EG_SESSION_TIMEOUT, pdTRUE, pdFALSE,
+                pdMS_TO_TICKS(500));  /* poll every 500 ms for session_is_active() */
+
+            if (bits & EG_SESSION_TIMEOUT) {
+                ESP_LOGW(TAG, "[STATE] Inactivity timeout — ending session");
+                break;
+            }
+
+            if (!session_is_active()) {
+                ESP_LOGI(TAG, "[STATE] LiveKit session ended by remote/network");
+                break;
+            }
         }
 
-        ESP_LOGW(TAG, "Room session ended; tearing down current room and creating a fresh session");
+        session_timeout_stop();
+        ESP_LOGI(TAG, "[STATE] Leaving room — returning to SLEEPING");
+        sounds_play_beep();
         leave_room();
         maybe_apply_pending_update();
-
-        if (recovery_started_at_ms == 0) {
-            recovery_started_at_ms = now_ms();
-        }
-
-        const int delay_sec = next_room_retry_delay_sec(room_retry_attempt, recovery_started_at_ms);
-        ESP_LOGW(
-            TAG,
-            "Re-entering recovery loop in %d seconds (attempt=%d, reconnectWindowSec=%d)",
-            delay_sec,
-            room_retry_attempt + 1,
-            session_reconnect_window_sec());
-        room_retry_attempt += 1;
-        sleep_seconds(delay_sec);
+        sleep_seconds(1);
+        /* Loop back to SLEEPING */
     }
 }
 

@@ -8,7 +8,7 @@ DEVICE_CREDENTIAL="${3:-}"
 LANGUAGE="${4:-hi-IN}"
 HARDWARE_REV="${5:-esp32-s3-wroom}"
 FIRMWARE_VERSION="${6:-v0.1.0-dev}"
-DEVICE_ID="${7:-mitr-esp32-001}"
+DEVICE_ID="${7:-mitr-esp32-002}"
 BACKEND_BASE_URL=""
 
 if [[ -z "${TARGET}" ]]; then
@@ -24,7 +24,7 @@ if [[ "${TARGET}" == http://* || "${TARGET}" == https://* ]]; then
   LANGUAGE="${3:-hi-IN}"
   HARDWARE_REV="${4:-esp32-s3-wroom}"
   FIRMWARE_VERSION="${5:-v0.1.0-dev}"
-  DEVICE_ID="${6:-mitr-esp32-001}"
+  DEVICE_ID="${6:-mitr-esp32-002}"
 else
   BACKEND_BASE_URL="http://${TARGET}:${PORT}"
 fi

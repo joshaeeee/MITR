@@ -23,7 +23,7 @@ menu "Mitr ESP32 Device"
 
     config MITR_DEVICE_DEVICE_ID
         string "Device ID"
-        default "mitr-esp32-001"
+        default "mitr-esp32-002"
         help
             Stable hardware identity printed in the device QR code. This is sent
             to the backend during pairing/bootstrap and used for device sessions.
@@ -71,4 +71,15 @@ menu "Mitr ESP32 Device"
         help
             How often the device reports liveness to POST /devices/heartbeat
             while the session remains active.
+
+    config MITR_AEC_REFERENCE_DELAY_MS
+        int "AEC reference signal delay (ms)"
+        default 60
+        range 10 200
+        help
+            Acoustic round-trip delay (ms) from when audio is written to the
+            I2S TX DMA buffer to when the microphone captures the echo. The
+            AFE also performs internal delay estimation so an approximate value
+            is sufficient. Increase if echo persists; decrease if AEC
+            convergence seems slow. Typical range for a small device: 30-100 ms.
 endmenu

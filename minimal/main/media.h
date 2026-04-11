@@ -40,6 +40,42 @@ esp_err_t media_set_output_muted(bool muted);
 bool media_is_output_muted(void);
 int media_get_output_volume(void);
 
+/// Reads `n_samples` of mono 16-kHz reference PCM from the playback ring
+/// buffer, offset `delay_samples` behind the current write head.  Fills with
+/// silence if the buffer does not yet have enough history.
+///
+/// Called by the AEC capture source to inject the speaker output as the AFE
+/// reference channel so true acoustic echo cancellation can be performed.
+void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples);
+
+/// Open the record codec device for direct PCM reads (SLEEPING-state mic).
+/// Must be called before media_read_mic_raw().
+/// Returns 0 on success.
+int media_start_raw_mic(void);
+
+/// Close the direct record codec device.
+/// Call this before transitioning to ACTIVE (the AEC capturer will re-open it).
+void media_stop_raw_mic(void);
+
+/// Read `n_samples` of mono 16-bit 16-kHz mic PCM into `buf`.
+/// Extracts channel 0 (mic) from the stereo I2S frame.
+/// Returns 0 on success.
+int media_read_mic_raw(int16_t *buf, int n_samples);
+
+/// Play `n_stereo_samples` of stereo 16-bit 16-kHz PCM directly to the speaker.
+/// Opens, writes, then closes the playback codec device.
+/// Blocks for approximately the audio duration plus I2S drain time.
+/// Safe to call only when LiveKit is NOT using the renderer (before join_room
+/// or after leave_room).
+void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples);
+
+/// Called by the AEC feed path to signal mic voice activity.
+/// session_timeout uses this to reset the inactivity timer.
+void media_notify_mic_activity(void);
+
+/// Returns the timestamp (ms since boot) of the last detected mic activity.
+int64_t media_get_last_mic_activity_ms(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,6 +16,7 @@
 #include "example.h"
 #include "media.h"
 #include "ota_manager.h"
+#include "session_timeout.h"
 
 static const char *TAG = "mitr_livekit_device";
 static const char *DEVICE_EVENT_TOPIC = "mitr.device_event";
@@ -377,6 +378,9 @@ static void on_data_received(const livekit_data_received_t *data, void *ctx)
         data->topic ? data->topic : "(none)",
         (unsigned)data->payload.size,
         preview);
+
+    /* Any data from the server counts as activity — reset inactivity timer */
+    session_timeout_notify_activity();
 
     if (!data->topic || strcmp(data->topic, DEVICE_CONTROL_TOPIC) != 0) {
         return;
