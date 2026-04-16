@@ -7,6 +7,7 @@
 #include "esp_ota_ops.h"
 #include "livekit.h"
 
+#include "boot_feedback.h"
 #include "board.h"
 #include "device_api.h"
 #include "device_storage.h"
@@ -37,6 +38,11 @@ static const int CONFIG_RETRY_SEC = 60;
 static int64_t now_ms(void)
 {
     return esp_timer_get_time() / 1000;
+}
+
+static void log_boot_state(const char *state)
+{
+    ESP_LOGW(TAG, "[BOOT] t=%lldms state=%s", now_ms(), state);
 }
 
 static void sleep_seconds(int seconds)
@@ -101,8 +107,6 @@ static void maybe_apply_pending_update(void)
 
 static void mitr_device_task(void *arg)
 {
-    esp_log_level_set("*", ESP_LOG_INFO);
-
     // Mark this firmware as valid immediately — prevents OTA rollback from
     // restoring the previous binary on next crash. The old behaviour (waiting
     // for 3 heartbeats over 5 minutes) caused a vicious cycle: new binary
@@ -114,6 +118,8 @@ static void mitr_device_task(void *arg)
     ESP_ERROR_CHECK(livekit_system_init());
     board_init();
     ESP_ERROR_CHECK(media_init());
+    sounds_init();
+    mitr_boot_feedback_init();
 
     ESP_LOGI(
         TAG,
@@ -123,11 +129,10 @@ static void mitr_device_task(void *arg)
         mitr_device_hardware_rev(),
         mitr_device_language());
 
-    /* Initialise wake word engine and sound effects */
+    /* Initialise wake word engine after the sound/boot feedback path is live. */
     if (wake_word_init() != 0) {
         ESP_LOGE(TAG, "wake_word_init() failed — continuing without wake word detection");
     }
-    sounds_init();
 
     esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
         2,
@@ -137,20 +142,31 @@ static void mitr_device_task(void *arg)
     /* ---------------------------------------------------------------------------
      * Network / bootstrap (run once before entering the wake-word loop)
      * --------------------------------------------------------------------------- */
+    mitr_boot_feedback_set_state(MITR_BOOT_STATE_WIFI_CONNECTING);
+    log_boot_state("wifi_connecting");
     while (true) {
         if (!mitr_network_connect()) {
             ESP_LOGW(TAG, "Wi-Fi connection failed; retrying in %d seconds", NETWORK_RETRY_SEC);
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
             sleep_seconds(NETWORK_RETRY_SEC);
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_WIFI_CONNECTING);
+            log_boot_state("wifi_connecting");
             continue;
         }
 
+        mitr_boot_feedback_set_state(MITR_BOOT_STATE_BACKEND_BOOTSTRAP);
+        log_boot_state("bootstrap_start");
         if (!ensure_device_bootstrapped()) {
             ESP_LOGW(TAG, "Device bootstrap prerequisites are incomplete; retrying in %d seconds",
                      CONFIG_RETRY_SEC);
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
             sleep_seconds(CONFIG_RETRY_SEC);
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_BACKEND_BOOTSTRAP);
+            log_boot_state("bootstrap_start");
             continue;
         }
 
+        log_boot_state("bootstrap_complete");
         maybe_apply_pending_update();
         break;  /* Network and bootstrap are good — enter the wake-word state machine */
     }
@@ -172,6 +188,11 @@ static void mitr_device_task(void *arg)
         /* ================================================================
          * SLEEPING — wake word listening, no LiveKit session
          * ================================================================ */
+        if (!mitr_boot_feedback_is_ready_announced()) {
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_LISTENING);
+            log_boot_state("ready_listening");
+            esp_log_level_set("*", ESP_LOG_INFO);
+        }
         ESP_LOGI(TAG, "[STATE] Entering SLEEPING — starting wake word listener");
         xEventGroupClearBits(eg, EG_WAKE_DETECTED);
         wake_word_start(eg, EG_WAKE_DETECTED);
@@ -181,6 +202,7 @@ static void mitr_device_task(void *arg)
         wake_word_stop();
 
         ESP_LOGI(TAG, "[STATE] Wake word confirmed — transitioning to ACTIVE");
+        mitr_boot_feedback_set_state(MITR_BOOT_STATE_ACTIVE_SESSION);
         sounds_play_chime();
 
         /* ================================================================

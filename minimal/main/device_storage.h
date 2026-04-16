@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -28,6 +29,9 @@ esp_err_t mitr_device_storage_store_access_token(
     const char *device_access_token,
     const char *device_id);
 esp_err_t mitr_device_storage_clear_access_token(void);
+bool mitr_device_storage_get_wifi_hint(uint8_t *channel, uint8_t bssid[6]);
+esp_err_t mitr_device_storage_store_wifi_hint(uint8_t channel, const uint8_t bssid[6]);
+esp_err_t mitr_device_storage_clear_wifi_hint(void);
 
 #ifdef __cplusplus
 }

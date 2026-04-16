@@ -22,6 +22,16 @@ void sounds_play_chime(void);
  */
 void sounds_play_beep(void);
 
+/**
+ * Play a short positive cue when boot has reached the first true listening state.
+ */
+void sounds_play_ready(void);
+
+/**
+ * Play a short double-tone when the device enters BLE provisioning mode.
+ */
+void sounds_play_provisioning_wait(void);
+
 #ifdef __cplusplus
 }
 #endif

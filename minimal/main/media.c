@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdint.h>
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -248,6 +249,52 @@ void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples)
     }
 
     /* Wait for I2S DMA to drain */
+    int drain_ms = (n_stereo_samples * 1000) / 16000 + 50;
+    vTaskDelay(pdMS_TO_TICKS(drain_ms));
+
+    esp_codec_dev_close(renderer_system.render_device);
+}
+
+void media_play_pcm_chunked(const int16_t *stereo_pcm,
+                            int n_stereo_samples,
+                            int chunk_stereo_samples,
+                            int16_t *scratch_buf)
+{
+    if (scratch_buf == NULL || chunk_stereo_samples <= 0) {
+        media_play_pcm(stereo_pcm, n_stereo_samples);
+        return;
+    }
+    if (renderer_system.render_device == NULL) {
+        ESP_LOGE(TAG, "render_device not initialised");
+        return;
+    }
+
+    esp_codec_dev_sample_info_t cfg = {
+        .sample_rate     = 16000,
+        .bits_per_sample = 16,
+        .channel         = 2,
+    };
+    int ret = esp_codec_dev_open(renderer_system.render_device, &cfg);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "[PCM] Failed to open playback device: %d", ret);
+        return;
+    }
+
+    int remaining = n_stereo_samples;
+    int offset = 0;
+    while (remaining > 0) {
+        int chunk_samples = remaining > chunk_stereo_samples ? chunk_stereo_samples : remaining;
+        size_t chunk_bytes = (size_t)chunk_samples * 2 * sizeof(int16_t);
+        memcpy(scratch_buf, stereo_pcm + (offset * 2), chunk_bytes);
+        ret = esp_codec_dev_write(renderer_system.render_device, (void *)scratch_buf, (int)chunk_bytes);
+        if (ret != 0) {
+            ESP_LOGW(TAG, "[PCM] chunk write returned %d at offset=%d", ret, offset);
+            break;
+        }
+        offset += chunk_samples;
+        remaining -= chunk_samples;
+    }
+
     int drain_ms = (n_stereo_samples * 1000) / 16000 + 50;
     vTaskDelay(pdMS_TO_TICKS(drain_ms));
 

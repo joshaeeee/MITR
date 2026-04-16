@@ -9,13 +9,20 @@
 #include "esp_wifi.h"
 #include "protocomm.h"
 #include "sdkconfig.h"
+#include "esp_timer.h"
 #include "wifi_provisioning/manager.h"
 #include "wifi_provisioning/scheme_ble.h"
 
+#include "boot_feedback.h"
 #include "device_storage.h"
 #include "provisioning.h"
 
 static const char *TAG = "mitr_provisioning";
+
+static int64_t boot_now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
 
 static void copy_upper_suffix(char *dest, size_t capacity, const char *source, size_t suffix_len)
 {
@@ -211,6 +218,8 @@ esp_err_t mitr_provisioning_start_if_needed(bool *started)
         "Failed to register custom provisioning endpoint");
 
     log_qr_payload(service_name, proof_of_possession);
+    ESP_LOGW(TAG, "[BOOT] t=%lldms state=provisioning_wait", boot_now_ms());
+    mitr_boot_feedback_set_state(MITR_BOOT_STATE_PROVISIONING_WAIT);
     *started = true;
     return ESP_OK;
 }
