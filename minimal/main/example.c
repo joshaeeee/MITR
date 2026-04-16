@@ -272,6 +272,9 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
         case LIVEKIT_CONNECTION_STATE_CONNECTED:
             session.last_boot_ok = true;
             set_last_end_reason("");
+            // Room connected — reset inactivity timer so the session doesn't
+            // time out before the agent spawns and responds.
+            session_timeout_notify_activity();
             if (previous_state == LIVEKIT_CONNECTION_STATE_RECONNECTING) {
                 publish_device_event("reconnected", "room_reconnected");
                 report_telemetry("room_reconnected", "info", "LiveKit room reconnected");
@@ -334,6 +337,14 @@ static void on_participant_info(const livekit_participant_info_t *info, void *ct
     ESP_LOGI(TAG, "Agent participant %s the room", joined ? "joined" : "left");
     publish_device_event(joined ? "agent_joined" : "agent_left", joined ? "agent_joined" : "agent_left");
     report_telemetry(joined ? "agent_joined" : "agent_left", "info", joined ? "Agent participant active" : "Agent participant left");
+
+    // Agent joining counts as activity — reset the inactivity timer so the
+    // session doesn't time out before the agent has a chance to process audio
+    // and respond. Without this, a slow agent (>20s first response) would always
+    // trigger the inactivity timeout even when the session is healthy.
+    if (joined) {
+        session_timeout_notify_activity();
+    }
 }
 
 static void handle_device_control_message(const cJSON *root)
