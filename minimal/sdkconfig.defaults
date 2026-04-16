@@ -41,3 +41,11 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=256
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=8192
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
 CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+
+# Wake word detection — espressif/esp-sr WakeNet
+# MODEL_IN_FLASH_EN: load model from "model" flash partition (not compiled into app)
+CONFIG_MODEL_IN_FLASH_EN=y
+# Enable WakeNet9 "Hi,ESP" vtable — placeholder until Hey Mitr custom model is ready.
+# When the custom model arrives, change to CONFIG_SR_WN_WN9_HEYMITR=y (or _tts3 variant).
+# The Kconfig option must match whatever model binary is flashed to the "model" partition.
+CONFIG_SR_WN_WN9_HIESP=y
