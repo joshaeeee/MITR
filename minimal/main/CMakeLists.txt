@@ -10,9 +10,7 @@ idf_component_register(
         "provisioning.c"
         "ota_manager.c"
         "atomic_compat.c"
-        "audio_preprocessor.c"
-        "wake_model_data.c"
-        "wake_word.cc"
+        "wake_word.c"
         "session_timeout.c"
         "sounds.c"
     INCLUDE_DIRS
@@ -35,7 +33,6 @@ idf_component_register(
         tempotian__av_render
         tempotian__codec_board
         tempotian__media_lib_sal
-        espressif__esp-tflite-micro
-        tflite_microfrontend
+        esp-sr
     WHOLE_ARCHIVE
 )

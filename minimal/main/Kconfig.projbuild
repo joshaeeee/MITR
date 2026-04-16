@@ -82,4 +82,15 @@ menu "Mitr ESP32 Device"
             AFE also performs internal delay estimation so an approximate value
             is sufficient. Increase if echo persists; decrease if AEC
             convergence seems slow. Typical range for a small device: 30-100 ms.
+
+    config MITR_WAKEWORD_MODEL
+        string "WakeNet model name substring"
+        default "hiesp"
+        help
+            Substring matched case-insensitively against the model names stored
+            in the "model" flash partition via esp_srmodel_filter().
+            "hiesp"    matches "wn9_hiesp"         (development placeholder)
+            "heymitr"  matches "wn9_heymitr_tts3"  (custom Hey Mitr model)
+            Falls back to the first available WakeNet model if no match is found.
+            Must also set the matching CONFIG_SR_WN_WN9_* option in sdkconfig.
 endmenu

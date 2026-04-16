@@ -16,60 +16,6 @@
 
 static const char *TAG = "media";
 
-// ---------------------------------------------------------------------------
-// AEC reference ring buffer
-//
-// Holds mono 16-kHz 16-bit PCM copied from the speaker output path.
-// The buffer is 300 ms deep — enough for any realistic acoustic delay plus
-// the configured CONFIG_MITR_AEC_REFERENCE_DELAY_MS offset.
-//
-// The reference callback is invoked inside av_render right after
-// esp_codec_dev_write(), so timing is tight to actual I2S playback.
-// Single-producer (renderer task), single-consumer (AEC capture task).
-// ---------------------------------------------------------------------------
-#define AEC_REF_BUF_SAMPLES 4800  // 300 ms @ 16 kHz mono
-
-static int16_t          s_ref_buf[AEC_REF_BUF_SAMPLES];
-static volatile uint32_t s_ref_wpos = 0;  // monotonically increasing write position
-
-static int media_renderer_ref_cb(uint8_t *data, int size, void *ctx)
-{
-    // Renderer delivers stereo 16-bit 16 kHz; downmix to mono by taking L channel.
-    const int16_t *src = (const int16_t *)data;
-    int n_stereo = size / (2 * (int)sizeof(int16_t));
-    for (int i = 0; i < n_stereo; i++) {
-        s_ref_buf[s_ref_wpos % AEC_REF_BUF_SAMPLES] = src[i * 2];
-        s_ref_wpos++;
-    }
-    // Log every ~1 second (16000 samples / ~32 samples per cb ≈ 500 calls)
-    static uint32_t s_ref_cb_count = 0;
-    if (++s_ref_cb_count % 500 == 0) {
-        // Compute RMS of this chunk to confirm non-silence
-        int32_t rms = 0;
-        for (int i = 0; i < n_stereo; i++) rms += (int32_t)src[i * 2] * src[i * 2];
-        rms = n_stereo > 0 ? rms / n_stereo : 0;
-        ESP_LOGI(TAG, "[AEC-REF] cb#%lu samples=%d wpos=%lu rms=%ld",
-                 (unsigned long)s_ref_cb_count, n_stereo,
-                 (unsigned long)s_ref_wpos, (long)rms);
-    }
-    return 0;
-}
-
-void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples)
-{
-    uint32_t wp     = s_ref_wpos;
-    uint32_t needed = (uint32_t)(delay_samples + n_samples);
-    if (wp < needed) {
-        // Not enough history yet — give AEC silence so it stays stable.
-        memset(buf, 0, n_samples * sizeof(int16_t));
-        return;
-    }
-    uint32_t rpos = wp - needed;
-    for (int i = 0; i < n_samples; i++) {
-        buf[i] = s_ref_buf[(rpos + (uint32_t)i) % AEC_REF_BUF_SAMPLES];
-    }
-}
-
 #define NULL_CHECK(pointer, message) \
     ESP_RETURN_ON_FALSE(pointer != NULL, -1, TAG, message)
 
@@ -91,26 +37,29 @@ typedef struct {
 static capture_system_t  capturer_system;
 static renderer_system_t renderer_system;
 
+// ---------------------------------------------------------------------------
+// Capture system — plain device source (no AFE/AEC).
+//
+// The AEC source (esp_capture_new_audio_aec_src) was tried but internally
+// initialises an AFE_TYPE_SR pipeline that includes its own WakeNet.  In SR
+// mode the AFE suppresses audio output until it detects the wake word inside
+// the pipeline, so LiveKit never receives mic audio from the agent session.
+//
+// The simple dev source passes raw I2S frames directly to the capture sink
+// and to LiveKit — this is what worked before the AEC attempt.
+// ---------------------------------------------------------------------------
 static int build_capturer_system(void)
 {
     esp_codec_dev_handle_t record_handle = get_record_handle();
     NULL_CHECK(record_handle, "Failed to get record handle");
     capturer_system.record_device = record_handle;
 
-    // Use the AEC-capable capture source so the AFE receives both the mic
-    // channel (M) and the playback reference channel (R) that we inject via
-    // media_renderer_ref_cb.  mic_layout "MR" matches the AFE's expectation:
-    // interleaved [mic_sample, ref_sample] per frame.
-    // channel = 2: the raw I2S RX delivers stereo; ch0 = mic, ch1 = reference
-    // (we overwrite ch1 with the ring-buffer reference in audio_aec_feed_data).
-    esp_capture_audio_aec_src_cfg_t codec_cfg = {
+    esp_capture_audio_dev_src_cfg_t codec_cfg = {
         .record_handle = record_handle,
-        .mic_layout    = "MR",
-        .channel       = 2,
     };
-    capturer_system.audio_source = esp_capture_new_audio_aec_src(&codec_cfg);
+    capturer_system.audio_source = esp_capture_new_audio_dev_src(&codec_cfg);
     NULL_CHECK(capturer_system.audio_source, "Failed to create audio source");
-    ESP_LOGI(TAG, "[AEC] AEC capture source created (mic_layout=MR channel=2)");
+    ESP_LOGI(TAG, "Capture source: plain dev src (no AFE)");
 
     esp_capture_cfg_t cfg = {
         .sync_mode = ESP_CAPTURE_SYNC_MODE_AUDIO,
@@ -119,7 +68,6 @@ static int build_capturer_system(void)
     int ret = esp_capture_open(&cfg, &capturer_system.capturer_handle);
     ESP_RETURN_ON_FALSE(ret == 0, -1, TAG, "Failed to open capture system");
     NULL_CHECK(capturer_system.capturer_handle, "Failed to open capture system");
-    ESP_LOGI(TAG, "[AEC] Capture pipeline opened successfully");
     return 0;
 }
 
@@ -131,8 +79,6 @@ static int build_renderer_system(void)
 
     i2s_render_cfg_t i2s_cfg = {
         .play_handle = render_device,
-        .cb          = media_renderer_ref_cb,
-        .ctx         = NULL,
     };
     renderer_system.audio_renderer = av_render_alloc_i2s_render(&i2s_cfg);
     NULL_CHECK(renderer_system.audio_renderer, "Failed to create I2S renderer");
@@ -217,7 +163,17 @@ int media_get_output_volume(void)
 }
 
 // ---------------------------------------------------------------------------
-// Raw mic access (SLEEPING state — bypasses AEC capturer)
+// Reference PCM stub — kept for header compatibility, returns silence.
+// Not needed without the AEC capture source.
+// ---------------------------------------------------------------------------
+void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples)
+{
+    (void)delay_samples;
+    memset(buf, 0, n_samples * sizeof(int16_t));
+}
+
+// ---------------------------------------------------------------------------
+// Raw mic access (SLEEPING state — bypasses the LiveKit capture pipeline)
 // ---------------------------------------------------------------------------
 
 static bool s_raw_mic_open = false;
@@ -252,7 +208,6 @@ void media_stop_raw_mic(void)
 int media_read_mic_raw(int16_t *mono_buf, int n_samples)
 {
     if (!s_raw_mic_open) return -1;
-    /* Read stereo (2 ch * 2 bytes = 4 bytes per frame) */
     int16_t stereo[n_samples * 2];
     int ret = esp_codec_dev_read(capturer_system.record_device,
                                  stereo, n_samples * 2 * (int)sizeof(int16_t));
@@ -292,7 +247,7 @@ void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples)
         ESP_LOGW(TAG, "[PCM] esp_codec_dev_write returned %d", ret);
     }
 
-    /* Wait for I2S DMA to drain (~2 DMA buffer durations at 16 kHz stereo 16-bit) */
+    /* Wait for I2S DMA to drain */
     int drain_ms = (n_stereo_samples * 1000) / 16000 + 50;
     vTaskDelay(pdMS_TO_TICKS(drain_ms));
 
@@ -300,7 +255,7 @@ void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples)
 }
 
 // ---------------------------------------------------------------------------
-// Mic activity tracking (used by session_timeout)
+// Mic activity tracking (stub — kept for header compatibility)
 // ---------------------------------------------------------------------------
 
 static volatile int64_t s_last_mic_activity_ms = 0;
