@@ -1,6 +1,7 @@
 #include "sounds.h"
 #include "media.h"
 #include <math.h>
+#include <stdint.h>
 #include <string.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -18,11 +19,21 @@ static const char *TAG = "sounds";
 #define SAMPLE_RATE     16000
 #define CHIME_MS        200
 #define BEEP_MS         150
+#define PROV_TONE_MS    90
+#define PROV_GAP_MS     50
 #define CHIME_SAMPLES   (SAMPLE_RATE * CHIME_MS / 1000)  /* 3200 stereo samples */
 #define BEEP_SAMPLES    (SAMPLE_RATE * BEEP_MS  / 1000)  /* 2400 stereo samples */
+#define PROV_SAMPLES    (SAMPLE_RATE * PROV_TONE_MS / 1000)
+#define READY_STREAM_CHUNK_SAMPLES 512
+
+extern const uint8_t boot_ready_raw_start[] asm("_binary_boot_ready_raw_start");
+extern const uint8_t boot_ready_raw_end[] asm("_binary_boot_ready_raw_end");
 
 static int16_t *s_chime_buf = NULL;  /* [CHIME_SAMPLES * 2] stereo */
 static int16_t *s_beep_buf  = NULL;  /* [BEEP_SAMPLES  * 2] stereo */
+static int16_t *s_prov_buf  = NULL;  /* [PROV_SAMPLES * 2] stereo */
+static int16_t *s_ready_chunk_buf = NULL;  /* small internal-RAM stream buffer */
+static int s_ready_samples = 0;
 
 /* Generate a linear-frequency-sweep (chirp) into a stereo buffer.
  * f_start, f_end: start and end frequency in Hz.
@@ -53,13 +64,27 @@ static void gen_chirp(int16_t *buf, int n_samples, float f_start, float f_end,
 
 void sounds_init(void)
 {
+    size_t ready_bytes = (size_t)(boot_ready_raw_end - boot_ready_raw_start);
     s_chime_buf = heap_caps_malloc(CHIME_SAMPLES * 2 * sizeof(int16_t),
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_beep_buf  = heap_caps_malloc(BEEP_SAMPLES  * 2 * sizeof(int16_t),
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_chime_buf || !s_beep_buf) {
+    s_prov_buf  = heap_caps_malloc(PROV_SAMPLES * 2 * sizeof(int16_t),
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_ready_chunk_buf = heap_caps_malloc(
+        READY_STREAM_CHUNK_SAMPLES * 2 * sizeof(int16_t),
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (ready_bytes > 0 && (ready_bytes % (2 * sizeof(int16_t))) == 0) {
+        s_ready_samples = (int)(ready_bytes / (2 * sizeof(int16_t)));
+    }
+    if (!s_chime_buf || !s_beep_buf || !s_prov_buf) {
         ESP_LOGE(TAG, "PSRAM alloc failed for sound buffers");
         return;
+    }
+    if (ready_bytes == 0 || (ready_bytes % (2 * sizeof(int16_t))) != 0) {
+        ESP_LOGW(TAG, "Ready PCM asset is missing or malformed");
+    } else if (!s_ready_chunk_buf) {
+        ESP_LOGW(TAG, "Ready PCM stream buffer alloc failed; cue disabled");
     }
 
     /* Rising chirp: 440 Hz → 880 Hz, 200 ms, 30 ms fade */
@@ -68,8 +93,11 @@ void sounds_init(void)
     /* Falling chirp: 880 Hz → 440 Hz, 150 ms, 20 ms fade */
     gen_chirp(s_beep_buf, BEEP_SAMPLES, 880.0f, 440.0f, 22000.0f, 20);
 
-    ESP_LOGI(TAG, "Sounds init OK: chime=%d samples, beep=%d samples",
-             CHIME_SAMPLES, BEEP_SAMPLES);
+    /* Provisioning cue: soft tone repeated twice by sounds_play_provisioning_wait() */
+    gen_chirp(s_prov_buf, PROV_SAMPLES, 660.0f, 520.0f, 16000.0f, 15);
+
+    ESP_LOGI(TAG, "Sounds init OK: chime=%d beep=%d provision=%d ready=%d samples",
+             CHIME_SAMPLES, BEEP_SAMPLES, PROV_SAMPLES, s_ready_samples);
 }
 
 void sounds_play_chime(void)
@@ -93,4 +121,31 @@ void sounds_play_beep(void)
     ESP_LOGI(TAG, "[SOUND] Playing disconnect beep");
     media_play_pcm(s_beep_buf, BEEP_SAMPLES);
     vTaskDelay(pdMS_TO_TICKS(50));
+}
+
+void sounds_play_ready(void)
+{
+    if (!s_ready_chunk_buf || s_ready_samples <= 0) {
+        ESP_LOGW(TAG, "Ready PCM cue unavailable");
+        return;
+    }
+    ESP_LOGI(TAG, "[SOUND] Playing ready cue (%d stereo samples streamed)", s_ready_samples);
+    media_play_pcm_chunked((const int16_t *)boot_ready_raw_start,
+                           s_ready_samples,
+                           READY_STREAM_CHUNK_SAMPLES,
+                           s_ready_chunk_buf);
+    vTaskDelay(pdMS_TO_TICKS(30));
+}
+
+void sounds_play_provisioning_wait(void)
+{
+    if (!s_prov_buf) {
+        ESP_LOGW(TAG, "Provisioning buffer not initialized");
+        return;
+    }
+    ESP_LOGI(TAG, "[SOUND] Playing provisioning cue");
+    media_play_pcm(s_prov_buf, PROV_SAMPLES);
+    vTaskDelay(pdMS_TO_TICKS(PROV_GAP_MS));
+    media_play_pcm(s_prov_buf, PROV_SAMPLES);
+    vTaskDelay(pdMS_TO_TICKS(30));
 }

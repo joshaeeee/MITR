@@ -69,6 +69,14 @@ int media_read_mic_raw(int16_t *buf, int n_samples);
 /// or after leave_room).
 void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples);
 
+/// Play PCM by copying from the source into a small internal-RAM scratch
+/// buffer before each device write. Use this when the source asset lives in
+/// flash and must not be accessed during cache-disabled codec operations.
+void media_play_pcm_chunked(const int16_t *stereo_pcm,
+                            int n_stereo_samples,
+                            int chunk_stereo_samples,
+                            int16_t *scratch_buf);
+
 /// Called by the AEC feed path to signal mic voice activity.
 /// session_timeout uses this to reset the inactivity timer.
 void media_notify_mic_activity(void);

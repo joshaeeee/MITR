@@ -6,6 +6,7 @@ idf_component_register(
         "media.c"
         "device_api.c"
         "device_storage.c"
+        "boot_feedback.c"
         "network.c"
         "provisioning.c"
         "ota_manager.c"
@@ -15,6 +16,8 @@ idf_component_register(
         "sounds.c"
     INCLUDE_DIRS
         "."
+    EMBED_FILES
+        "assets/boot_ready.raw"
     PRIV_REQUIRES
         esp_http_client
         esp_https_ota
