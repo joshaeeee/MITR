@@ -33,6 +33,13 @@ static volatile bool      s_stop       = false;
 static EventGroupHandle_t s_eg         = NULL;
 static EventBits_t        s_detect_bit = 0;
 
+/* WakeNet9 lazily allocates its internal MFCC convolution queues on the first
+ * detect() call.  Calling clean() on a freshly-created model (before any
+ * detect() has run) dereferences those uninitialized NULL queue pointers and
+ * panics.  Track whether detect() has ever been called so we can skip the
+ * pre-loop clean() on the very first task run. */
+static bool s_detect_initialized = false;
+
 /* ---- Detection task ---- */
 
 static void wake_word_task(void *arg)
@@ -57,8 +64,14 @@ static void wake_word_task(void *arg)
         return;
     }
 
-    /* Flush any stale MFCC state left from a previous detection cycle */
-    s_wakenet->clean(s_model);
+    /* Flush stale MFCC state from a previous detection cycle.
+     * IMPORTANT: skip on the very first task run (s_detect_initialized == false)
+     * because WakeNet9 allocates its internal convolution queues lazily on the
+     * first detect() call — calling clean() before that dereferences NULL queue
+     * pointers and panics with EXCVADDR=0x10. */
+    if (s_detect_initialized) {
+        s_wakenet->clean(s_model);
+    }
 
     while (!s_stop) {
         /* Read exactly s_chunk samples of 16 kHz mono int16 PCM */
@@ -67,6 +80,7 @@ static void wake_word_task(void *arg)
             continue;
         }
 
+        s_detect_initialized = true;   /* queues now allocated; clean() safe from here */
         wakenet_state_t state = s_wakenet->detect(s_model, buf);
 
         if (state == WAKENET_DETECTED) {
@@ -199,7 +213,7 @@ void wake_word_start(EventGroupHandle_t eg, EventBits_t bit)
 
     BaseType_t ret = xTaskCreatePinnedToCore(
         wake_word_task, "wake_word",
-        4096,           /* 4 KB stack — sufficient for this task */
+        8192,           /* 8 KB — WakeNet9 detect() uses ~4 KB for MFCC computation */
         NULL,
         4,              /* priority */
         &s_task,
