@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "esp_ota_ops.h"
 #include "livekit.h"
 
 #include "board.h"
@@ -13,7 +14,6 @@
 #include "media.h"
 #include "network.h"
 #include "ota_manager.h"
-#include "session_timeout.h"
 #include "sounds.h"
 #include "wake_word.h"
 
@@ -22,9 +22,8 @@ static const char *TAG = "mitr_device_main";
 // ---------------------------------------------------------------------------
 // State machine event group
 // ---------------------------------------------------------------------------
-// Bits set by wake_word.cc and session_timeout.c respectively.
+// Bits set by wake_word.c (session timeout is backend-driven, not device-driven).
 #define EG_WAKE_DETECTED    (EventBits_t)BIT0
-#define EG_SESSION_TIMEOUT  (EventBits_t)BIT1
 
 // ---------------------------------------------------------------------------
 // Retry / timing constants (unchanged from original)
@@ -34,7 +33,6 @@ static const int ROOM_RETRY_CAP_SEC = 60;
 static const int BOOTSTRAP_RETRY_SEC = 10;
 static const int NETWORK_RETRY_SEC = 30;
 static const int CONFIG_RETRY_SEC = 60;
-static const int SESSION_INACTIVITY_SEC = 20;
 
 static int64_t now_ms(void)
 {
@@ -105,6 +103,12 @@ static void mitr_device_task(void *arg)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
 
+    // Mark this firmware as valid immediately — prevents OTA rollback from
+    // restoring the previous binary on next crash. The old behaviour (waiting
+    // for 3 heartbeats over 5 minutes) caused a vicious cycle: new binary
+    // crashes before heartbeats complete → rollback → old binary runs again.
+    esp_ota_mark_app_valid_cancel_rollback();
+
     ESP_ERROR_CHECK(mitr_device_storage_init());
     ESP_ERROR_CHECK(mitr_ota_init());
     ESP_ERROR_CHECK(livekit_system_init());
@@ -169,7 +173,7 @@ static void mitr_device_task(void *arg)
          * SLEEPING — wake word listening, no LiveKit session
          * ================================================================ */
         ESP_LOGI(TAG, "[STATE] Entering SLEEPING — starting wake word listener");
-        xEventGroupClearBits(eg, EG_WAKE_DETECTED | EG_SESSION_TIMEOUT);
+        xEventGroupClearBits(eg, EG_WAKE_DETECTED);
         wake_word_start(eg, EG_WAKE_DETECTED);
 
         /* Block until wake word detected (indefinitely) */
@@ -191,16 +195,12 @@ static void mitr_device_task(void *arg)
             continue;
         }
 
-        xEventGroupClearBits(eg, EG_SESSION_TIMEOUT);
-        session_timeout_start(SESSION_INACTIVITY_SEC, eg, EG_SESSION_TIMEOUT);
-
         if (!join_room()) {
             if (recovery_start_ms == 0) recovery_start_ms = now_ms();
             const int delay_sec = next_room_retry_delay_sec(room_retry_attempt, recovery_start_ms);
             ESP_LOGW(TAG, "[STATE] join_room() failed; retry in %d s (attempt %d)",
                      delay_sec, room_retry_attempt + 1);
             room_retry_attempt++;
-            session_timeout_stop();
             sounds_play_beep();
             sleep_seconds(delay_sec);
             continue;
@@ -208,27 +208,20 @@ static void mitr_device_task(void *arg)
 
         room_retry_attempt = 0;
         recovery_start_ms  = 0;
-        ESP_LOGI(TAG, "[STATE] Room joined — waiting for inactivity timeout or disconnect");
 
-        /* Wait for inactivity timeout OR LiveKit session ending on its own */
-        while (true) {
-            EventBits_t bits = xEventGroupWaitBits(
-                eg, EG_SESSION_TIMEOUT, pdTRUE, pdFALSE,
-                pdMS_TO_TICKS(500));  /* poll every 500 ms for session_is_active() */
-
-            if (bits & EG_SESSION_TIMEOUT) {
-                ESP_LOGW(TAG, "[STATE] Inactivity timeout — ending session");
-                break;
-            }
-
-            if (!session_is_active()) {
-                ESP_LOGI(TAG, "[STATE] LiveKit session ended by remote/network");
-                break;
-            }
+        /* ----------------------------------------------------------------
+         * Wait for the backend/LiveKit to end the session.
+         * The device does NOT impose an inactivity timeout — disconnection
+         * is driven entirely by the backend (LiveKit server closes the room
+         * or the agent sends a Leave signal). We just poll session_is_active()
+         * every 500 ms and exit when the room goes away.
+         * ---------------------------------------------------------------- */
+        ESP_LOGI(TAG, "[STATE] Room joined — waiting for backend-driven disconnect");
+        while (session_is_active()) {
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
 
-        session_timeout_stop();
-        ESP_LOGI(TAG, "[STATE] Leaving room — returning to SLEEPING");
+        ESP_LOGI(TAG, "[STATE] LiveKit session ended by backend — returning to SLEEPING");
         sounds_play_beep();
         leave_room();
         maybe_apply_pending_update();
