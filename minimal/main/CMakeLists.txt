@@ -4,6 +4,7 @@ idf_component_register(
         "example.c"
         "board.c"
         "media.c"
+        "preconnect_audio_src.c"
         "device_api.c"
         "device_storage.c"
         "boot_feedback.c"
@@ -12,7 +13,6 @@ idf_component_register(
         "ota_manager.c"
         "atomic_compat.c"
         "wake_word.c"
-        "session_timeout.c"
         "sounds.c"
     INCLUDE_DIRS
         "."

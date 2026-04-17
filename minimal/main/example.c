@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,7 +17,6 @@
 #include "example.h"
 #include "media.h"
 #include "ota_manager.h"
-#include "session_timeout.h"
 
 static const char *TAG = "mitr_livekit_device";
 static const char *DEVICE_EVENT_TOPIC = "mitr.device_event";
@@ -46,6 +46,13 @@ static session_state_t session = {
     .heartbeat_interval_sec = CONFIG_MITR_DEVICE_HEARTBEAT_INTERVAL_SEC,
     .telemetry_backoff_sec = 30,
 };
+
+static volatile bool s_turn_ended_pending = false;
+
+static int64_t now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
 
 static void copy_string(char *dest, size_t capacity, const char *value)
 {
@@ -272,9 +279,6 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
         case LIVEKIT_CONNECTION_STATE_CONNECTED:
             session.last_boot_ok = true;
             set_last_end_reason("");
-            // Room connected — reset inactivity timer so the session doesn't
-            // time out before the agent spawns and responds.
-            session_timeout_notify_activity();
             if (previous_state == LIVEKIT_CONNECTION_STATE_RECONNECTING) {
                 publish_device_event("reconnected", "room_reconnected");
                 report_telemetry("room_reconnected", "info", "LiveKit room reconnected");
@@ -337,24 +341,29 @@ static void on_participant_info(const livekit_participant_info_t *info, void *ct
     ESP_LOGI(TAG, "Agent participant %s the room", joined ? "joined" : "left");
     publish_device_event(joined ? "agent_joined" : "agent_left", joined ? "agent_joined" : "agent_left");
     report_telemetry(joined ? "agent_joined" : "agent_left", "info", joined ? "Agent participant active" : "Agent participant left");
-
-    // Agent joining counts as activity — reset the inactivity timer so the
-    // session doesn't time out before the agent has a chance to process audio
-    // and respond. Without this, a slow agent (>20s first response) would always
-    // trigger the inactivity timeout even when the session is healthy.
-    if (joined) {
-        session_timeout_notify_activity();
-    }
 }
 
 static void handle_device_control_message(const cJSON *root)
 {
     const cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
-    if (!cJSON_IsString(action) || !action->valuestring) {
+    const char *action_str = (cJSON_IsString(action) && action->valuestring) ? action->valuestring : NULL;
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const char *type_str = (cJSON_IsString(type) && type->valuestring) ? type->valuestring : NULL;
+
+    /* Agent signals a completed conversational turn (user stopped speaking
+     * and the agent finished replying). The main loop uses this to re-mute
+     * the mic and re-arm wake-word detection without tearing down the room. */
+    if ((action_str && strcmp(action_str, "turn_ended") == 0) ||
+        (type_str && strcmp(type_str, "turn_ended") == 0)) {
+        s_turn_ended_pending = true;
         return;
     }
 
-    if (strcmp(action->valuestring, "set_mute") == 0) {
+    if (!action_str) {
+        return;
+    }
+
+    if (strcmp(action_str, "set_mute") == 0) {
         const cJSON *muted = cJSON_GetObjectItemCaseSensitive(root, "muted");
         if (cJSON_IsBool(muted)) {
             esp_err_t err = set_device_muted(cJSON_IsTrue(muted), "data_channel");
@@ -365,10 +374,54 @@ static void handle_device_control_message(const cJSON *root)
         return;
     }
 
-    if (strcmp(action->valuestring, "restart_session") == 0) {
+    if (strcmp(action_str, "restart_session") == 0) {
         request_session_restart("remote_restart");
         return;
     }
+}
+
+void publish_wake_event(int64_t wake_at_ms)
+{
+    if (room_handle == NULL) {
+        return;
+    }
+
+    char payload[160];
+    int written = snprintf(
+        payload,
+        sizeof(payload),
+        "{\"type\":\"wake\",\"wakeAtMs\":%lld,\"deviceId\":\"%s\"}",
+        (long long)wake_at_ms,
+        session.token.device_id ? session.token.device_id : mitr_device_device_id());
+    if (!(written > 0 && written < (int)sizeof(payload))) {
+        return;
+    }
+
+    livekit_data_payload_t data_payload = {
+        .bytes = (uint8_t *)payload,
+        .size = strlen(payload),
+    };
+    livekit_data_publish_options_t options = {
+        .payload = &data_payload,
+        .topic = (char *)DEVICE_EVENT_TOPIC,
+        .lossy = false,
+        .destination_identities = NULL,
+        .destination_identities_count = 0,
+    };
+
+    livekit_err_t err = livekit_room_publish_data(room_handle, &options);
+    if (err != LIVEKIT_ERR_NONE) {
+        ESP_LOGW(TAG, "Failed to publish wake event: %d", err);
+    }
+}
+
+bool consume_turn_ended(void)
+{
+    if (!s_turn_ended_pending) {
+        return false;
+    }
+    s_turn_ended_pending = false;
+    return true;
 }
 
 static void on_data_received(const livekit_data_received_t *data, void *ctx)
@@ -389,9 +442,6 @@ static void on_data_received(const livekit_data_received_t *data, void *ctx)
         data->topic ? data->topic : "(none)",
         (unsigned)data->payload.size,
         preview);
-
-    /* Any data from the server counts as activity — reset inactivity timer */
-    session_timeout_notify_activity();
 
     if (!data->topic || strcmp(data->topic, DEVICE_CONTROL_TOPIC) != 0) {
         return;
@@ -519,32 +569,29 @@ static void cleanup_room(void)
     mitr_device_token_response_free(&session.token);
 }
 
-bool join_room(void)
+static bool wait_for_initial_connect(void)
 {
-    if (room_handle != NULL) {
-        ESP_LOGW(TAG, "Room already created");
-        return true;
+    const int64_t deadline_ms = now_ms() + 15000;
+    while (now_ms() < deadline_ms) {
+        switch (session.connection_state) {
+            case LIVEKIT_CONNECTION_STATE_CONNECTED:
+                return true;
+            case LIVEKIT_CONNECTION_STATE_FAILED:
+            case LIVEKIT_CONNECTION_STATE_DISCONNECTED:
+                return false;
+            default:
+                break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    session.restart_requested = false;
-    session.session_end_sent = false;
-    session.reconnect_attempt_count = 0;
-    session.last_failure_reason[0] = '\0';
-    session.last_end_reason[0] = '\0';
+    copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "connect_timeout");
+    ESP_LOGW(TAG, "Timed out waiting for initial room connection");
+    return false;
+}
 
-    esp_err_t err = mitr_device_request_token(&session.token);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to fetch device token: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    ESP_LOGI(
-        TAG,
-        "Fetched session token: room=%s identity=%s backend=%s",
-        session.token.room_name ? session.token.room_name : "(generated)",
-        session.token.identity ? session.token.identity : "(generated)",
-        mitr_device_backend_base_url());
-
+static bool create_and_connect_room(void)
+{
     livekit_room_options_t room_options = {
         .publish = {
             .kind = LIVEKIT_MEDIA_TYPE_AUDIO,
@@ -566,7 +613,6 @@ bool join_room(void)
 
     if (livekit_room_create(&room_handle, &room_options) != LIVEKIT_ERR_NONE) {
         ESP_LOGE(TAG, "Failed to create LiveKit room");
-        mitr_device_token_response_free(&session.token);
         return false;
     }
 
@@ -588,11 +634,47 @@ bool join_room(void)
         return false;
     }
 
+    if (!wait_for_initial_connect()) {
+        report_telemetry("room_connect_error", "error", session.last_failure_reason);
+        cleanup_room();
+        return false;
+    }
+
     if (session.heartbeat_task == NULL) {
         xTaskCreatePinnedToCore(heartbeat_task, "mitr_heartbeat", 8192, NULL, 5, &session.heartbeat_task, tskNO_AFFINITY);
     }
-
     return true;
+}
+
+bool join_room(void)
+{
+    if (room_handle != NULL) {
+        ESP_LOGW(TAG, "Room already created");
+        return true;
+    }
+
+    session.restart_requested = false;
+    session.session_end_sent = false;
+    session.reconnect_attempt_count = 0;
+    session.last_failure_reason[0] = '\0';
+    session.last_end_reason[0] = '\0';
+    session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
+    s_turn_ended_pending = false;
+
+    esp_err_t token_err = mitr_device_request_token(&session.token);
+    if (token_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to obtain device token: %s", esp_err_to_name(token_err));
+        return false;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Fetched session token: room=%s identity=%s backend=%s",
+        session.token.room_name ? session.token.room_name : "(generated)",
+        session.token.identity ? session.token.identity : "(generated)",
+        mitr_device_backend_base_url());
+
+    return create_and_connect_room();
 }
 
 void leave_room(void)

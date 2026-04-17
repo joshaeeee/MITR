@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -17,6 +18,7 @@ typedef struct {
     char *agent_name;
     char *device_id;
     char *user_id;
+    int64_t participant_token_expires_at_ms;
 } mitr_device_token_response_t;
 
 typedef struct {

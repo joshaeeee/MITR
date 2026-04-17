@@ -365,6 +365,11 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
     out->room_name = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "roomName"));
     out->identity = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "identity"));
     out->agent_name = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "agentName"));
+    const cJSON *participant_token_expires_at_ms =
+        cJSON_GetObjectItemCaseSensitive(response, "participantTokenExpiresAtMs");
+    if (cJSON_IsNumber(participant_token_expires_at_ms)) {
+        out->participant_token_expires_at_ms = (int64_t)participant_token_expires_at_ms->valuedouble;
+    }
 
     const cJSON *dispatch = cJSON_GetObjectItemCaseSensitive(response, "dispatchMetadata");
     if (cJSON_IsObject(dispatch)) {

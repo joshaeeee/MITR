@@ -34,6 +34,7 @@ void mitr_boot_feedback_set_state(mitr_boot_state_t state)
             sounds_play_provisioning_wait();
             break;
         case MITR_BOOT_STATE_READY_LISTENING:
+        case MITR_BOOT_STATE_READY_CONNECTED:
             if (!s_state.ready_announced) {
                 sounds_play_ready();
                 s_state.ready_announced = true;
