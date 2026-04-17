@@ -14,6 +14,7 @@
 #include <sdkconfig.h>
 
 #include "media.h"
+#include "preconnect_audio_src.h"
 
 static const char *TAG = "media";
 
@@ -55,12 +56,9 @@ static int build_capturer_system(void)
     NULL_CHECK(record_handle, "Failed to get record handle");
     capturer_system.record_device = record_handle;
 
-    esp_capture_audio_dev_src_cfg_t codec_cfg = {
-        .record_handle = record_handle,
-    };
-    capturer_system.audio_source = esp_capture_new_audio_dev_src(&codec_cfg);
+    capturer_system.audio_source = mitr_preconnect_audio_src_new(record_handle);
     NULL_CHECK(capturer_system.audio_source, "Failed to create audio source");
-    ESP_LOGI(TAG, "Capture source: plain dev src (no AFE)");
+    ESP_LOGI(TAG, "Capture source: preconnect-capable dev src (no AFE)");
 
     esp_capture_cfg_t cfg = {
         .sync_mode = ESP_CAPTURE_SYNC_MODE_AUDIO,
@@ -174,50 +172,33 @@ void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples)
 }
 
 // ---------------------------------------------------------------------------
-// Raw mic access (SLEEPING state — bypasses the LiveKit capture pipeline)
+// Preconnect capture — kept continuously running once started. Mic audio
+// fans out to the LiveKit encoder (via the capture source API) and to the
+// wake-word detector (via the tap). There is no longer a single-owner gate.
 // ---------------------------------------------------------------------------
 
-static bool s_raw_mic_open = false;
-
-int media_start_raw_mic(void)
+esp_err_t media_start_preconnect_capture(void)
 {
-    if (s_raw_mic_open) return 0;
-    NULL_CHECK(capturer_system.record_device, "record_device not initialised");
-    esp_codec_dev_sample_info_t cfg = {
-        .sample_rate     = 16000,
-        .bits_per_sample = 16,
-        .channel         = 2,  /* stereo I2S RX; ch0 = mic, ch1 = unused */
-    };
-    int ret = esp_codec_dev_open(capturer_system.record_device, &cfg);
-    if (ret == 0) {
-        s_raw_mic_open = true;
-        ESP_LOGI(TAG, "[RAW-MIC] Opened for direct read (16kHz, 2ch, 16-bit)");
-    } else {
-        ESP_LOGE(TAG, "[RAW-MIC] esp_codec_dev_open failed: %d", ret);
+    esp_err_t err = mitr_preconnect_audio_src_start_prebuffer();
+    if (err != ESP_OK) {
+        mitr_preconnect_audio_src_reset_buffer();
+        ESP_LOGW(TAG, "[PRECONNECT] Failed to start prebuffer: %s", esp_err_to_name(err));
+        return err;
     }
-    return ret;
+    ESP_LOGI(TAG, "[PRECONNECT] Capture started");
+    return ESP_OK;
 }
 
-void media_stop_raw_mic(void)
+void media_stop_preconnect_capture(void)
 {
-    if (!s_raw_mic_open) return;
-    esp_codec_dev_close(capturer_system.record_device);
-    s_raw_mic_open = false;
-    ESP_LOGI(TAG, "[RAW-MIC] Closed");
+    mitr_preconnect_audio_src_stop_prebuffer();
+    mitr_preconnect_audio_src_reset_buffer();
+    ESP_LOGI(TAG, "[PRECONNECT] Capture stopped");
 }
 
-int media_read_mic_raw(int16_t *mono_buf, int n_samples)
+bool media_is_preconnect_capture_active(void)
 {
-    if (!s_raw_mic_open) return -1;
-    int16_t stereo[n_samples * 2];
-    int ret = esp_codec_dev_read(capturer_system.record_device,
-                                 stereo, n_samples * 2 * (int)sizeof(int16_t));
-    if (ret != 0) return ret;
-    /* Extract ch0 (mic) */
-    for (int i = 0; i < n_samples; i++) {
-        mono_buf[i] = stereo[i * 2];
-    }
-    return 0;
+    return mitr_preconnect_audio_src_is_prebuffering();
 }
 
 // ---------------------------------------------------------------------------

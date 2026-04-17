@@ -183,6 +183,23 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
     }
   });
 
+  // Mint a fresh participant JWT for the device's existing persistent room.
+  // Does NOT create a new session row or re-dispatch the agent — use it only
+  // when a session is already live and the token is approaching expiry.
+  app.post('/devices/token/refresh', { preHandler: deviceGuard }, async (request, reply) => {
+    try {
+      return reply.send(
+        await control.refreshLiveKitToken({
+          device: request.deviceAuth!.device
+        })
+      );
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message.includes('No active session') ? 409 : 500;
+      return reply.status(status).send({ error: message });
+    }
+  });
+
   app.post('/devices/heartbeat', { preHandler: deviceGuard }, async (request, reply) => {
     const parsed = deviceHeartbeatSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });

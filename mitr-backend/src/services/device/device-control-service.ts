@@ -664,14 +664,22 @@ export class DeviceControlService {
     identity: string;
     agentName: string;
     dispatchMetadata: Record<string, unknown>;
+    participantTokenExpiresAtMs: number;
   }> {
     const livekit = getRequiredLivekitConfig();
     if (!livekit) {
       throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
     }
 
-    const roomName = input.roomName?.trim() || `mitr-device-${slug(input.device.deviceId)}-${Date.now()}`;
-    const identity = `device-${slug(input.device.deviceId)}-${Math.floor(Math.random() * 10_000)}`;
+    // Persistent warm connection model: every token for a given device maps to
+    // the same stable room. The device joins this room once at boot and stays
+    // connected until reboot, so sessionId represents a connection lifecycle
+    // rather than a single wake-turn.
+    const stableRoomName = `mitr-persistent-${slug(input.device.deviceId)}`;
+    const roomName = input.roomName?.trim() || stableRoomName;
+    // Keep the identity stable per device so repeated token mints don't create
+    // ghost participants in the room.
+    const identity = `device-${slug(input.device.deviceId)}`;
     const metadataLanguage = readMetadataString(input.device.metadataJson, 'elderLanguage');
     const language = input.language?.trim() || metadataLanguage || DEFAULT_LANGUAGE;
     const firmwareVersion = input.firmwareVersion?.trim() || input.device.firmwareVersion || null;
@@ -681,6 +689,7 @@ export class DeviceControlService {
       identity,
       ttl: livekit.tokenTtlSec
     });
+    const participantTokenExpiresAtMs = Date.now() + livekit.tokenTtlSec * 1000;
     const videoGrant: VideoGrant = {
       room: roomName,
       roomJoin: true,
@@ -713,23 +722,58 @@ export class DeviceControlService {
 
     const participantToken = await at.toJwt();
 
-    const [session] = await db
-      .insert(deviceSessions)
-      .values({
-        deviceId: input.device.deviceId,
-        userId: input.device.userId,
-        familyId: input.device.familyId,
-        elderId: input.device.elderId,
-        claimedByUserId: input.device.claimedByUserId,
-        roomName,
-        participantIdentity: identity,
-        language,
-        firmwareVersion,
-        hardwareRev,
-        status: 'issued',
-        metadataJson: dispatchMetadata
-      })
-      .returning({ id: deviceSessions.id });
+    // Reuse an existing active session row if we already have one for this
+    // device + room. Under the persistent-warm model a device typically lives
+    // in a single session until reboot; tearing prior sessions down on every
+    // mint caused the device log churn (and the transient `used_prefetch=0`
+    // retry loop) documented in the 2026-04-17 trace.
+    const [existingSession] = await db
+      .select({ id: deviceSessions.id })
+      .from(deviceSessions)
+      .where(
+        and(
+          eq(deviceSessions.deviceId, input.device.deviceId),
+          eq(deviceSessions.roomName, roomName),
+          inArray(deviceSessions.status, ['issued', 'active'])
+        )
+      )
+      .orderBy(desc(deviceSessions.startedAt))
+      .limit(1);
+
+    let sessionId: string;
+    if (existingSession) {
+      await db
+        .update(deviceSessions)
+        .set({
+          participantIdentity: identity,
+          language,
+          firmwareVersion,
+          hardwareRev,
+          metadataJson: dispatchMetadata,
+          lastHeartbeatAt: new Date()
+        })
+        .where(eq(deviceSessions.id, existingSession.id));
+      sessionId = existingSession.id;
+    } else {
+      const [session] = await db
+        .insert(deviceSessions)
+        .values({
+          deviceId: input.device.deviceId,
+          userId: input.device.userId,
+          familyId: input.device.familyId,
+          elderId: input.device.elderId,
+          claimedByUserId: input.device.claimedByUserId,
+          roomName,
+          participantIdentity: identity,
+          language,
+          firmwareVersion,
+          hardwareRev,
+          status: 'issued',
+          metadataJson: dispatchMetadata
+        })
+        .returning({ id: deviceSessions.id });
+      sessionId = session.id;
+    }
 
     await db
       .update(devices)
@@ -742,13 +786,88 @@ export class DeviceControlService {
       .where(eq(devices.id, input.device.id));
 
     return {
-      sessionId: session.id,
+      sessionId,
       serverUrl: livekit.url,
       participantToken,
       roomName,
       identity,
       agentName: livekit.agentName,
-      dispatchMetadata
+      dispatchMetadata,
+      participantTokenExpiresAtMs
+    };
+  }
+
+  /**
+   * Mint a fresh participant JWT for a device's persistent room without
+   * creating a new session row. Used by the firmware's background token
+   * refresh task to extend credentials before they expire.
+   */
+  async refreshLiveKitToken(input: {
+    device: DeviceAuthRecord;
+  }): Promise<{
+    sessionId: string;
+    serverUrl: string;
+    participantToken: string;
+    roomName: string;
+    identity: string;
+    participantTokenExpiresAtMs: number;
+  }> {
+    const livekit = getRequiredLivekitConfig();
+    if (!livekit) {
+      throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
+    }
+
+    const roomName = `mitr-persistent-${slug(input.device.deviceId)}`;
+    const identity = `device-${slug(input.device.deviceId)}`;
+
+    const [existingSession] = await db
+      .select({ id: deviceSessions.id })
+      .from(deviceSessions)
+      .where(
+        and(
+          eq(deviceSessions.deviceId, input.device.deviceId),
+          eq(deviceSessions.roomName, roomName),
+          inArray(deviceSessions.status, ['issued', 'active'])
+        )
+      )
+      .orderBy(desc(deviceSessions.startedAt))
+      .limit(1);
+
+    if (!existingSession) {
+      throw new Error('No active session to refresh; call /devices/token instead');
+    }
+
+    const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
+      identity,
+      ttl: livekit.tokenTtlSec
+    });
+    const participantTokenExpiresAtMs = Date.now() + livekit.tokenTtlSec * 1000;
+    at.addGrant({
+      room: roomName,
+      roomJoin: true,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true
+    } as VideoGrant);
+
+    // No RoomConfiguration/agent-dispatch on refresh — the agent is already
+    // dispatched and living in the room. Re-dispatching would spawn a second
+    // agent instance.
+
+    const participantToken = await at.toJwt();
+
+    await db
+      .update(deviceSessions)
+      .set({ lastHeartbeatAt: new Date() })
+      .where(eq(deviceSessions.id, existingSession.id));
+
+    return {
+      sessionId: existingSession.id,
+      serverUrl: livekit.url,
+      participantToken,
+      roomName,
+      identity,
+      participantTokenExpiresAtMs
     };
   }
 

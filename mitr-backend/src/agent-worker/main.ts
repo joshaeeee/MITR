@@ -76,6 +76,8 @@ type DispatchMetadata = {
 type FlowType = 'satsang' | 'story' | 'companion';
 const FLOW_STATE_TOPIC = 'mitr.flow_state';
 const TOOL_EVENT_TOPIC = 'mitr.tool_event';
+const DEVICE_CONTROL_TOPIC = 'mitr.device_control';
+const DEVICE_EVENT_TOPIC = 'mitr.device_event';
 const NEWS_AUTO_FOLLOWUP_DELAY_MS = 50;
 const NUDGE_PLAYBACK_STATUS_TIMEOUT_MS = 20000;
 const NUDGE_PLAYBACK_MAX_ATTEMPTS = 2;
@@ -1092,6 +1094,33 @@ export default defineAgent({
 
     };
 
+    // Signals the end of a conversational turn to the device so it can re-mute
+    // the mic and resume wake-word listening without tearing down the LiveKit
+    // room. Called when the agent returns to idle/listening after speaking.
+    const publishTurnEnded = (reason: string) => {
+      const localParticipant = ctx.room.localParticipant;
+      if (!localParticipant) return;
+      const body = {
+        type: 'turn_ended',
+        action: 'turn_ended',
+        reason,
+        sessionId,
+        ts: Date.now()
+      };
+      void localParticipant
+        .publishData(new TextEncoder().encode(JSON.stringify(body)), {
+          reliable: true,
+          topic: DEVICE_CONTROL_TOPIC
+        })
+        .catch((error) => {
+          logger.warn('Failed to publish turn_ended data packet', {
+            sessionId,
+            reason,
+            error: (error as Error).message
+          });
+        });
+    };
+
     const dispatchNextQueuedNudgePlayback = (force = false) => {
       if (!force && !canStartQueuedNudgePlayback()) return;
       if (activeNudgePlayback !== null) return;
@@ -1823,6 +1852,7 @@ export default defineAgent({
     });
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (event) => {
+      const previousAgentState = latestAgentState;
       latestAgentState = event.newState;
       const turn = resolveTurnForTimestamp(event.createdAt);
       if (turn && event.newState === 'thinking' && !turn.thinkingAt) {
@@ -1832,8 +1862,23 @@ export default defineAgent({
       if (turn && event.newState === 'speaking' && !turn.firstAudioAt) {
         turn.firstAudioAt = event.createdAt;
         logTurnMarker(turn, 'first_audio_playback_started', event.createdAt);
+        if (lastWakeAtMs !== null) {
+          const wakeToFirstAgentAudioMs = Date.now() - lastWakeAtMs;
+          logger.info('wake_to_first_agent_audio_ms', {
+            sessionId,
+            wakeToFirstAgentAudioMs
+          });
+          // Consume so we don't re-log the same wake for follow-up turns.
+          lastWakeAtMs = null;
+        }
       }
       if (event.newState === 'idle' || event.newState === 'listening') {
+        // End-of-turn signal: the agent finished speaking AND is no longer
+        // thinking. Only emit on the speaking → idle/listening transition so
+        // we don't double-fire for idle→listening or listening→idle noise.
+        if (previousAgentState === 'speaking') {
+          publishTurnEnded('agent_reply_complete');
+        }
         dispatchNextQueuedNudgePlayback();
         scheduleAutoAdvance(session);
         flushFollowups();
@@ -1921,7 +1966,32 @@ export default defineAgent({
     });
 
     await ctx.connect();
+    // Latest wake timestamp from the device — used to measure end-to-end
+    // "wake → first agent audio" latency, the core UX metric for the
+    // persistent-warm architecture.
+    let lastWakeAtMs: number | null = null;
+
     ctx.room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+      if (topic === DEVICE_EVENT_TOPIC) {
+        try {
+          const decoded = new TextDecoder().decode(payload);
+          const packet = JSON.parse(decoded) as { type?: string; wakeAtMs?: number };
+          if (packet?.type === 'wake') {
+            lastWakeAtMs = Date.now();
+            logger.info('Device wake event received', {
+              sessionId,
+              deviceWakeAtMs: packet.wakeAtMs,
+              agentRxAtMs: lastWakeAtMs
+            });
+          }
+        } catch (error) {
+          logger.debug('Failed to parse device_event data packet', {
+            sessionId,
+            error: (error as Error).message
+          });
+        }
+        return;
+      }
       if (topic !== TOOL_EVENT_TOPIC) return;
       if (participantIdentity && participant?.identity && participant.identity !== participantIdentity) return;
       try {
