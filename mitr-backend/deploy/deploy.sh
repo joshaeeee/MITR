@@ -25,36 +25,6 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
-validate_env_file() {
-  local file="$1"
-  python3 - "$file" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-env_file = Path(sys.argv[1])
-assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-for line_no, raw_line in enumerate(env_file.read_text().splitlines(), start=1):
-    line = raw_line.strip()
-    if not line or line.startswith("#"):
-        continue
-    if assignment.match(line):
-        continue
-    print(
-        f"[deploy] invalid env line {line_no} in {env_file}: expected KEY=VALUE, got: {raw_line}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-PY
-}
-
-validate_env_file "${ENV_FILE}"
-
-set -a
-. "${ENV_FILE}"
-set +a
-
 if [[ -n "${GHCR_USERNAME:-}" && -n "${GHCR_TOKEN:-}" ]]; then
   echo "[deploy] logging into ghcr.io as ${GHCR_USERNAME}"
   echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
