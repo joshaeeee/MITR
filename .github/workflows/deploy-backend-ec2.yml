@@ -338,19 +338,7 @@ jobs:
             echo "[deploy] found deploy/.env.prod"
 
             normalize_env() {
-              python3 -c 'import re; from pathlib import Path; p = Path("deploy/.env.prod"); text = p.read_text(encoding="utf-8-sig").replace("\\n", chr(10)); pattern = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$"); ordered = []; values = {}
-for raw in text.splitlines():
-    line = raw.rstrip(chr(13)).strip()
-    if not line or line.startswith("#"):
-        continue
-    m = pattern.match(line)
-    if not m:
-        continue
-    k, v = m.groups()
-    if k not in values:
-        ordered.append(k)
-    values[k] = v
-p.write_text(chr(10).join(f"{k}={values[k]}" for k in ordered) + chr(10))'
+              python3 -c 'import re; from pathlib import Path; p = Path("deploy/.env.prod"); text = p.read_text(encoding="utf-8-sig").replace("\\n", chr(10)); entries = {m.group(1): f"{m.group(1)}={m.group(2)}" for m in re.finditer(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", text, re.M)}; p.write_text(chr(10).join(entries.values()) + chr(10))'
               echo "[deploy] normalized deploy/.env.prod"
             }
 
