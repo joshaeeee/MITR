@@ -337,6 +337,24 @@ jobs:
             fi
             echo "[deploy] found deploy/.env.prod"
 
+            normalize_env() {
+              python3 -c 'from pathlib import Path; import re; p = Path("deploy/.env.prod"); pattern = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$"); ordered = []; values = {}; lines = p.read_text(encoding="utf-8-sig").splitlines(); 
+for raw in lines:
+    line = raw.rstrip("\r")
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    match = pattern.match(stripped)
+    if not match:
+        continue
+    key, value = match.groups()
+    if key not in values:
+        ordered.append(key)
+    values[key] = value
+p.write_text("\\n".join(f"{key}={values[key]}" for key in ordered) + "\\n")'
+              echo "[deploy] normalized deploy/.env.prod"
+            }
+
             update_env() {
               key="$1"
               value="$2"
@@ -344,6 +362,7 @@ jobs:
               echo "[deploy] set ${key}"
             }
 
+            normalize_env
             update_env "API_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
             update_env "AGENT_IMAGE" "${{ needs.build-agent.outputs.image_ref }}"
             update_env "WAKEWORD_WORKER_IMAGE" "${{ needs.build-wakeword-worker.outputs.image_ref }}"
