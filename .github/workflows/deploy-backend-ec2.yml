@@ -345,7 +345,7 @@ jobs:
             update_env() {
               key="$1"
               value="$2"
-              if grep -qE "^${key}=" deploy/.env.prod; then
+              if [ "$(grep -cE "^${key}=" deploy/.env.prod || true)" -gt 0 ]; then
                 sed -i.bak "s#^${key}=.*#${key}=${value}#g" deploy/.env.prod
               else
                 echo "${key}=${value}" >> deploy/.env.prod
