@@ -4,7 +4,6 @@ idf_component_register(
         "example.c"
         "board.c"
         "media.c"
-        "preconnect_audio_src.c"
         "device_api.c"
         "device_storage.c"
         "boot_feedback.c"
@@ -12,7 +11,6 @@ idf_component_register(
         "provisioning.c"
         "ota_manager.c"
         "atomic_compat.c"
-        "wake_word.c"
         "sounds.c"
     INCLUDE_DIRS
         "."
@@ -36,6 +34,5 @@ idf_component_register(
         tempotian__av_render
         tempotian__codec_board
         tempotian__media_lib_sal
-        esp-sr
     WHOLE_ARCHIVE
 )

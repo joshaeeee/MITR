@@ -17,6 +17,7 @@ import { registerDeviceRoutes } from './routes/device.js';
 import { registerAgentRoutes } from './routes/agent.js';
 import { registerHomeRoutes } from './routes/home.js';
 import { registerNotificationsRoutes } from './routes/notifications.js';
+import { registerInternalDeviceSessionRoutes } from './routes/internal-device-session.js';
 import { ProfileService } from './services/profile/profile-service.js';
 import { SessionStore } from './services/session-store.js';
 import { SessionRecoveryService } from './services/long-session/session-recovery-service.js';
@@ -96,6 +97,7 @@ const bootstrap = async (): Promise<void> => {
   registerAgentRoutes(app, auth);
   registerHomeRoutes(app, auth);
   registerNotificationsRoutes(app, auth);
+  registerInternalDeviceSessionRoutes(app);
   registerSessionRoutes(app, store, profiles, auth);
 
   await db.execute(sql`select 1`);

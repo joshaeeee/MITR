@@ -34,7 +34,6 @@ typedef struct {
     const char *ota_state;
     const char *ota_target_version;
     bool last_boot_ok;
-    bool muted;
     bool speaker_muted;
     int speaker_volume;
 } mitr_device_heartbeat_t;

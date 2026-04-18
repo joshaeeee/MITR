@@ -1,5 +1,6 @@
 import * as sarvam from '@livekit/agents-plugin-sarvam';
 import type { PipelineLogger } from './types.js';
+import { sessionConfig } from '../../config/session-config.js';
 export const SILERO_VAD_USERDATA_KEY = 'silero_vad';
 
 type VoiceOptionsShape = {
@@ -8,13 +9,16 @@ type VoiceOptionsShape = {
   minInterruptionDuration: number;
   minInterruptionWords: number;
   minEndpointingDelay?: number;
-  userAwayTimeout?: null;
+  userAwayTimeout?: number | null;
 };
 
 export const withDeviceVoiceOptions = (
   voiceOptions: VoiceOptionsShape,
   isDeviceSession: boolean
-): VoiceOptionsShape => (isDeviceSession ? { ...voiceOptions, userAwayTimeout: null } : voiceOptions);
+): VoiceOptionsShape =>
+  isDeviceSession
+    ? { ...voiceOptions, userAwayTimeout: sessionConfig.deviceConversationIdleTimeoutSec }
+    : voiceOptions;
 
 export const normalizeSarvamLanguageCode = (language: string): string => {
   const trimmed = language.trim();

@@ -43,11 +43,13 @@ running_image() {
 
 PREV_API_IMAGE="$(running_image mitr-api)"
 PREV_AGENT_IMAGE="$(running_image mitr-agent-worker)"
+PREV_WAKEWORD_WORKER_IMAGE="$(running_image mitr-wakeword-worker)"
 PREV_REMINDER_IMAGE="$(running_image mitr-reminder-worker)"
 
 echo "[deploy] previous images:"
 echo "  api=${PREV_API_IMAGE:-<none>}"
 echo "  agent=${PREV_AGENT_IMAGE:-<none>}"
+echo "  wakeword-worker=${PREV_WAKEWORD_WORKER_IMAGE:-<none>}"
 echo "  reminder=${PREV_REMINDER_IMAGE:-<none>}"
 
 echo "[deploy] pulling latest images"
@@ -79,9 +81,10 @@ if [[ "${RUN_DB_MIGRATIONS}" == "true" && "${ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIO
   exit 1
 fi
 
-if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_AGENT_IMAGE}" && -n "${PREV_REMINDER_IMAGE}" ]]; then
+if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_AGENT_IMAGE}" && -n "${PREV_WAKEWORD_WORKER_IMAGE}" && -n "${PREV_REMINDER_IMAGE}" ]]; then
   API_IMAGE="${PREV_API_IMAGE}" \
   AGENT_IMAGE="${PREV_AGENT_IMAGE}" \
+  WAKEWORD_WORKER_IMAGE="${PREV_WAKEWORD_WORKER_IMAGE}" \
   REMINDER_IMAGE="${PREV_REMINDER_IMAGE}" \
   docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans
 

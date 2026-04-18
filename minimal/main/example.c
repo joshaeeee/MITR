@@ -17,6 +17,8 @@
 #include "example.h"
 #include "media.h"
 #include "ota_manager.h"
+#include "boot_feedback.h"
+#include "sounds.h"
 
 static const char *TAG = "mitr_livekit_device";
 static const char *DEVICE_EVENT_TOPIC = "mitr.device_event";
@@ -31,6 +33,7 @@ typedef struct {
     bool session_end_sent;
     bool restart_requested;
     bool last_boot_ok;
+    bool conversation_active;
     TaskHandle_t heartbeat_task;
     int reconnect_attempt_count;
     int reconnect_window_sec;
@@ -46,8 +49,6 @@ static session_state_t session = {
     .heartbeat_interval_sec = CONFIG_MITR_DEVICE_HEARTBEAT_INTERVAL_SEC,
     .telemetry_backoff_sec = 30,
 };
-
-static volatile bool s_turn_ended_pending = false;
 
 static int64_t now_ms(void)
 {
@@ -81,7 +82,7 @@ static void publish_device_event(const char *event_type, const char *detail)
     int written = snprintf(
         payload_json,
         sizeof(payload_json),
-        "{\"eventType\":\"%s\",\"detail\":\"%s\",\"deviceId\":\"%s\",\"roomName\":\"%s\",\"connectionState\":\"%s\",\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"muted\":%s,\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\"}",
+        "{\"eventType\":\"%s\",\"detail\":\"%s\",\"deviceId\":\"%s\",\"roomName\":\"%s\",\"connectionState\":\"%s\",\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"conversationActive\":%s,\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\"}",
         event_type,
         detail ? detail : "",
         session.token.device_id ? session.token.device_id : mitr_device_device_id(),
@@ -89,7 +90,7 @@ static void publish_device_event(const char *event_type, const char *detail)
         livekit_connection_state_str(session.connection_state),
         session.reconnect_attempt_count,
         session.last_failure_reason,
-        media_is_input_muted() ? "true" : "false",
+        session.conversation_active ? "true" : "false",
         mitr_ota_state(),
         mitr_ota_target_version());
     if (!(written > 0 && written < (int)sizeof(payload_json))) {
@@ -214,7 +215,6 @@ static void heartbeat_task(void *arg)
                 .ota_state = mitr_ota_state(),
                 .ota_target_version = mitr_ota_target_version(),
                 .last_boot_ok = session.last_boot_ok,
-                .muted = media_is_input_muted(),
                 .speaker_muted = media_is_output_muted(),
                 .speaker_volume = media_get_output_volume(),
             };
@@ -244,17 +244,15 @@ static void heartbeat_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static esp_err_t set_device_muted(bool muted, const char *source)
+static void set_conversation_active(bool active, const char *reason, bool play_chime)
 {
-    esp_err_t err = media_set_input_muted(muted);
-    if (err != ESP_OK) {
-        return err;
+    session.conversation_active = active;
+    mitr_boot_feedback_set_state(active ? MITR_BOOT_STATE_ACTIVE_SESSION : MITR_BOOT_STATE_READY_CONNECTED);
+    if (active && play_chime) {
+        sounds_play_chime();
     }
-
-    publish_device_event("mute_changed", muted ? "muted" : "unmuted");
-    report_telemetry("mute_changed", "info", muted ? "device_muted" : "device_unmuted");
-    ESP_LOGI(TAG, "Input mute changed via %s: muted=%d", source ? source : "unknown", muted);
-    return ESP_OK;
+    publish_device_event(active ? "conversation_started" : "conversation_ended", reason);
+    report_telemetry(active ? "conversation_started" : "conversation_ended", "info", reason ? reason : "");
 }
 
 static void request_session_restart(const char *reason)
@@ -293,6 +291,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             report_telemetry("room_reconnecting", "warn", "LiveKit room reconnecting");
             break;
         case LIVEKIT_CONNECTION_STATE_FAILED:
+            session.conversation_active = false;
             if (session.last_failure_reason[0] == '\0') {
                 copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "room_failed");
             }
@@ -302,6 +301,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             report_session_end("room_failed");
             break;
         case LIVEKIT_CONNECTION_STATE_DISCONNECTED:
+            session.conversation_active = false;
             if (session.last_failure_reason[0] == '\0') {
                 copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "room_disconnected");
             }
@@ -349,79 +349,41 @@ static void handle_device_control_message(const cJSON *root)
     const char *action_str = (cJSON_IsString(action) && action->valuestring) ? action->valuestring : NULL;
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
     const char *type_str = (cJSON_IsString(type) && type->valuestring) ? type->valuestring : NULL;
+    const char *message_type = action_str ? action_str : type_str;
 
-    /* Agent signals a completed conversational turn (user stopped speaking
-     * and the agent finished replying). The main loop uses this to re-mute
-     * the mic and re-arm wake-word detection without tearing down the room. */
-    if ((action_str && strcmp(action_str, "turn_ended") == 0) ||
-        (type_str && strcmp(type_str, "turn_ended") == 0)) {
-        s_turn_ended_pending = true;
+    if (!message_type) {
         return;
     }
 
-    if (!action_str) {
+    if (strcmp(message_type, "conversation_started") == 0) {
+        const cJSON *play_chime = cJSON_GetObjectItemCaseSensitive(root, "playChime");
+        const cJSON *wakeword = cJSON_GetObjectItemCaseSensitive(root, "wakeword");
+        const char *reason = (cJSON_IsString(wakeword) && wakeword->valuestring) ? wakeword->valuestring : "wake_detected";
+        set_conversation_active(true, reason, cJSON_IsTrue(play_chime));
         return;
     }
 
-    if (strcmp(action_str, "set_mute") == 0) {
-        const cJSON *muted = cJSON_GetObjectItemCaseSensitive(root, "muted");
-        if (cJSON_IsBool(muted)) {
-            esp_err_t err = set_device_muted(cJSON_IsTrue(muted), "data_channel");
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to apply mute from data channel: %s", esp_err_to_name(err));
-            }
-        }
+    if (strcmp(message_type, "conversation_ended") == 0) {
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
+        const char *reason_str = (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "conversation_ended";
+        set_conversation_active(false, reason_str, false);
         return;
     }
 
-    if (strcmp(action_str, "restart_session") == 0) {
+    if (strcmp(message_type, "conversation_error") == 0) {
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
+        const char *reason_str = (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "conversation_error";
+        session.conversation_active = false;
+        mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
+        publish_device_event("conversation_error", reason_str);
+        report_telemetry("conversation_error", "warn", reason_str);
+        return;
+    }
+
+    if (strcmp(message_type, "restart_session") == 0) {
         request_session_restart("remote_restart");
         return;
     }
-}
-
-void publish_wake_event(int64_t wake_at_ms)
-{
-    if (room_handle == NULL) {
-        return;
-    }
-
-    char payload[160];
-    int written = snprintf(
-        payload,
-        sizeof(payload),
-        "{\"type\":\"wake\",\"wakeAtMs\":%lld,\"deviceId\":\"%s\"}",
-        (long long)wake_at_ms,
-        session.token.device_id ? session.token.device_id : mitr_device_device_id());
-    if (!(written > 0 && written < (int)sizeof(payload))) {
-        return;
-    }
-
-    livekit_data_payload_t data_payload = {
-        .bytes = (uint8_t *)payload,
-        .size = strlen(payload),
-    };
-    livekit_data_publish_options_t options = {
-        .payload = &data_payload,
-        .topic = (char *)DEVICE_EVENT_TOPIC,
-        .lossy = false,
-        .destination_identities = NULL,
-        .destination_identities_count = 0,
-    };
-
-    livekit_err_t err = livekit_room_publish_data(room_handle, &options);
-    if (err != LIVEKIT_ERR_NONE) {
-        ESP_LOGW(TAG, "Failed to publish wake event: %d", err);
-    }
-}
-
-bool consume_turn_ended(void)
-{
-    if (!s_turn_ended_pending) {
-        return false;
-    }
-    s_turn_ended_pending = false;
-    return true;
 }
 
 static void on_data_received(const livekit_data_received_t *data, void *ctx)
@@ -467,7 +429,7 @@ static void rpc_get_device_status(const livekit_rpc_invocation_t *invocation, vo
     snprintf(
         payload,
         sizeof(payload),
-        "{\"deviceId\":\"%s\",\"userId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"language\":\"%s\",\"roomName\":\"%s\",\"connectionState\":\"%s\",\"muted\":%s,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\"}",
+        "{\"deviceId\":\"%s\",\"userId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"language\":\"%s\",\"roomName\":\"%s\",\"connectionState\":\"%s\",\"conversationActive\":%s,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\"}",
         session.token.device_id ? session.token.device_id : "",
         session.token.user_id ? session.token.user_id : "",
         mitr_device_firmware_version(),
@@ -475,7 +437,7 @@ static void rpc_get_device_status(const livekit_rpc_invocation_t *invocation, vo
         mitr_device_language(),
         session.token.room_name ? session.token.room_name : "",
         livekit_connection_state_str(session.connection_state),
-        media_is_input_muted() ? "true" : "false",
+        session.conversation_active ? "true" : "false",
         session.reconnect_attempt_count,
         session.last_failure_reason,
         mitr_ota_state(),
@@ -489,13 +451,13 @@ static void rpc_get_diagnostics(const livekit_rpc_invocation_t *invocation, void
     snprintf(
         payload,
         sizeof(payload),
-        "{\"deviceId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"connectionState\":\"%s\",\"agentJoined\":%s,\"muted\":%s,\"speakerMuted\":%s,\"speakerVolume\":%d,\"wifiRssiDbm\":%d,\"freeHeapBytes\":%u,\"freePsramBytes\":%u,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"lastEndReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\",\"otaLastError\":\"%s\",\"otaPendingVerify\":%s,\"otaValidationHeartbeats\":%d}",
+        "{\"deviceId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"connectionState\":\"%s\",\"agentJoined\":%s,\"conversationActive\":%s,\"speakerMuted\":%s,\"speakerVolume\":%d,\"wifiRssiDbm\":%d,\"freeHeapBytes\":%u,\"freePsramBytes\":%u,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"lastEndReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\",\"otaLastError\":\"%s\",\"otaPendingVerify\":%s,\"otaValidationHeartbeats\":%d}",
         session.token.device_id ? session.token.device_id : mitr_device_device_id(),
         mitr_device_firmware_version(),
         mitr_device_hardware_rev(),
         livekit_connection_state_str(session.connection_state),
         session.agent_joined ? "true" : "false",
-        media_is_input_muted() ? "true" : "false",
+        session.conversation_active ? "true" : "false",
         media_is_output_muted() ? "true" : "false",
         media_get_output_volume(),
         current_wifi_rssi_dbm(),
@@ -509,38 +471,6 @@ static void rpc_get_diagnostics(const livekit_rpc_invocation_t *invocation, void
         mitr_ota_last_error(),
         mitr_ota_pending_verify() ? "true" : "false",
         mitr_ota_validation_heartbeat_count());
-    livekit_rpc_return_ok(payload);
-}
-
-static void rpc_set_mute(const livekit_rpc_invocation_t *invocation, void *ctx)
-{
-    if (invocation->payload == NULL) {
-        livekit_rpc_return_error("Missing payload");
-        return;
-    }
-
-    cJSON *root = cJSON_Parse(invocation->payload);
-    if (!root) {
-        livekit_rpc_return_error("Invalid JSON");
-        return;
-    }
-
-    const cJSON *muted = cJSON_GetObjectItemCaseSensitive(root, "muted");
-    if (!cJSON_IsBool(muted)) {
-        cJSON_Delete(root);
-        livekit_rpc_return_error("Unexpected JSON format");
-        return;
-    }
-
-    esp_err_t err = set_device_muted(cJSON_IsTrue(muted), "rpc");
-    cJSON_Delete(root);
-    if (err != ESP_OK) {
-        livekit_rpc_return_error("Failed to apply mute");
-        return;
-    }
-
-    char payload[64];
-    snprintf(payload, sizeof(payload), "{\"ok\":true,\"muted\":%s}", media_is_input_muted() ? "true" : "false");
     livekit_rpc_return_ok(payload);
 }
 
@@ -564,6 +494,7 @@ static void cleanup_room(void)
 
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
     session.agent_joined = false;
+    session.conversation_active = false;
     session.session_end_sent = false;
     session.restart_requested = false;
     mitr_device_token_response_free(&session.token);
@@ -619,7 +550,6 @@ static bool create_and_connect_room(void)
     livekit_room_rpc_register(room_handle, "mitr_ping", rpc_ping);
     livekit_room_rpc_register(room_handle, "mitr_get_device_status", rpc_get_device_status);
     livekit_room_rpc_register(room_handle, "mitr_get_diagnostics", rpc_get_diagnostics);
-    livekit_room_rpc_register(room_handle, "mitr_set_mute", rpc_set_mute);
     livekit_room_rpc_register(room_handle, "mitr_restart_session", rpc_restart_session);
 
     session.connection_state = LIVEKIT_CONNECTION_STATE_CONNECTING;
@@ -659,7 +589,7 @@ bool join_room(void)
     session.last_failure_reason[0] = '\0';
     session.last_end_reason[0] = '\0';
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
-    s_turn_ended_pending = false;
+    session.conversation_active = false;
 
     esp_err_t token_err = mitr_device_request_token(&session.token);
     if (token_err != ESP_OK) {
@@ -693,6 +623,11 @@ bool session_is_active(void)
            !session.restart_requested &&
            session.connection_state != LIVEKIT_CONNECTION_STATE_FAILED &&
            session.connection_state != LIVEKIT_CONNECTION_STATE_DISCONNECTED;
+}
+
+bool session_is_conversation_active(void)
+{
+    return room_handle != NULL && session.conversation_active;
 }
 
 int session_reconnect_window_sec(void)

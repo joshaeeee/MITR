@@ -452,7 +452,6 @@ esp_err_t mitr_device_send_heartbeat(
             cJSON_AddStringToObject(metadata, "otaTargetVersion", heartbeat->ota_target_version);
         }
         cJSON_AddBoolToObject(metadata, "lastBootOk", heartbeat->last_boot_ok);
-        cJSON_AddBoolToObject(metadata, "muted", heartbeat->muted);
         cJSON_AddBoolToObject(metadata, "speakerMuted", heartbeat->speaker_muted);
         cJSON_AddNumberToObject(metadata, "speakerVolume", heartbeat->speaker_volume);
         cJSON_AddItemToObject(body, "metadata", metadata);

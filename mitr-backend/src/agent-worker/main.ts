@@ -61,6 +61,7 @@ import { pushLatencyRecord } from '../services/latency-redis.js';
 dotenv.config({ path: '.env.local' });
 
 type DispatchMetadata = {
+  session_id?: string;
   user_id?: string;
   family_id?: string | null;
   elder_id?: string | null;
@@ -77,7 +78,6 @@ type FlowType = 'satsang' | 'story' | 'companion';
 const FLOW_STATE_TOPIC = 'mitr.flow_state';
 const TOOL_EVENT_TOPIC = 'mitr.tool_event';
 const DEVICE_CONTROL_TOPIC = 'mitr.device_control';
-const DEVICE_EVENT_TOPIC = 'mitr.device_event';
 const NEWS_AUTO_FOLLOWUP_DELAY_MS = 50;
 const NUDGE_PLAYBACK_STATUS_TIMEOUT_MS = 20000;
 const NUDGE_PLAYBACK_MAX_ATTEMPTS = 2;
@@ -348,6 +348,24 @@ const asNonEmptyString = (value: unknown): string | undefined => {
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+};
+
+const getInternalApiBaseUrl = (): string => {
+  const configured = env.INTERNAL_API_BASE_URL ?? env.API_PUBLIC_BASE_URL;
+  if (configured && configured.trim().length > 0) {
+    return configured.replace(/\/+$/, '');
+  }
+  return 'http://127.0.0.1:8080';
+};
+
+const buildInternalHeaders = (): Record<string, string> => {
+  if (!env.INTERNAL_SERVICE_TOKEN) {
+    throw new Error('INTERNAL_SERVICE_TOKEN is required for device session orchestration');
+  }
+  return {
+    'content-type': 'application/json',
+    'x-internal-service-token': env.INTERNAL_SERVICE_TOKEN
+  };
 };
 
 const truncate = (value: string, max: number): string => {
@@ -687,7 +705,8 @@ export default defineAgent({
     });
     const roomNameFromJob = (ctx.job as { room?: { name?: string } }).room?.name;
     const roomName = roomNameFromJob ?? (ctx.room as { name?: string } | undefined)?.name ?? 'unknown-room';
-    const sessionId = `${roomName}:${userId}`;
+    const sessionId = metadata.session_id ?? `${roomName}:${userId}`;
+    const isManagedDeviceSession = isEsp32Session && !!metadata.session_id;
     let lastFinalTranscript: string | null = null;
     const MAX_AUTO_ADVANCE_TURNS = 6;
     const autoFlowState: {
@@ -720,6 +739,7 @@ export default defineAgent({
     let lastUserSpeechStoppedAt: number | null = null;
     const turnLatencyById = new Map<number, TurnLatencyTrace>();
     const speechToTurnId = new Map<string, number>();
+    let lifecycleCompletionSent = false;
 
     if (isEsp32Session) {
       logger.info('ESP32 session detected; disabling server-side background voice cancellation', {
@@ -732,6 +752,60 @@ export default defineAgent({
         hardwareRev
       });
     }
+
+    const publishDeviceControl = (type: 'conversation_ended' | 'conversation_error', payload: Record<string, unknown>) => {
+      const localParticipant = ctx.room.localParticipant;
+      if (!localParticipant) return;
+      const body = {
+        type,
+        action: type,
+        sessionId,
+        ts: Date.now(),
+        ...payload
+      };
+      void localParticipant
+        .publishData(new TextEncoder().encode(JSON.stringify(body)), {
+          reliable: true,
+          topic: DEVICE_CONTROL_TOPIC
+        })
+        .catch((error) => {
+          logger.warn('Failed to publish device control data packet', {
+            sessionId,
+            type,
+            error: (error as Error).message
+          });
+        });
+    };
+
+    const postDeviceSessionUpdate = async (
+      path: 'conversation-active' | 'conversation-ended' | 'conversation-error',
+      payload?: Record<string, unknown>
+    ): Promise<void> => {
+      if (!isManagedDeviceSession) return;
+      const response = await fetch(`${getInternalApiBaseUrl()}/internal/device-sessions/${sessionId}/${path}`, {
+        method: 'POST',
+        headers: buildInternalHeaders(),
+        body: JSON.stringify(payload ?? {})
+      });
+      if (!response.ok) {
+        throw new Error(`Internal device-session update failed (${path}): ${response.status}`);
+      }
+    };
+
+    const completeManagedDeviceConversation = (type: 'conversation_ended' | 'conversation_error', reason: string) => {
+      if (!isManagedDeviceSession || lifecycleCompletionSent) return;
+      lifecycleCompletionSent = true;
+      publishDeviceControl(type, { reason });
+      const path = type === 'conversation_ended' ? 'conversation-ended' : 'conversation-error';
+      void postDeviceSessionUpdate(path, { reason }).catch((error) => {
+        logger.warn('Failed to update managed device conversation state', {
+          sessionId,
+          type,
+          reason,
+          error: (error as Error).message
+        });
+      });
+    };
 
     const resolveTurnForTimestamp = (timestamp: number): TurnLatencyTrace | null => {
       const active = activeTurnId ? turnLatencyById.get(activeTurnId) ?? null : null;
@@ -1092,33 +1166,6 @@ export default defineAgent({
           });
         });
 
-    };
-
-    // Signals the end of a conversational turn to the device so it can re-mute
-    // the mic and resume wake-word listening without tearing down the LiveKit
-    // room. Called when the agent returns to idle/listening after speaking.
-    const publishTurnEnded = (reason: string) => {
-      const localParticipant = ctx.room.localParticipant;
-      if (!localParticipant) return;
-      const body = {
-        type: 'turn_ended',
-        action: 'turn_ended',
-        reason,
-        sessionId,
-        ts: Date.now()
-      };
-      void localParticipant
-        .publishData(new TextEncoder().encode(JSON.stringify(body)), {
-          reliable: true,
-          topic: DEVICE_CONTROL_TOPIC
-        })
-        .catch((error) => {
-          logger.warn('Failed to publish turn_ended data packet', {
-            sessionId,
-            reason,
-            error: (error as Error).message
-          });
-        });
     };
 
     const dispatchNextQueuedNudgePlayback = (force = false) => {
@@ -1852,7 +1899,6 @@ export default defineAgent({
     });
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (event) => {
-      const previousAgentState = latestAgentState;
       latestAgentState = event.newState;
       const turn = resolveTurnForTimestamp(event.createdAt);
       if (turn && event.newState === 'thinking' && !turn.thinkingAt) {
@@ -1862,23 +1908,8 @@ export default defineAgent({
       if (turn && event.newState === 'speaking' && !turn.firstAudioAt) {
         turn.firstAudioAt = event.createdAt;
         logTurnMarker(turn, 'first_audio_playback_started', event.createdAt);
-        if (lastWakeAtMs !== null) {
-          const wakeToFirstAgentAudioMs = Date.now() - lastWakeAtMs;
-          logger.info('wake_to_first_agent_audio_ms', {
-            sessionId,
-            wakeToFirstAgentAudioMs
-          });
-          // Consume so we don't re-log the same wake for follow-up turns.
-          lastWakeAtMs = null;
-        }
       }
       if (event.newState === 'idle' || event.newState === 'listening') {
-        // End-of-turn signal: the agent finished speaking AND is no longer
-        // thinking. Only emit on the speaking → idle/listening transition so
-        // we don't double-fire for idle→listening or listening→idle noise.
-        if (previousAgentState === 'speaking') {
-          publishTurnEnded('agent_reply_complete');
-        }
         dispatchNextQueuedNudgePlayback();
         scheduleAutoAdvance(session);
         flushFollowups();
@@ -1912,6 +1943,10 @@ export default defineAgent({
         source: String((event.source as { constructor?: { name?: string } })?.constructor?.name ?? 'unknown'),
         error: (event.error as Error)?.message ?? String(event.error)
       });
+      completeManagedDeviceConversation(
+        'conversation_error',
+        (event.error as Error)?.message ?? 'agent_session_error'
+      );
     });
 
     session.on(voice.AgentSessionEventTypes.Close, (event) => {
@@ -1940,17 +1975,17 @@ export default defineAgent({
           endedAt: event.createdAt,
           usageSummaryJson: {
             usage: usageCollector.getSummary(),
-          sessionReason: event.reason,
-          language,
-          pipeline: selectedVoicePipeline,
-          roomName,
-          familyId,
-          elderId,
-          claimedByUserId,
-          deviceId
-        },
-        sessionReason: event.reason
-      })
+            sessionReason: event.reason,
+            language,
+            pipeline: selectedVoicePipeline,
+            roomName,
+            familyId,
+            elderId,
+            claimedByUserId,
+            deviceId
+          },
+          sessionReason: event.reason
+        })
         .catch((error) => {
           logger.warn('Failed to persist device usage session', {
             sessionId,
@@ -1963,35 +1998,12 @@ export default defineAgent({
         reason: event.reason,
         usage: usageCollector.getSummary()
       });
+      completeManagedDeviceConversation('conversation_ended', String(event.reason ?? 'session_closed'));
     });
 
     await ctx.connect();
-    // Latest wake timestamp from the device — used to measure end-to-end
-    // "wake → first agent audio" latency, the core UX metric for the
-    // persistent-warm architecture.
-    let lastWakeAtMs: number | null = null;
 
     ctx.room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
-      if (topic === DEVICE_EVENT_TOPIC) {
-        try {
-          const decoded = new TextDecoder().decode(payload);
-          const packet = JSON.parse(decoded) as { type?: string; wakeAtMs?: number };
-          if (packet?.type === 'wake') {
-            lastWakeAtMs = Date.now();
-            logger.info('Device wake event received', {
-              sessionId,
-              deviceWakeAtMs: packet.wakeAtMs,
-              agentRxAtMs: lastWakeAtMs
-            });
-          }
-        } catch (error) {
-          logger.debug('Failed to parse device_event data packet', {
-            sessionId,
-            error: (error as Error).message
-          });
-        }
-        return;
-      }
       if (topic !== TOOL_EVENT_TOPIC) return;
       if (participantIdentity && participant?.identity && participant.identity !== participantIdentity) return;
       try {
@@ -2013,19 +2025,28 @@ export default defineAgent({
       logger.warn('Local participant unavailable; satsang ambience publisher disabled', { sessionId });
     }
 
-    await session.start({
-      agent,
-      room: ctx.room,
-      inputOptions: {
-        audioEnabled: true,
-        textEnabled: true,
-        ...(isEsp32Session ? {} : { noiseCancellation: BackgroundVoiceCancellation() })
-      },
-      outputOptions: {
-        audioEnabled: true,
-        transcriptionEnabled: true
+    try {
+      await session.start({
+        agent,
+        room: ctx.room,
+        inputOptions: {
+          audioEnabled: true,
+          textEnabled: true,
+          ...(isEsp32Session ? {} : { noiseCancellation: BackgroundVoiceCancellation() })
+        },
+        outputOptions: {
+          audioEnabled: true,
+          transcriptionEnabled: true
+        }
+      });
+
+      if (isManagedDeviceSession) {
+        await postDeviceSessionUpdate('conversation-active');
       }
-    });
+    } catch (error) {
+      completeManagedDeviceConversation('conversation_error', (error as Error).message || 'session_start_failed');
+      throw error;
+    }
 
     // Avoid automatic greeting on connect: it is frequently interrupted by mic/VAD noise and
     // can leave sessions feeling "stuck" before the first real user turn.
