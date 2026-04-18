@@ -63,8 +63,22 @@ class DeviceRoomSession:
             )
             .to_jwt()
         )
-        LOG.info("joining room %s for session %s", self._session.room_name, self._session.id)
+        LOG.info(
+            "joining room %s for session %s (expect identity=%s)",
+            self._session.room_name,
+            self._session.id,
+            self._session.participant_identity,
+        )
         await self._room.connect(self._config.livekit_url, token)
+        remotes = [
+            f"{p.identity}(tracks={len(p.track_publications)})"
+            for p in self._room.remote_participants.values()
+        ]
+        LOG.info(
+            "connected to room %s; remote participants=[%s]",
+            self._session.room_name,
+            ", ".join(remotes) if remotes else "<none>",
+        )
 
     async def close(self) -> None:
         self._closing = True
@@ -75,14 +89,33 @@ class DeviceRoomSession:
         await self._room.disconnect()
 
     def _wire_events(self) -> None:
+        @self._room.on("participant_connected")
+        def _on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+            LOG.info(
+                "participant_connected room=%s identity=%s (expected=%s)",
+                self._session.room_name,
+                participant.identity,
+                self._session.participant_identity,
+            )
+
         @self._room.on("track_subscribed")
         def _on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant) -> None:
+            LOG.info(
+                "track_subscribed room=%s identity=%s kind=%s (expected_identity=%s)",
+                self._session.room_name,
+                participant.identity,
+                track.kind,
+                self._session.participant_identity,
+            )
             if participant.identity != self._session.participant_identity:
+                LOG.info("track_subscribed: identity mismatch, ignoring")
                 return
             if track.kind != rtc.TrackKind.KIND_AUDIO:
+                LOG.info("track_subscribed: non-audio kind, ignoring")
                 return
             if self._audio_task is not None and not self._audio_task.done():
                 return
+            LOG.info("starting audio consume task for session %s", self._session.id)
             self._audio_task = asyncio.create_task(self._consume_audio(track))
 
         @self._room.on("track_unsubscribed")
@@ -102,9 +135,28 @@ class DeviceRoomSession:
     async def _consume_audio(self, track: rtc.Track) -> None:
         stream = rtc.AudioStream.from_track(track=track, sample_rate=16000, num_channels=1)
         buffer = RollingAudioBuffer(sample_rate=self._wakeword.manifest.sample_rate, seconds=2.0)
+        frame_count = 0
+        skipped_non_idle = 0
+        last_stat_log_ms = int(time.time() * 1000)
+        max_score_since_log = 0.0
         try:
             async for frame_event in stream:
+                frame_count += 1
+                now_stat_ms = int(time.time() * 1000)
+                if now_stat_ms - last_stat_log_ms >= 5000:
+                    LOG.info(
+                        "audio stats session=%s frames=%d skipped_non_idle=%d state=%s max_score=%.3f",
+                        self._session.id,
+                        frame_count,
+                        skipped_non_idle,
+                        self._session.conversation_state,
+                        max_score_since_log,
+                    )
+                    last_stat_log_ms = now_stat_ms
+                    max_score_since_log = 0.0
+
                 if self._session.conversation_state != "idle":
+                    skipped_non_idle += 1
                     continue
 
                 pcm = frame_to_mono_int16(frame_event.frame)
@@ -118,6 +170,8 @@ class DeviceRoomSession:
                     continue
 
                 score = self._wakeword.predict(buffer.snapshot())
+                if score > max_score_since_log:
+                    max_score_since_log = score
                 if score < self._wakeword.manifest.threshold:
                     continue
 
