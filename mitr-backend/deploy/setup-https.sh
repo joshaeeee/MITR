@@ -79,9 +79,16 @@ sudo certbot certonly \
 bash "${SCRIPT_DIR}/configure-nginx.sh"
 docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d nginx
 
-sudo tee /etc/cron.d/mitr-certbot-renew >/dev/null <<EOF
+if command -v systemctl >/dev/null 2>&1 && sudo systemctl list-unit-files certbot.timer >/dev/null 2>&1; then
+  sudo systemctl enable --now certbot.timer >/dev/null 2>&1 || true
+  echo "[https] using certbot.timer for renewal"
+else
+  sudo mkdir -p /etc/cron.d
+  sudo tee /etc/cron.d/mitr-certbot-renew >/dev/null <<EOF
 17 3 * * * root certbot renew --quiet --webroot -w ${CERTBOT_WEBROOT} --deploy-hook "docker exec mitr-nginx nginx -s reload"
 EOF
-sudo chmod 644 /etc/cron.d/mitr-certbot-renew
+  sudo chmod 644 /etc/cron.d/mitr-certbot-renew
+  echo "[https] installed cron renewal at /etc/cron.d/mitr-certbot-renew"
+fi
 
 echo "[https] HTTPS configured for ${PUBLIC_HOSTNAME}"
