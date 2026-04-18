@@ -340,24 +340,9 @@ jobs:
             update_env() {
               key="$1"
               value="$2"
-              python3 -c '
-              from pathlib import Path
-              import sys
-
-              path = Path("deploy/.env.prod")
-              key = sys.argv[1]
-              value = sys.argv[2]
-              lines = path.read_text().splitlines()
-
-              for idx, line in enumerate(lines):
-                  if line.startswith(f"{key}="):
-                      lines[idx] = f"{key}={value}"
-                      break
-              else:
-                  lines.append(f"{key}={value}")
-
-              path.write_text("\\n".join(lines) + "\\n")
-              ' "$key" "$value"
+              # Keep this as a single shell line because appleboy/ssh-action injects
+              # guard code after each script line and breaks multiline inline scripts.
+              awk -v k="$key" -v v="$value" -F= 'BEGIN{done=0} $1==k {if(!done){print k "=" v; done=1} next} {print} END{if(!done) print k "=" v}' deploy/.env.prod > deploy/.env.prod.tmp && mv deploy/.env.prod.tmp deploy/.env.prod
               echo "[deploy] set ${key}"
             }
 
