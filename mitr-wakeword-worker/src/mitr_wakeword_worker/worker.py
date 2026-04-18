@@ -161,8 +161,8 @@ class DeviceRoomSession:
 class WakewordWorker:
     def __init__(self, config: WorkerConfig) -> None:
         self._config = config
-        self._backend = BackendClient(config.internal_api_base_url, config.internal_api_token)
         self._wakeword = WakewordRuntime(config.model_manifest_path)
+        self._backend = BackendClient(config.internal_api_base_url, config.internal_api_token)
         self._rooms: dict[str, DeviceRoomSession] = {}
         self._redis = redis.from_url(config.redis_url)
 
