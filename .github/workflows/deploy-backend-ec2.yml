@@ -292,8 +292,6 @@ jobs:
           command_timeout: 20m
           script: |
             set -euo pipefail
-            set -x
-            trap 'rc=$?; line=${BASH_LINENO[0]:-unknown}; echo "[deploy] failed at line ${line} while running: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
 
             BASE_DIR="/opt/mitr"
             REPO_DIR="${BASE_DIR}/MITR"
@@ -302,59 +300,31 @@ jobs:
 
             mkdir -p "${BASE_DIR}"
             if [ ! -d "${REPO_DIR}/.git" ]; then
-              echo "[deploy] cloning repo into ${REPO_DIR}"
               git clone "${REPO_URL}" "${REPO_DIR}"
             fi
 
-            echo "[deploy] preparing clean checkout"
             cd "${REPO_DIR}"
-            git remote set-url origin "${REPO_URL}"
-            mkdir -p .deploy-tmp
-            if [ -f "mitr-backend/deploy/.env.prod" ]; then
-              cp "mitr-backend/deploy/.env.prod" ".deploy-tmp/env.prod"
-            fi
-            git fetch origin main
-            git checkout -B main origin/main
-            git reset --hard origin/main
-            git clean -fd \
-              -e .deploy-tmp/ \
-              -e mitr-backend/deploy/generated/ \
-              -e mitr-backend/deploy/www/
-            if [ -f ".deploy-tmp/env.prod" ]; then
-              mkdir -p "mitr-backend/deploy"
-              cp ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod"
-            fi
-            rm -rf .deploy-tmp
-            echo "[deploy] checkout ready at $(git rev-parse --short HEAD)"
+            git fetch "${REPO_URL}" main
+            git checkout main
+            git reset --hard FETCH_HEAD
 
             cd "${APP_DIR}"
-            echo "[deploy] app dir $(pwd)"
-            ls -ld deploy
             if [ ! -f "deploy/.env.prod" ]; then
               echo "Missing ${APP_DIR}/deploy/.env.prod. Create it manually from deploy/.env.prod.template"
-              ls -la deploy || true
               exit 1
             fi
-            echo "[deploy] found deploy/.env.prod"
-
-            normalize_env() {
-              python3 -c 'import re; from pathlib import Path; p = Path("deploy/.env.prod"); text = p.read_text(encoding="utf-8-sig").replace("\\n", chr(10)); entries = {m.group(1): f"{m.group(1)}={m.group(2)}" for m in re.finditer(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", text, re.M)}; p.write_text(chr(10).join(entries.values()) + chr(10))'
-              echo "[deploy] normalized deploy/.env.prod"
-            }
 
             update_env() {
               key="$1"
               value="$2"
-              if [ "$(grep -cE "^${key}=" deploy/.env.prod || true)" -gt 0 ]; then
+              if grep -qE "^${key}=" deploy/.env.prod; then
                 sed -i.bak "s#^${key}=.*#${key}=${value}#g" deploy/.env.prod
               else
                 echo "${key}=${value}" >> deploy/.env.prod
               fi
               rm -f deploy/.env.prod.bak
-              echo "[deploy] set ${key}"
             }
 
-            normalize_env
             update_env "API_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
             update_env "AGENT_IMAGE" "${{ needs.build-agent.outputs.image_ref }}"
             update_env "WAKEWORD_WORKER_IMAGE" "${{ needs.build-wakeword-worker.outputs.image_ref }}"
@@ -375,13 +345,12 @@ jobs:
             export RUN_DB_MIGRATIONS="true"
             export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="false"
 
-            echo "[deploy] running backend deployment"
             chmod +x deploy/configure-nginx.sh deploy/setup-https.sh || true
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
             bash deploy/deploy.sh
-            echo "[deploy] ensuring HTTPS configuration"
             bash deploy/setup-https.sh
 
+            # Guard against stale image restarts.
             ACTUAL_API_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-api)"
             ACTUAL_AGENT_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-agent-worker)"
             ACTUAL_WAKEWORD_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-wakeword-worker)"
