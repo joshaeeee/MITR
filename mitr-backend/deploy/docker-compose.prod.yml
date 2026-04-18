@@ -7,10 +7,12 @@ services:
     cpus: 0.10
     mem_limit: 128m
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: redis
+        awslogs-create-group: "true"
     networks:
       - mitr-internal
 
@@ -36,10 +38,12 @@ services:
       retries: 5
       start_period: 25s
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: api
+        awslogs-create-group: "true"
     volumes:
       - voice_notes_data:/app/var/voice-notes
     networks:
@@ -67,10 +71,12 @@ services:
     cpus: 1.0
     mem_limit: 900m
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: agent-worker
+        awslogs-create-group: "true"
     networks:
       - mitr-internal
 
@@ -101,10 +107,12 @@ services:
     cpus: 1.0
     mem_limit: 768m
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: wakeword-worker
+        awslogs-create-group: "true"
     networks:
       - mitr-internal
 
@@ -126,10 +134,12 @@ services:
     cpus: 0.25
     mem_limit: 256m
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: reminder-worker
+        awslogs-create-group: "true"
     networks:
       - mitr-internal
 
@@ -151,10 +161,12 @@ services:
     cpus: 0.30
     mem_limit: 384m
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: insights-worker
+        awslogs-create-group: "true"
     networks:
       - mitr-internal
 
@@ -176,10 +188,12 @@ services:
     cpus: 0.20
     mem_limit: 256m
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: digest-worker
+        awslogs-create-group: "true"
     networks:
       - mitr-internal
 
@@ -201,10 +215,12 @@ services:
     cpus: 0.10
     mem_limit: 96m
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
+        awslogs-stream: nginx
+        awslogs-create-group: "true"
     networks:
       - mitr-internal
 
