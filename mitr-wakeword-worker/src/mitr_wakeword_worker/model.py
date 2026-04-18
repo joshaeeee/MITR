@@ -18,7 +18,7 @@ class WakewordRuntime:
 
         payload = json.loads(manifest_file.read_text())
         self.manifest = ModelManifest(**payload)
-        self.model_path = manifest_file.with_suffix(".onnx")
+        self.model_path = manifest_file.parent / f"{self.manifest.model_name}.onnx"
         if not self.model_path.exists():
             raise RuntimeError(f"Wakeword ONNX model not found: {self.model_path}")
 
