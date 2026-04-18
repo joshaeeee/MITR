@@ -338,27 +338,31 @@ jobs:
             echo "[deploy] found deploy/.env.prod"
 
             normalize_env() {
-              python3 -c 'from pathlib import Path; import re; p = Path("deploy/.env.prod"); pattern = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$"); ordered = []; values = {}; lines = p.read_text(encoding="utf-8-sig").splitlines(); 
-for raw in lines:
-    line = raw.rstrip("\r")
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
+              python3 -c 'import re; from pathlib import Path; p = Path("deploy/.env.prod"); text = p.read_text(encoding="utf-8-sig").replace("\\n", chr(10)); pattern = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$"); ordered = []; values = {}
+for raw in text.splitlines():
+    line = raw.rstrip(chr(13)).strip()
+    if not line or line.startswith("#"):
         continue
-    match = pattern.match(stripped)
-    if not match:
+    m = pattern.match(line)
+    if not m:
         continue
-    key, value = match.groups()
-    if key not in values:
-        ordered.append(key)
-    values[key] = value
-p.write_text("\\n".join(f"{key}={values[key]}" for key in ordered) + "\\n")'
+    k, v = m.groups()
+    if k not in values:
+        ordered.append(k)
+    values[k] = v
+p.write_text(chr(10).join(f"{k}={values[k]}" for k in ordered) + chr(10))'
               echo "[deploy] normalized deploy/.env.prod"
             }
 
             update_env() {
               key="$1"
               value="$2"
-              python3 -c 'from pathlib import Path; import sys; p = Path("deploy/.env.prod"); k, v = sys.argv[1], sys.argv[2]; lines = [line for line in p.read_text().splitlines() if not line.startswith(f"{k}=")]; lines.append(f"{k}={v}"); p.write_text("\\n".join(lines) + "\\n")' "$key" "$value"
+              if grep -qE "^${key}=" deploy/.env.prod; then
+                sed -i.bak "s#^${key}=.*#${key}=${value}#g" deploy/.env.prod
+              else
+                echo "${key}=${value}" >> deploy/.env.prod
+              fi
+              rm -f deploy/.env.prod.bak
               echo "[deploy] set ${key}"
             }
 
