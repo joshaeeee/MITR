@@ -292,6 +292,8 @@ jobs:
           command_timeout: 20m
           script: |
             set -euo pipefail
+            set -x
+            trap 'rc=$?; echo "[deploy] failed at line ${BASH_LINENO[0]} while running: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
 
             BASE_DIR="/opt/mitr"
             REPO_DIR="${BASE_DIR}/MITR"
@@ -306,13 +308,14 @@ jobs:
 
             echo "[deploy] preparing clean checkout"
             cd "${REPO_DIR}"
+            git remote set-url origin "${REPO_URL}"
             mkdir -p .deploy-tmp
             if [ -f "mitr-backend/deploy/.env.prod" ]; then
               cp "mitr-backend/deploy/.env.prod" ".deploy-tmp/env.prod"
             fi
-            git fetch "${REPO_URL}" main
-            git checkout -B main FETCH_HEAD
-            git reset --hard FETCH_HEAD
+            git fetch origin main
+            git checkout -B main origin/main
+            git reset --hard origin/main
             git clean -fd \
               -e .deploy-tmp/ \
               -e mitr-backend/deploy/generated/ \
@@ -325,20 +328,37 @@ jobs:
             echo "[deploy] checkout ready at $(git rev-parse --short HEAD)"
 
             cd "${APP_DIR}"
+            echo "[deploy] app dir $(pwd)"
+            ls -ld deploy
             if [ ! -f "deploy/.env.prod" ]; then
               echo "Missing ${APP_DIR}/deploy/.env.prod. Create it manually from deploy/.env.prod.template"
+              ls -la deploy || true
               exit 1
             fi
+            echo "[deploy] found deploy/.env.prod"
 
             update_env() {
               key="$1"
               value="$2"
-              if grep -qE "^${key}=" deploy/.env.prod; then
-                sed -i.bak "s#^${key}=.*#${key}=${value}#g" deploy/.env.prod
-              else
-                echo "${key}=${value}" >> deploy/.env.prod
-              fi
-              rm -f deploy/.env.prod.bak
+              python3 -c '
+              from pathlib import Path
+              import sys
+
+              path = Path("deploy/.env.prod")
+              key = sys.argv[1]
+              value = sys.argv[2]
+              lines = path.read_text().splitlines()
+
+              for idx, line in enumerate(lines):
+                  if line.startswith(f"{key}="):
+                      lines[idx] = f"{key}={value}"
+                      break
+              else:
+                  lines.append(f"{key}={value}")
+
+              path.write_text("\\n".join(lines) + "\\n")
+              ' "$key" "$value"
+              echo "[deploy] set ${key}"
             }
 
             update_env "API_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
