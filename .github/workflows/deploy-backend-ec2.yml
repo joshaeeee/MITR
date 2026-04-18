@@ -340,24 +340,7 @@ jobs:
             update_env() {
               key="$1"
               value="$2"
-              python3 -c '
-              from pathlib import Path
-              import sys
-
-              path = Path("deploy/.env.prod")
-              key = sys.argv[1]
-              value = sys.argv[2]
-              lines = path.read_text().splitlines()
-
-              for idx, line in enumerate(lines):
-                  if line.startswith(f"{key}="):
-                      lines[idx] = f"{key}={value}"
-                      break
-              else:
-                  lines.append(f"{key}={value}")
-
-              path.write_text("\\n".join(lines) + "\\n")
-              ' "$key" "$value"
+              python3 -c 'from pathlib import Path; import sys; p = Path("deploy/.env.prod"); k, v = sys.argv[1], sys.argv[2]; lines = p.read_text().splitlines(); idx = next((i for i, line in enumerate(lines) if line.startswith(f"{k}=")), -1); lines.append(f"{k}={v}") if idx < 0 else lines.__setitem__(idx, f"{k}={v}"); p.write_text("\\n".join(lines) + "\\n")' "$key" "$value"
               echo "[deploy] set ${key}"
             }
 
