@@ -53,20 +53,20 @@ echo "  wakeword-worker=${PREV_WAKEWORD_WORKER_IMAGE:-<none>}"
 echo "  reminder=${PREV_REMINDER_IMAGE:-<none>}"
 
 echo "[deploy] pulling latest images"
-docker compose -f docker-compose.prod.yml --env-file .env.prod pull
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" pull
 
 if [[ "${RUN_DB_MIGRATIONS}" == "true" ]]; then
   echo "[deploy] baselining drizzle ledger"
-  docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm --no-deps api pnpm drizzle:baseline-ledger
+  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" run --rm --no-deps api pnpm drizzle:baseline-ledger
 
   echo "[deploy] applying drizzle migrations"
-  docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm --no-deps api pnpm drizzle:migrate
+  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" run --rm --no-deps api pnpm drizzle:migrate
 else
   echo "[deploy] skipping database migrations"
 fi
 
 echo "[deploy] starting updated stack"
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --remove-orphans
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans
 
 chmod +x "${HEALTHCHECK_SCRIPT}"
 if BASE_URL="${HEALTH_BASE_URL:-http://127.0.0.1}" "${HEALTHCHECK_SCRIPT}"; then
@@ -86,7 +86,7 @@ if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_AGENT_IMAGE}" && -n "${PREV_WAKEWORD_
   AGENT_IMAGE="${PREV_AGENT_IMAGE}" \
   WAKEWORD_WORKER_IMAGE="${PREV_WAKEWORD_WORKER_IMAGE}" \
   REMINDER_IMAGE="${PREV_REMINDER_IMAGE}" \
-  docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --remove-orphans
+  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans
 
   if BASE_URL="${HEALTH_BASE_URL:-http://127.0.0.1}" "${HEALTHCHECK_SCRIPT}"; then
     echo "[deploy] rollback successful"

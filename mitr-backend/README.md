@@ -174,11 +174,10 @@ Notes:
 
 ### CloudWatch on EC2
 
-- Container logs ship directly from Docker to CloudWatch Logs through the `awslogs` driver in [docker-compose.prod.yml](/Users/shivanshjoshi/conductor/workspaces/Mitr/windhoek/mitr-backend/deploy/docker-compose.prod.yml).
+- Container logs ship directly from Docker to CloudWatch Logs through the `awslogs` driver in [docker-compose.prod.yml](/Users/shivanshjoshi/Mitr/mitr-backend/deploy/docker-compose.prod.yml).
 - Set `AWS_REGION` and `CLOUDWATCH_LOG_GROUP` in `deploy/.env.prod`.
-- Attach an EC2 IAM role that allows CloudWatch Logs writes for the Docker `awslogs` driver and CloudWatch Agent metrics collection.
-- Redeploy or run `docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod up -d` after updating the env file so containers restart with the new logging driver.
-- Host metrics can be enabled with the config in [cloudwatch-agent.json](/Users/shivanshjoshi/conductor/workspaces/Mitr/windhoek/mitr-backend/deploy/cloudwatch-agent.json):
+- Attach an EC2 IAM role with `CloudWatchAgentServerPolicy`.
+- Host metrics can be enabled with the config in [cloudwatch-agent.json](/Users/shivanshjoshi/Mitr/mitr-backend/deploy/cloudwatch-agent.json):
 
 ```bash
 bash deploy/setup-cloudwatch.sh
