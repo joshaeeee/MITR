@@ -313,6 +313,11 @@ jobs:
             if [ -f "mitr-backend/deploy/.env.prod" ]; then
               cp "mitr-backend/deploy/.env.prod" ".deploy-tmp/env.prod"
             fi
+            git reset --hard HEAD
+            git clean -fd \
+              -e .deploy-tmp/ \
+              -e mitr-backend/deploy/generated/ \
+              -e mitr-backend/deploy/www/
             git fetch origin main
             git checkout -B main origin/main
             git reset --hard origin/main
