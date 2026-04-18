@@ -340,20 +340,12 @@ jobs:
             echo "=== DEBUG .env.prod ==="
             pwd
             ls -la deploy
-            python3 - <<'PY'
-            from pathlib import Path
-
-            env_path = Path("deploy/.env.prod")
-            raw = env_path.read_bytes()
-            lines = env_path.read_text(errors="replace").splitlines()
-
-            first_line = lines[0] if lines else ""
-            print(f"line_1_repr={first_line!r}")
-            print(f"first_80_bytes_hex={raw[:80].hex(' ')}")
-
-            local_lines = [idx for idx, line in enumerate(lines, start=1) if "Local" in line]
-            print(f"lines_containing_Local={local_lines}")
-            PY
+            echo "line_1:"
+            sed -n '1p' deploy/.env.prod | cat -A
+            echo "first_80_bytes_hex:"
+            od -An -tx1 -N80 deploy/.env.prod
+            echo "lines_containing_Local:"
+            grep -n "Local" deploy/.env.prod || true
             echo "=== END DEBUG ==="
 
             update_env() {
