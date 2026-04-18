@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env.prod"
 HTTP_CONF="${SCRIPT_DIR}/nginx.http.conf"
-TARGET_CONF="${SCRIPT_DIR}/nginx.conf"
+GENERATED_DIR="${SCRIPT_DIR}/generated"
+TARGET_CONF="${GENERATED_DIR}/nginx.conf"
 
 get_env() {
   local key="$1"
@@ -32,6 +33,7 @@ cert_ready() {
 }
 
 if [[ "${ENABLE_HTTPS}" == "true" && -n "${PUBLIC_HOSTNAME}" ]] && cert_ready "${CERT_DIR}"; then
+  mkdir -p "${GENERATED_DIR}"
   SERVER_NAMES="${PUBLIC_HOSTNAME}"
   if [[ -n "${ROOT_HOSTNAME}" ]]; then
     SERVER_NAMES="${SERVER_NAMES} ${ROOT_HOSTNAME}"
@@ -192,6 +194,7 @@ EOF
 EOF
   echo "[nginx] configured HTTPS for ${PUBLIC_HOSTNAME}"
 else
+  mkdir -p "${GENERATED_DIR}"
   cp "${HTTP_CONF}" "${TARGET_CONF}"
   echo "[nginx] configured HTTP"
 fi

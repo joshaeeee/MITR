@@ -300,13 +300,29 @@ jobs:
 
             mkdir -p "${BASE_DIR}"
             if [ ! -d "${REPO_DIR}/.git" ]; then
+              echo "[deploy] cloning repo into ${REPO_DIR}"
               git clone "${REPO_URL}" "${REPO_DIR}"
             fi
 
+            echo "[deploy] preparing clean checkout"
             cd "${REPO_DIR}"
+            mkdir -p .deploy-tmp
+            if [ -f "mitr-backend/deploy/.env.prod" ]; then
+              cp "mitr-backend/deploy/.env.prod" ".deploy-tmp/env.prod"
+            fi
             git fetch "${REPO_URL}" main
-            git checkout main
+            git checkout -B main FETCH_HEAD
             git reset --hard FETCH_HEAD
+            git clean -fd \
+              -e .deploy-tmp/ \
+              -e mitr-backend/deploy/generated/ \
+              -e mitr-backend/deploy/www/
+            if [ -f ".deploy-tmp/env.prod" ]; then
+              mkdir -p "mitr-backend/deploy"
+              cp ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod"
+            fi
+            rm -rf .deploy-tmp
+            echo "[deploy] checkout ready at $(git rev-parse --short HEAD)"
 
             cd "${APP_DIR}"
             if [ ! -f "deploy/.env.prod" ]; then
@@ -345,9 +361,11 @@ jobs:
             export RUN_DB_MIGRATIONS="true"
             export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="false"
 
+            echo "[deploy] running backend deployment"
             chmod +x deploy/configure-nginx.sh deploy/setup-https.sh || true
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
             bash deploy/deploy.sh
+            echo "[deploy] ensuring HTTPS configuration"
             bash deploy/setup-https.sh
 
             # Guard against stale image restarts.
