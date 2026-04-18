@@ -337,17 +337,6 @@ jobs:
             fi
             echo "[deploy] found deploy/.env.prod"
 
-            echo "=== DEBUG .env.prod ==="
-            pwd
-            ls -la deploy
-            echo "line_1:"
-            sed -n '1p' deploy/.env.prod | cat -A
-            echo "first_80_bytes_hex:"
-            od -An -tx1 -N80 deploy/.env.prod
-            echo "lines_containing_Local:"
-            grep -n "Local" deploy/.env.prod || true
-            echo "=== END DEBUG ==="
-
             update_env() {
               key="$1"
               value="$2"
