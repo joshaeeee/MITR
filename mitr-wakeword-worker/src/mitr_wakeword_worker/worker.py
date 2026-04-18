@@ -133,27 +133,41 @@ class DeviceRoomSession:
             LOG.warning("room disconnected unexpectedly for session %s", self._session.id)
 
     async def _consume_audio(self, track: rtc.Track) -> None:
+        import numpy as np  # local alias so the stat log can use it without touching imports elsewhere
+
         stream = rtc.AudioStream.from_track(track=track, sample_rate=16000, num_channels=1)
         buffer = RollingAudioBuffer(sample_rate=self._wakeword.manifest.sample_rate, seconds=2.0)
         frame_count = 0
         skipped_non_idle = 0
         last_stat_log_ms = int(time.time() * 1000)
         max_score_since_log = 0.0
+        max_abs_sample = 0
+        frame_sr_sample = 0
+        frame_ch_sample = 0
+        frame_len_sample = 0
         try:
             async for frame_event in stream:
                 frame_count += 1
+                frame_sr_sample = frame_event.frame.sample_rate
+                frame_ch_sample = frame_event.frame.num_channels
+                frame_len_sample = len(frame_event.frame.data)
                 now_stat_ms = int(time.time() * 1000)
                 if now_stat_ms - last_stat_log_ms >= 5000:
                     LOG.info(
-                        "audio stats session=%s frames=%d skipped_non_idle=%d state=%s max_score=%.3f",
+                        "audio stats session=%s frames=%d skipped_non_idle=%d state=%s max_score=%.3f max_abs_sample=%d frame_sr=%d frame_ch=%d frame_len=%d",
                         self._session.id,
                         frame_count,
                         skipped_non_idle,
                         self._session.conversation_state,
                         max_score_since_log,
+                        max_abs_sample,
+                        frame_sr_sample,
+                        frame_ch_sample,
+                        frame_len_sample,
                     )
                     last_stat_log_ms = now_stat_ms
                     max_score_since_log = 0.0
+                    max_abs_sample = 0
 
                 if self._session.conversation_state != "idle":
                     skipped_non_idle += 1
@@ -161,6 +175,10 @@ class DeviceRoomSession:
 
                 pcm = frame_to_mono_int16(frame_event.frame)
                 pcm = resample_int16(pcm, frame_event.frame.sample_rate, self._wakeword.manifest.sample_rate)
+                if pcm.size:
+                    sample_peak = int(np.abs(pcm).max())
+                    if sample_peak > max_abs_sample:
+                        max_abs_sample = sample_peak
                 buffer.append(pcm)
                 if not buffer.ready():
                     continue
