@@ -456,9 +456,19 @@ export const deviceSessions = pgTable('device_sessions', {
   firmwareVersion: text('firmware_version'),
   hardwareRev: text('hardware_rev'),
   status: text('status').$type<'issued' | 'active' | 'ended'>().default('issued').notNull(),
+  conversationState: text('conversation_state')
+    .$type<'idle' | 'starting' | 'active' | 'ending'>()
+    .default('idle')
+    .notNull(),
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
+  lastWakeDetectedAt: timestamp('last_wake_detected_at', { withTimezone: true }),
+  conversationStartedAt: timestamp('conversation_started_at', { withTimezone: true }),
+  conversationEndedAt: timestamp('conversation_ended_at', { withTimezone: true }),
+  lastWakewordModel: text('last_wakeword_model'),
+  lastWakewordScore: text('last_wakeword_score'),
+  lastConversationEndReason: text('last_conversation_end_reason'),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason')
 }, (table) => ({
@@ -466,7 +476,12 @@ export const deviceSessions = pgTable('device_sessions', {
   userStartedIdx: index('device_sessions_user_started_idx').on(table.userId, table.startedAt),
   familyStartedIdx: index('device_sessions_family_started_idx').on(table.familyId, table.startedAt),
   elderStartedIdx: index('device_sessions_elder_started_idx').on(table.elderId, table.startedAt),
-  deviceStatusIdx: index('device_sessions_device_status_idx').on(table.deviceId, table.status, table.startedAt)
+  deviceStatusIdx: index('device_sessions_device_status_idx').on(table.deviceId, table.status, table.startedAt),
+  deviceConversationIdx: index('device_sessions_device_conversation_idx').on(
+    table.deviceId,
+    table.conversationState,
+    table.startedAt
+  )
 }));
 
 export const deviceTelemetry = pgTable('device_telemetry', {

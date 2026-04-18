@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq, gt, inArray, isNull, or } from 'drizzle-orm';
-import { AccessToken, VideoGrant } from 'livekit-server-sdk';
-import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
+import { AccessToken, AgentDispatchClient, VideoGrant } from 'livekit-server-sdk';
 import { db } from '../../db/client.js';
 import {
   deviceClaims,
@@ -14,8 +13,10 @@ import {
 } from '../../db/schema.js';
 import { getRequiredLivekitConfig } from '../../config/livekit-config.js';
 import { getFamilyRepository } from '../family/family-repository.js';
+import { publishDeviceSessionEvent } from './device-session-events.js';
 
 type DevicePairingStatus = 'pending_device' | 'bootstrapping' | 'completed' | 'expired' | 'revoked';
+export type DeviceConversationState = 'idle' | 'starting' | 'active' | 'ending';
 
 export interface DeviceAuthRecord {
   id: string;
@@ -28,6 +29,33 @@ export interface DeviceAuthRecord {
   hardwareRev: string | null;
   firmwareVersion: string | null;
   metadataJson: Record<string, unknown>;
+}
+
+export interface DeviceSessionRecord {
+  id: string;
+  deviceId: string;
+  userId: string;
+  familyId: string | null;
+  elderId: string | null;
+  claimedByUserId: string | null;
+  roomName: string;
+  participantIdentity: string;
+  language: string;
+  firmwareVersion: string | null;
+  hardwareRev: string | null;
+  status: 'issued' | 'active' | 'ended';
+  conversationState: DeviceConversationState;
+  metadata: Record<string, unknown>;
+  startedAt: number;
+  lastHeartbeatAt: number;
+  lastWakeDetectedAt: number | null;
+  conversationStartedAt: number | null;
+  conversationEndedAt: number | null;
+  lastWakewordModel: string | null;
+  lastWakewordScore: string | null;
+  lastConversationEndReason: string | null;
+  endedAt: number | null;
+  endReason: string | null;
 }
 
 export interface ClaimedDeviceSummary {
@@ -48,8 +76,15 @@ export interface ClaimedDeviceSummary {
     roomName: string;
     participantIdentity: string;
     status: 'issued' | 'active' | 'ended';
+    conversationState: DeviceConversationState;
     startedAt: number;
     lastHeartbeatAt: number;
+    lastWakeDetectedAt: number | null;
+    conversationStartedAt: number | null;
+    conversationEndedAt: number | null;
+    lastWakewordModel: string | null;
+    lastWakewordScore: string | null;
+    lastConversationEndReason: string | null;
     endedAt: number | null;
     endReason: string | null;
   } | null;
@@ -92,6 +127,8 @@ const toDate = (value: number): Date => new Date(value);
 const slug = (input: string): string => input.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'device';
 
 const normalizeMetadata = (value: Record<string, unknown> | null | undefined): Record<string, unknown> => value ?? {};
+
+const toMillis = (value: Date | null | undefined): number | null => value?.getTime() ?? null;
 
 const readMetadataString = (metadata: Record<string, unknown>, key: string): string | null => {
   const value = metadata[key];
@@ -160,6 +197,53 @@ export class DeviceControlService {
       completedAt: row.completedAt?.getTime() ?? null,
       metadata: normalizeMetadata(row.metadataJson)
     };
+  }
+
+  private sessionRecord(row: typeof deviceSessions.$inferSelect): DeviceSessionRecord {
+    return {
+      id: row.id,
+      deviceId: row.deviceId,
+      userId: row.userId,
+      familyId: row.familyId,
+      elderId: row.elderId,
+      claimedByUserId: row.claimedByUserId,
+      roomName: row.roomName,
+      participantIdentity: row.participantIdentity,
+      language: row.language,
+      firmwareVersion: row.firmwareVersion,
+      hardwareRev: row.hardwareRev,
+      status: row.status,
+      conversationState: row.conversationState,
+      metadata: normalizeMetadata(row.metadataJson),
+      startedAt: row.startedAt.getTime(),
+      lastHeartbeatAt: row.lastHeartbeatAt.getTime(),
+      lastWakeDetectedAt: toMillis(row.lastWakeDetectedAt),
+      conversationStartedAt: toMillis(row.conversationStartedAt),
+      conversationEndedAt: toMillis(row.conversationEndedAt),
+      lastWakewordModel: row.lastWakewordModel ?? null,
+      lastWakewordScore: row.lastWakewordScore ?? null,
+      lastConversationEndReason: row.lastConversationEndReason ?? null,
+      endedAt: toMillis(row.endedAt),
+      endReason: row.endReason ?? null
+    };
+  }
+
+  private async publishSessionState(row: typeof deviceSessions.$inferSelect, type: 'session_upserted' | 'session_ended' | 'conversation_state_changed'): Promise<void> {
+    await publishDeviceSessionEvent({
+      type,
+      sessionId: row.id,
+      deviceId: row.deviceId,
+      roomName: row.roomName,
+      participantIdentity: row.participantIdentity,
+      status: row.status,
+      conversationState: row.conversationState,
+      ts: Date.now()
+    });
+  }
+
+  private async getSessionRowById(sessionId: string): Promise<typeof deviceSessions.$inferSelect | null> {
+    const [session] = await db.select().from(deviceSessions).where(eq(deviceSessions.id, sessionId)).limit(1);
+    return session ?? null;
   }
 
   async getCurrentFamilyContextForUser(
@@ -243,8 +327,15 @@ export class DeviceControlService {
               roomName: lastSession.roomName,
               participantIdentity: lastSession.participantIdentity,
               status: lastSession.status,
+              conversationState: lastSession.conversationState,
               startedAt: lastSession.startedAt.getTime(),
               lastHeartbeatAt: lastSession.lastHeartbeatAt.getTime(),
+              lastWakeDetectedAt: toMillis(lastSession.lastWakeDetectedAt),
+              conversationStartedAt: toMillis(lastSession.conversationStartedAt),
+              conversationEndedAt: toMillis(lastSession.conversationEndedAt),
+              lastWakewordModel: lastSession.lastWakewordModel ?? null,
+              lastWakewordScore: lastSession.lastWakewordScore ?? null,
+              lastConversationEndReason: lastSession.lastConversationEndReason ?? null,
               endedAt: lastSession.endedAt?.getTime() ?? null,
               endReason: lastSession.endReason ?? null
             }
@@ -699,7 +790,7 @@ export class DeviceControlService {
     };
     at.addGrant(videoGrant);
 
-    const dispatchMetadata = {
+    const metadataBase = {
       user_id: input.device.userId,
       family_id: input.device.familyId,
       elder_id: input.device.elderId,
@@ -710,15 +801,6 @@ export class DeviceControlService {
       hardware_rev: hardwareRev,
       ...(input.metadata ?? {})
     };
-
-    at.roomConfig = new RoomConfiguration({
-      agents: [
-        new RoomAgentDispatch({
-          agentName: livekit.agentName,
-          metadata: JSON.stringify(dispatchMetadata)
-        })
-      ]
-    });
 
     const participantToken = await at.toJwt();
 
@@ -742,6 +824,11 @@ export class DeviceControlService {
 
     let sessionId: string;
     if (existingSession) {
+      sessionId = existingSession.id;
+      const dispatchMetadata = {
+        ...metadataBase,
+        session_id: sessionId
+      };
       await db
         .update(deviceSessions)
         .set({
@@ -753,7 +840,6 @@ export class DeviceControlService {
           lastHeartbeatAt: new Date()
         })
         .where(eq(deviceSessions.id, existingSession.id));
-      sessionId = existingSession.id;
     } else {
       const [session] = await db
         .insert(deviceSessions)
@@ -769,10 +855,21 @@ export class DeviceControlService {
           firmwareVersion,
           hardwareRev,
           status: 'issued',
-          metadataJson: dispatchMetadata
+          conversationState: 'idle',
+          metadataJson: metadataBase
         })
         .returning({ id: deviceSessions.id });
       sessionId = session.id;
+      const dispatchMetadata = {
+        ...metadataBase,
+        session_id: sessionId
+      };
+      await db
+        .update(deviceSessions)
+        .set({
+          metadataJson: dispatchMetadata
+        })
+        .where(eq(deviceSessions.id, sessionId));
     }
 
     await db
@@ -784,6 +881,16 @@ export class DeviceControlService {
         updatedAt: new Date()
       })
       .where(eq(devices.id, input.device.id));
+
+    const sessionRow = await this.getSessionRowById(sessionId);
+    if (sessionRow) {
+      await this.publishSessionState(sessionRow, 'session_upserted');
+    }
+
+    const dispatchMetadata = {
+      ...metadataBase,
+      session_id: sessionId
+    };
 
     return {
       sessionId,
@@ -850,9 +957,8 @@ export class DeviceControlService {
       canPublishData: true
     } as VideoGrant);
 
-    // No RoomConfiguration/agent-dispatch on refresh — the agent is already
-    // dispatched and living in the room. Re-dispatching would spawn a second
-    // agent instance.
+    // Token refresh keeps the persistent device participant alive only.
+    // Agent dispatch is now explicit and wake-driven.
 
     const participantToken = await at.toJwt();
 
@@ -869,6 +975,161 @@ export class DeviceControlService {
       identity,
       participantTokenExpiresAtMs
     };
+  }
+
+  async listLiveDeviceSessions(): Promise<DeviceSessionRecord[]> {
+    const rows = await db
+      .select()
+      .from(deviceSessions)
+      .where(inArray(deviceSessions.status, ['issued', 'active']))
+      .orderBy(desc(deviceSessions.startedAt));
+    return rows.map((row) => this.sessionRecord(row));
+  }
+
+  async getDeviceSession(sessionId: string): Promise<DeviceSessionRecord | null> {
+    const row = await this.getSessionRowById(sessionId);
+    return row ? this.sessionRecord(row) : null;
+  }
+
+  async dispatchAgentToPersistentRoom(sessionId: string): Promise<void> {
+    const session = await this.getSessionRowById(sessionId);
+    if (!session) {
+      throw new Error('Device session not found');
+    }
+
+    const livekit = getRequiredLivekitConfig();
+    if (!livekit) {
+      throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
+    }
+
+    const dispatchClient = new AgentDispatchClient(livekit.url, livekit.apiKey, livekit.apiSecret);
+    await dispatchClient.createDispatch(session.roomName, livekit.agentName, {
+      metadata: JSON.stringify(normalizeMetadata(session.metadataJson))
+    });
+  }
+
+  async handleWakeDetected(input: {
+    sessionId: string;
+    modelName: string;
+    phrase: string;
+    score: number;
+    detectedAtMs: number;
+  }): Promise<{ accepted: boolean; reason?: string; session: DeviceSessionRecord | null }> {
+    const session = await this.getSessionRowById(input.sessionId);
+    if (!session) {
+      return { accepted: false, reason: 'session_not_found', session: null };
+    }
+    if (!['issued', 'active'].includes(session.status)) {
+      return { accepted: false, reason: 'session_not_live', session: this.sessionRecord(session) };
+    }
+    if (session.conversationState !== 'idle') {
+      return { accepted: false, reason: 'conversation_not_idle', session: this.sessionRecord(session) };
+    }
+
+    const wakeDetectedAt = new Date(input.detectedAtMs);
+    const metadata = {
+      ...normalizeMetadata(session.metadataJson),
+      last_wakeword_phrase: input.phrase
+    };
+    await db
+      .update(deviceSessions)
+      .set({
+        conversationState: 'starting',
+        lastWakeDetectedAt: wakeDetectedAt,
+        lastWakewordModel: input.modelName,
+        lastWakewordScore: String(input.score),
+        metadataJson: metadata
+      })
+      .where(eq(deviceSessions.id, input.sessionId));
+
+    try {
+      await this.dispatchAgentToPersistentRoom(input.sessionId);
+    } catch (error) {
+      await db
+        .update(deviceSessions)
+        .set({
+          conversationState: 'idle',
+          lastConversationEndReason: 'dispatch_failed',
+          conversationEndedAt: new Date()
+        })
+        .where(eq(deviceSessions.id, input.sessionId));
+      const failedSession = await this.getSessionRowById(input.sessionId);
+      if (failedSession) {
+        await this.publishSessionState(failedSession, 'conversation_state_changed');
+      }
+      throw error;
+    }
+
+    const updated = await this.getSessionRowById(input.sessionId);
+    if (updated) {
+      await this.publishSessionState(updated, 'conversation_state_changed');
+    }
+    return {
+      accepted: true,
+      session: updated ? this.sessionRecord(updated) : null
+    };
+  }
+
+  async markConversationActive(sessionId: string): Promise<DeviceSessionRecord | null> {
+    await db
+      .update(deviceSessions)
+      .set({
+        conversationState: 'active',
+        conversationStartedAt: new Date()
+      })
+      .where(and(eq(deviceSessions.id, sessionId), inArray(deviceSessions.conversationState, ['starting', 'active'])));
+
+    const session = await this.getSessionRowById(sessionId);
+    if (session) {
+      await this.publishSessionState(session, 'conversation_state_changed');
+      return this.sessionRecord(session);
+    }
+    return null;
+  }
+
+  async markConversationEnded(sessionId: string, reason: string): Promise<DeviceSessionRecord | null> {
+    await db
+      .update(deviceSessions)
+      .set({
+        conversationState: 'ending',
+        lastConversationEndReason: reason,
+        conversationEndedAt: new Date()
+      })
+      .where(and(eq(deviceSessions.id, sessionId), inArray(deviceSessions.status, ['issued', 'active'])));
+
+    await db
+      .update(deviceSessions)
+      .set({
+        conversationState: 'idle',
+        lastConversationEndReason: reason,
+        conversationEndedAt: new Date()
+      })
+      .where(eq(deviceSessions.id, sessionId));
+
+    const session = await this.getSessionRowById(sessionId);
+    if (session) {
+      await this.publishSessionState(session, 'conversation_state_changed');
+      return this.sessionRecord(session);
+    }
+    return null;
+  }
+
+  async markConversationError(sessionId: string, reason: string): Promise<DeviceSessionRecord | null> {
+    await db
+      .update(deviceSessions)
+      .set({
+        conversationState: 'idle',
+        lastConversationEndReason: reason,
+        conversationEndedAt: new Date()
+      })
+      .where(eq(deviceSessions.id, sessionId));
+
+    const session = await this.getSessionRowById(sessionId);
+    if (session) {
+      await this.publishSessionState(session, 'conversation_state_changed');
+      return this.sessionRecord(session);
+    }
+    return null;
   }
 
   async heartbeat(input: {
@@ -906,7 +1167,6 @@ export class DeviceControlService {
       'otaState',
       'otaTargetVersion',
       'lastBootOk',
-      'muted',
       'speakerMuted',
       'speakerVolume'
     ]) {
@@ -935,6 +1195,11 @@ export class DeviceControlService {
           firmwareVersion: input.firmwareVersion?.trim() || input.device.firmwareVersion
         })
         .where(and(eq(deviceSessions.id, input.sessionId), eq(deviceSessions.deviceId, input.device.deviceId)));
+
+      const session = await this.getSessionRowById(input.sessionId);
+      if (session) {
+        await this.publishSessionState(session, 'session_upserted');
+      }
     }
 
     const [recommended] = await db
@@ -1010,6 +1275,9 @@ export class DeviceControlService {
       .update(deviceSessions)
       .set({
         status: 'ended',
+        conversationState: 'idle',
+        conversationEndedAt: new Date(),
+        lastConversationEndReason: input.reason?.trim() || 'device_end',
         endedAt: new Date(),
         endReason: input.reason?.trim() || 'device_end'
       })
@@ -1022,6 +1290,11 @@ export class DeviceControlService {
         updatedAt: new Date()
       })
       .where(eq(devices.id, input.device.id));
+
+    const session = await this.getSessionRowById(input.sessionId);
+    if (session) {
+      await this.publishSessionState(session, 'session_ended');
+    }
 
     return { ok: true };
   }

@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdint.h>
+
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -9,12 +10,11 @@
 #include "esp_audio_enc_default.h"
 #include "esp_capture_defaults.h"
 #include "esp_capture_sink.h"
+#include "impl/esp_capture_audio_aec_src.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include <sdkconfig.h>
 
 #include "media.h"
-#include "preconnect_audio_src.h"
 
 static const char *TAG = "media";
 
@@ -25,7 +25,6 @@ typedef struct {
     esp_capture_sink_handle_t capturer_handle;
     esp_capture_audio_src_if_t *audio_source;
     esp_codec_dev_handle_t record_device;
-    bool input_muted;
 } capture_system_t;
 
 typedef struct {
@@ -36,33 +35,27 @@ typedef struct {
     int output_volume;
 } renderer_system_t;
 
-static capture_system_t  capturer_system;
+static capture_system_t capturer_system;
 static renderer_system_t renderer_system;
+static volatile int64_t s_last_mic_activity_ms = 0;
 
-// ---------------------------------------------------------------------------
-// Capture system — plain device source (no AFE/AEC).
-//
-// The AEC source (esp_capture_new_audio_aec_src) was tried but internally
-// initialises an AFE_TYPE_SR pipeline that includes its own WakeNet.  In SR
-// mode the AFE suppresses audio output until it detects the wake word inside
-// the pipeline, so LiveKit never receives mic audio from the agent session.
-//
-// The simple dev source passes raw I2S frames directly to the capture sink
-// and to LiveKit — this is what worked before the AEC attempt.
-// ---------------------------------------------------------------------------
 static int build_capturer_system(void)
 {
     esp_codec_dev_handle_t record_handle = get_record_handle();
     NULL_CHECK(record_handle, "Failed to get record handle");
     capturer_system.record_device = record_handle;
 
-    capturer_system.audio_source = mitr_preconnect_audio_src_new(record_handle);
-    NULL_CHECK(capturer_system.audio_source, "Failed to create audio source");
-    ESP_LOGI(TAG, "Capture source: preconnect-capable dev src (no AFE)");
+    esp_capture_audio_aec_src_cfg_t aec_cfg = {
+        .record_handle = record_handle,
+        .data_on_vad = false,
+    };
+    capturer_system.audio_source = esp_capture_new_audio_aec_src(&aec_cfg);
+    NULL_CHECK(capturer_system.audio_source, "Failed to create AEC audio source");
+    ESP_LOGI(TAG, "Capture source: esp_capture_new_audio_aec_src");
 
     esp_capture_cfg_t cfg = {
         .sync_mode = ESP_CAPTURE_SYNC_MODE_AUDIO,
-        .audio_src = capturer_system.audio_source
+        .audio_src = capturer_system.audio_source,
     };
     int ret = esp_capture_open(&cfg, &capturer_system.capturer_handle);
     ESP_RETURN_ON_FALSE(ret == 0, -1, TAG, "Failed to open capture system");
@@ -82,7 +75,6 @@ static int build_renderer_system(void)
     renderer_system.audio_renderer = av_render_alloc_i2s_render(&i2s_cfg);
     NULL_CHECK(renderer_system.audio_renderer, "Failed to create I2S renderer");
 
-    // Set initial speaker volume
     esp_codec_dev_set_out_vol(i2s_cfg.play_handle, CONFIG_LK_EXAMPLE_SPEAKER_VOLUME);
     renderer_system.output_volume = CONFIG_LK_EXAMPLE_SPEAKER_VOLUME;
     renderer_system.output_muted = false;
@@ -108,11 +100,9 @@ static int build_renderer_system(void)
 
 int media_init(void)
 {
-    // Register default audio encoder and decoder
     esp_audio_enc_register_default();
     esp_audio_dec_register_default();
 
-    // Build capturer and renderer systems
     ESP_RETURN_ON_FALSE(build_capturer_system() == 0, -1, TAG, "Capture init failed");
     ESP_RETURN_ON_FALSE(build_renderer_system() == 0, -1, TAG, "Renderer init failed");
     return 0;
@@ -126,20 +116,6 @@ esp_capture_handle_t media_get_capturer(void)
 av_render_handle_t media_get_renderer(void)
 {
     return renderer_system.av_renderer_handle;
-}
-
-esp_err_t media_set_input_muted(bool muted)
-{
-    NULL_CHECK(capturer_system.record_device, "Failed to get record handle");
-    int ret = esp_codec_dev_set_in_mute(capturer_system.record_device, muted);
-    ESP_RETURN_ON_FALSE(ret == 0, ESP_FAIL, TAG, "Failed to set input mute");
-    capturer_system.input_muted = muted;
-    return ESP_OK;
-}
-
-bool media_is_input_muted(void)
-{
-    return capturer_system.input_muted;
 }
 
 esp_err_t media_set_output_muted(bool muted)
@@ -161,49 +137,11 @@ int media_get_output_volume(void)
     return renderer_system.output_volume;
 }
 
-// ---------------------------------------------------------------------------
-// Reference PCM stub — kept for header compatibility, returns silence.
-// Not needed without the AEC capture source.
-// ---------------------------------------------------------------------------
 void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples)
 {
     (void)delay_samples;
-    memset(buf, 0, n_samples * sizeof(int16_t));
+    memset(buf, 0, (size_t)n_samples * sizeof(int16_t));
 }
-
-// ---------------------------------------------------------------------------
-// Preconnect capture — kept continuously running once started. Mic audio
-// fans out to the LiveKit encoder (via the capture source API) and to the
-// wake-word detector (via the tap). There is no longer a single-owner gate.
-// ---------------------------------------------------------------------------
-
-esp_err_t media_start_preconnect_capture(void)
-{
-    esp_err_t err = mitr_preconnect_audio_src_start_prebuffer();
-    if (err != ESP_OK) {
-        mitr_preconnect_audio_src_reset_buffer();
-        ESP_LOGW(TAG, "[PRECONNECT] Failed to start prebuffer: %s", esp_err_to_name(err));
-        return err;
-    }
-    ESP_LOGI(TAG, "[PRECONNECT] Capture started");
-    return ESP_OK;
-}
-
-void media_stop_preconnect_capture(void)
-{
-    mitr_preconnect_audio_src_stop_prebuffer();
-    mitr_preconnect_audio_src_reset_buffer();
-    ESP_LOGI(TAG, "[PRECONNECT] Capture stopped");
-}
-
-bool media_is_preconnect_capture_active(void)
-{
-    return mitr_preconnect_audio_src_is_prebuffering();
-}
-
-// ---------------------------------------------------------------------------
-// Direct PCM playback (for chime/beep — use only when LiveKit is not active)
-// ---------------------------------------------------------------------------
 
 void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples)
 {
@@ -213,9 +151,9 @@ void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples)
     }
 
     esp_codec_dev_sample_info_t cfg = {
-        .sample_rate     = 16000,
+        .sample_rate = 16000,
         .bits_per_sample = 16,
-        .channel         = 2,
+        .channel = 2,
     };
     int ret = esp_codec_dev_open(renderer_system.render_device, &cfg);
     if (ret != 0) {
@@ -229,10 +167,7 @@ void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples)
         ESP_LOGW(TAG, "[PCM] esp_codec_dev_write returned %d", ret);
     }
 
-    /* Wait for I2S DMA to drain */
-    int drain_ms = (n_stereo_samples * 1000) / 16000 + 50;
-    vTaskDelay(pdMS_TO_TICKS(drain_ms));
-
+    vTaskDelay(pdMS_TO_TICKS((n_stereo_samples * 1000) / 16000 + 50));
     esp_codec_dev_close(renderer_system.render_device);
 }
 
@@ -251,9 +186,9 @@ void media_play_pcm_chunked(const int16_t *stereo_pcm,
     }
 
     esp_codec_dev_sample_info_t cfg = {
-        .sample_rate     = 16000,
+        .sample_rate = 16000,
         .bits_per_sample = 16,
-        .channel         = 2,
+        .channel = 2,
     };
     int ret = esp_codec_dev_open(renderer_system.render_device, &cfg);
     if (ret != 0) {
@@ -276,24 +211,11 @@ void media_play_pcm_chunked(const int16_t *stereo_pcm,
         remaining -= chunk_samples;
     }
 
-    int drain_ms = (n_stereo_samples * 1000) / 16000 + 50;
-    vTaskDelay(pdMS_TO_TICKS(drain_ms));
-
+    vTaskDelay(pdMS_TO_TICKS((n_stereo_samples * 1000) / 16000 + 50));
     esp_codec_dev_close(renderer_system.render_device);
 }
-
-// ---------------------------------------------------------------------------
-// Mic activity tracking (stub — kept for header compatibility)
-// ---------------------------------------------------------------------------
-
-static volatile int64_t s_last_mic_activity_ms = 0;
 
 void media_notify_mic_activity(void)
 {
     s_last_mic_activity_ms = esp_timer_get_time() / 1000;
-}
-
-int64_t media_get_last_mic_activity_ms(void)
-{
-    return s_last_mic_activity_ms;
 }

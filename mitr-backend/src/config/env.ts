@@ -19,6 +19,7 @@ const envSchema = z.object({
   LOCAL_LATENCY_TRACKING_FILE: z.string().optional(),
   CORS_ORIGINS: z.string().default('http://localhost:8787'),
   API_PUBLIC_BASE_URL: z.string().url().optional(),
+  INTERNAL_API_BASE_URL: z.string().url().optional(),
   VOICE_NOTES_STORAGE_DIR: z.string().default('var/voice-notes'),
 
   LIVEKIT_URL: z.string().url().optional(),
@@ -77,6 +78,8 @@ const envSchema = z.object({
 
   DEVICE_TOKEN_TTL_SEC: z.coerce.number().default(86_400),
   SESSION_IDLE_TIMEOUT_SEC: z.coerce.number().default(1_800),
+  DEVICE_CONVERSATION_IDLE_TIMEOUT_MS: z.coerce.number().default(20_000),
+  INTERNAL_SERVICE_TOKEN: z.string().min(1).optional(),
   REDIS_URL: z.string().url().optional(),
   POSTGRES_URL: z.string().url(),
 

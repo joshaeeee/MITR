@@ -15,6 +15,9 @@ export const sessionConfig = Object.freeze({
   get idleTimeoutSec() {
     return env.SESSION_IDLE_TIMEOUT_SEC;
   },
+  get deviceConversationIdleTimeoutSec() {
+    return Math.max(1, Math.ceil(env.DEVICE_CONVERSATION_IDLE_TIMEOUT_MS / 1000));
+  },
   get userHistoryTtlSec() {
     return USER_HISTORY_TTL_SEC;
   },

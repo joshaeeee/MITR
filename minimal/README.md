@@ -30,9 +30,12 @@ This is the production starter path. The browser bridge is no longer the primary
   - `mitr_ping`
   - `mitr_get_device_status`
   - `mitr_get_diagnostics`
-  - `mitr_set_mute`
   - `mitr_restart_session`
 - device events on the data channel topic `mitr.device_event`
+- backend conversation control on `mitr.device_control`:
+  - `conversation_started`
+  - `conversation_ended`
+  - `conversation_error`
 
 ## What still needs real hardware validation
 
