@@ -293,7 +293,7 @@ jobs:
           script: |
             set -euo pipefail
             set -x
-            trap 'rc=$?; echo "[deploy] failed at line ${BASH_LINENO[0]} while running: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
+            trap 'rc=$?; line=${BASH_LINENO[0]:-unknown}; echo "[deploy] failed at line ${line} while running: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
 
             BASE_DIR="/opt/mitr"
             REPO_DIR="${BASE_DIR}/MITR"
