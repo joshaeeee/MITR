@@ -292,6 +292,8 @@ jobs:
           command_timeout: 20m
           script: |
             set -euo pipefail
+            set -x
+            trap 'rc=$?; line=${BASH_LINENO[0]:-unknown}; echo "[deploy] failed at line ${line} while running: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
 
             BASE_DIR="/opt/mitr"
             REPO_DIR="${BASE_DIR}/MITR"
@@ -300,29 +302,63 @@ jobs:
 
             mkdir -p "${BASE_DIR}"
             if [ ! -d "${REPO_DIR}/.git" ]; then
+              echo "[deploy] cloning repo into ${REPO_DIR}"
               git clone "${REPO_URL}" "${REPO_DIR}"
             fi
 
+            echo "[deploy] preparing clean checkout"
             cd "${REPO_DIR}"
-            git fetch "${REPO_URL}" main
-            git checkout main
-            git reset --hard FETCH_HEAD
+            git remote set-url origin "${REPO_URL}"
+            mkdir -p .deploy-tmp
+            if [ -f "mitr-backend/deploy/.env.prod" ]; then
+              cp "mitr-backend/deploy/.env.prod" ".deploy-tmp/env.prod"
+            fi
+            git fetch origin main
+            git checkout -B main origin/main
+            git reset --hard origin/main
+            git clean -fd \
+              -e .deploy-tmp/ \
+              -e mitr-backend/deploy/generated/ \
+              -e mitr-backend/deploy/www/
+            if [ -f ".deploy-tmp/env.prod" ]; then
+              mkdir -p "mitr-backend/deploy"
+              cp ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod"
+            fi
+            rm -rf .deploy-tmp
+            echo "[deploy] checkout ready at $(git rev-parse --short HEAD)"
 
             cd "${APP_DIR}"
+            echo "[deploy] app dir $(pwd)"
+            ls -ld deploy
             if [ ! -f "deploy/.env.prod" ]; then
               echo "Missing ${APP_DIR}/deploy/.env.prod. Create it manually from deploy/.env.prod.template"
+              ls -la deploy || true
               exit 1
             fi
+            echo "[deploy] found deploy/.env.prod"
 
             update_env() {
               key="$1"
               value="$2"
-              if grep -qE "^${key}=" deploy/.env.prod; then
-                sed -i.bak "s#^${key}=.*#${key}=${value}#g" deploy/.env.prod
-              else
-                echo "${key}=${value}" >> deploy/.env.prod
-              fi
-              rm -f deploy/.env.prod.bak
+              python3 -c '
+              from pathlib import Path
+              import sys
+
+              path = Path("deploy/.env.prod")
+              key = sys.argv[1]
+              value = sys.argv[2]
+              lines = path.read_text().splitlines()
+
+              for idx, line in enumerate(lines):
+                  if line.startswith(f"{key}="):
+                      lines[idx] = f"{key}={value}"
+                      break
+              else:
+                  lines.append(f"{key}={value}")
+
+              path.write_text("\\n".join(lines) + "\\n")
+              ' "$key" "$value"
+              echo "[deploy] set ${key}"
             }
 
             update_env "API_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
@@ -345,9 +381,11 @@ jobs:
             export RUN_DB_MIGRATIONS="true"
             export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="false"
 
+            echo "[deploy] running backend deployment"
             chmod +x deploy/configure-nginx.sh deploy/setup-https.sh || true
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
             bash deploy/deploy.sh
+            echo "[deploy] ensuring HTTPS configuration"
             bash deploy/setup-https.sh
 
             # Guard against stale image restarts.
