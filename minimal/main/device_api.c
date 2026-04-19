@@ -9,6 +9,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "sdkconfig.h"
 
@@ -558,6 +559,66 @@ esp_err_t mitr_device_send_telemetry(
         cJSON_Delete(response);
     }
     return err;
+}
+
+esp_err_t mitr_device_notify_wake_detected(
+    const char *session_id,
+    const char *phrase,
+    float score)
+{
+    static const char *const MODEL_NAME = "wn9_hiesp";
+
+    ESP_RETURN_ON_FALSE(session_id != NULL && strlen(session_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing session id");
+    ESP_RETURN_ON_FALSE(phrase != NULL && strlen(phrase) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing wake phrase");
+
+    int path_len = snprintf(NULL, 0, "/internal/device-sessions/%s/wake-detected", session_id);
+    ESP_RETURN_ON_FALSE(path_len > 0, ESP_FAIL, TAG, "Failed to size wake-detected path");
+
+    char *path = calloc((size_t)path_len + 1, 1);
+    ESP_RETURN_ON_FALSE(path != NULL, ESP_ERR_NO_MEM, TAG, "Failed to allocate wake-detected path");
+    snprintf(path, (size_t)path_len + 1, "/internal/device-sessions/%s/wake-detected", session_id);
+
+    cJSON *body = cJSON_CreateObject();
+    if (body == NULL) {
+        free(path);
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(body, "modelName", MODEL_NAME);
+    cJSON_AddStringToObject(body, "phrase", phrase);
+    cJSON_AddNumberToObject(body, "score", score);
+    cJSON_AddNumberToObject(body, "detectedAtMs", (double)(esp_timer_get_time() / 1000));
+
+    char *body_string = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    if (body_string == NULL) {
+        free(path);
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON *response = NULL;
+    esp_err_t err = http_post_json(path, body_string, mitr_device_storage_access_token(), &response, NULL);
+    free(path);
+    free(body_string);
+    if (err != ESP_OK) {
+        if (response) {
+            cJSON_Delete(response);
+        }
+        return err;
+    }
+
+    const cJSON *accepted = cJSON_GetObjectItemCaseSensitive(response, "accepted");
+    if (!cJSON_IsTrue(accepted)) {
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(response, "reason");
+        ESP_LOGW(
+            TAG,
+            "Wake detection rejected: %s",
+            (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "unknown");
+        cJSON_Delete(response);
+        return ESP_FAIL;
+    }
+
+    cJSON_Delete(response);
+    return ESP_OK;
 }
 
 esp_err_t mitr_device_end_session(const char *session_id, const char *reason)
