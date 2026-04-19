@@ -11,6 +11,8 @@ int  wake_word_init(void);
 void wake_word_start(EventGroupHandle_t eg, EventBits_t bit);
 void wake_word_stop(void);
 void wake_word_rearm(void);
+const char *wake_word_model_name(void);
+const char *wake_word_phrase(void);
 
 #ifdef __cplusplus
 }

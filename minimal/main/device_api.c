@@ -563,12 +563,12 @@ esp_err_t mitr_device_send_telemetry(
 
 esp_err_t mitr_device_notify_wake_detected(
     const char *session_id,
+    const char *model_name,
     const char *phrase,
     float score)
 {
-    static const char *const MODEL_NAME = "wn9_hiesp";
-
     ESP_RETURN_ON_FALSE(session_id != NULL && strlen(session_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing session id");
+    ESP_RETURN_ON_FALSE(model_name != NULL && strlen(model_name) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing model name");
     ESP_RETURN_ON_FALSE(phrase != NULL && strlen(phrase) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing wake phrase");
 
     int path_len = snprintf(NULL, 0, "/internal/device-sessions/%s/wake-detected", session_id);
@@ -583,7 +583,7 @@ esp_err_t mitr_device_notify_wake_detected(
         free(path);
         return ESP_ERR_NO_MEM;
     }
-    cJSON_AddStringToObject(body, "modelName", MODEL_NAME);
+    cJSON_AddStringToObject(body, "modelName", model_name);
     cJSON_AddStringToObject(body, "phrase", phrase);
     cJSON_AddNumberToObject(body, "score", score);
     cJSON_AddNumberToObject(body, "detectedAtMs", (double)(esp_timer_get_time() / 1000));
@@ -609,11 +609,16 @@ esp_err_t mitr_device_notify_wake_detected(
     const cJSON *accepted = cJSON_GetObjectItemCaseSensitive(response, "accepted");
     if (!cJSON_IsTrue(accepted)) {
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(response, "reason");
+        const char *reason_str =
+            (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "unknown";
         ESP_LOGW(
             TAG,
             "Wake detection rejected: %s",
-            (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "unknown");
+            reason_str);
         cJSON_Delete(response);
+        if (strcmp(reason_str, "conversation_not_idle") == 0) {
+            return ESP_ERR_INVALID_STATE;
+        }
         return ESP_FAIL;
     }
 

@@ -89,8 +89,8 @@ menu "Mitr ESP32 Device"
         help
             Substring matched case-insensitively against the model names stored
             in the "model" flash partition via esp_srmodel_filter().
-            "hiesp"    matches "wn9_hiesp"         (development placeholder)
-            "heymitr"  matches "wn9_heymitr_tts3"  (custom Hey Mitr model)
             Falls back to the first available WakeNet model if no match is found.
-            Must also set the matching CONFIG_SR_WN_WN9_* option in sdkconfig.
+            The selected substring must match a model that actually exists in the
+            esp-sr model assets packed into the "model" partition.
+            Must also enable the matching CONFIG_SR_WN_* option in sdkconfig.
 endmenu

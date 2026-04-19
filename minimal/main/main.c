@@ -27,6 +27,7 @@ static const int ROOM_RETRY_CAP_SEC = 60;
 static const int BOOTSTRAP_RETRY_SEC = 10;
 static const int NETWORK_RETRY_SEC = 30;
 static const int CONFIG_RETRY_SEC = 60;
+static const int ROOM_RECONNECT_GRACE_MS = 1000;
 
 static int64_t now_ms(void)
 {
@@ -149,6 +150,9 @@ static void mitr_device_task(void *arg)
     ESP_ERROR_CHECK(livekit_system_init());
     board_init();
     ESP_ERROR_CHECK(media_init());
+    esp_log_level_set("wake_word", ESP_LOG_INFO);
+    esp_log_level_set("media", ESP_LOG_INFO);
+    esp_log_level_set("preconnect_audio", ESP_LOG_INFO);
     const bool wake_word_ready = wake_word_init() == 0;
     sounds_init();
     mitr_boot_feedback_init();
@@ -210,8 +214,12 @@ static void mitr_device_task(void *arg)
         break;
     }
 
-    connect_room_blocking();
+    if (media_start_preconnect_capture() != ESP_OK) {
+        ESP_LOGW(TAG, "Preconnect capture failed to start; wake detector may not receive audio until room capture starts");
+    }
+
     start_wake_detection(wake_event_group, wake_word_ready);
+    connect_room_blocking();
     mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
     log_boot_state("ready_connected");
     esp_log_level_set("*", ESP_LOG_INFO);
@@ -227,6 +235,7 @@ static void mitr_device_task(void *arg)
             if (!session_is_active()) {
                 ESP_LOGW(TAG, "[ROOM] Wake detected while room inactive; reconnecting before re-arming");
                 leave_room();
+                vTaskDelay(pdMS_TO_TICKS(ROOM_RECONNECT_GRACE_MS));
                 mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
                 connect_room_blocking();
                 if (!session_is_conversation_active()) {
@@ -241,6 +250,7 @@ static void mitr_device_task(void *arg)
         if (!session_is_active()) {
             ESP_LOGW(TAG, "[ROOM] Session inactive; reconnecting persistent room");
             leave_room();
+            vTaskDelay(pdMS_TO_TICKS(ROOM_RECONNECT_GRACE_MS));
             mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
             connect_room_blocking();
             start_wake_detection(wake_event_group, wake_word_ready);
