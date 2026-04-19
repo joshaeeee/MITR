@@ -41,6 +41,10 @@ esp_err_t media_set_output_muted(bool muted);
 bool media_is_output_muted(void);
 int media_get_output_volume(void);
 
+esp_err_t media_start_preconnect_capture(void);
+void media_stop_preconnect_capture(void);
+bool media_is_preconnect_capture_active(void);
+
 /// Play `n_stereo_samples` of stereo 16-bit 16-kHz PCM directly to the speaker.
 /// Opens, writes, then closes the playback codec device.
 /// Blocks for approximately the audio duration plus I2S drain time.

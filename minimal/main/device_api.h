@@ -85,6 +85,7 @@ esp_err_t mitr_device_send_telemetry(
     const char *message);
 esp_err_t mitr_device_notify_wake_detected(
     const char *session_id,
+    const char *model_name,
     const char *phrase,
     float score);
 esp_err_t mitr_device_end_session(const char *session_id, const char *reason);

@@ -4,6 +4,7 @@ idf_component_register(
         "example.c"
         "board.c"
         "media.c"
+        "preconnect_audio_src.c"
         "device_api.c"
         "device_storage.c"
         "boot_feedback.c"

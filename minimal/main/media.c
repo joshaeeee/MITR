@@ -10,11 +10,11 @@
 #include "esp_audio_enc_default.h"
 #include "esp_capture_defaults.h"
 #include "esp_capture_sink.h"
-#include "impl/esp_capture_audio_aec_src.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "media.h"
+#include "preconnect_audio_src.h"
 
 static const char *TAG = "media";
 
@@ -45,13 +45,9 @@ static int build_capturer_system(void)
     NULL_CHECK(record_handle, "Failed to get record handle");
     capturer_system.record_device = record_handle;
 
-    esp_capture_audio_aec_src_cfg_t aec_cfg = {
-        .record_handle = record_handle,
-        .data_on_vad = false,
-    };
-    capturer_system.audio_source = esp_capture_new_audio_aec_src(&aec_cfg);
-    NULL_CHECK(capturer_system.audio_source, "Failed to create AEC audio source");
-    ESP_LOGI(TAG, "Capture source: esp_capture_new_audio_aec_src");
+    capturer_system.audio_source = mitr_preconnect_audio_src_new(record_handle);
+    NULL_CHECK(capturer_system.audio_source, "Failed to create audio source");
+    ESP_LOGI(TAG, "Capture source: preconnect-capable dev src (no AFE)");
 
     esp_capture_cfg_t cfg = {
         .sync_mode = ESP_CAPTURE_SYNC_MODE_AUDIO,
@@ -141,6 +137,30 @@ void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples)
 {
     (void)delay_samples;
     memset(buf, 0, (size_t)n_samples * sizeof(int16_t));
+}
+
+esp_err_t media_start_preconnect_capture(void)
+{
+    esp_err_t err = mitr_preconnect_audio_src_start_prebuffer();
+    if (err != ESP_OK) {
+        mitr_preconnect_audio_src_reset_buffer();
+        ESP_LOGW(TAG, "[PRECONNECT] Failed to start prebuffer: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "[PRECONNECT] Capture started");
+    return ESP_OK;
+}
+
+void media_stop_preconnect_capture(void)
+{
+    mitr_preconnect_audio_src_stop_prebuffer();
+    mitr_preconnect_audio_src_reset_buffer();
+    ESP_LOGI(TAG, "[PRECONNECT] Capture stopped");
+}
+
+bool media_is_preconnect_capture_active(void)
+{
+    return mitr_preconnect_audio_src_is_prebuffering();
 }
 
 void media_play_pcm(const int16_t *stereo_pcm, int n_stereo_samples)

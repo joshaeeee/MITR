@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -24,8 +25,6 @@
 static const char *TAG = "mitr_livekit_device";
 static const char *DEVICE_EVENT_TOPIC = "mitr.device_event";
 static const char *DEVICE_CONTROL_TOPIC = "mitr.device_control";
-static const char *WAKEWORD_EVENT_REASON = "hey_mitr";
-static const char *WAKEWORD_PHRASE = "hey mitr";
 static const float WAKEWORD_DETECTION_SCORE = 1.0f;
 
 static livekit_room_handle_t room_handle;
@@ -43,6 +42,7 @@ typedef struct {
     int reconnect_window_sec;
     int heartbeat_interval_sec;
     int telemetry_backoff_sec;
+    uint32_t room_generation;
     char last_failure_reason[64];
     char last_end_reason[64];
 } session_state_t;
@@ -57,6 +57,16 @@ static session_state_t session = {
 static int64_t now_ms(void)
 {
     return esp_timer_get_time() / 1000;
+}
+
+static uint32_t callback_room_generation(void *ctx)
+{
+    return (uint32_t)(uintptr_t)ctx;
+}
+
+static bool is_current_room_callback(void *ctx)
+{
+    return room_handle != NULL && callback_room_generation(ctx) == session.room_generation;
 }
 
 static void copy_string(char *dest, size_t capacity, const char *value)
@@ -269,6 +279,9 @@ static void request_session_restart(const char *reason)
 
 void on_wake_detected(void)
 {
+    const char *model_name = wake_word_model_name();
+    const char *phrase = wake_word_phrase();
+
     if (!session.token.session_id || session.token.session_id[0] == '\0') {
         ESP_LOGW(TAG, "Ignoring wake because the device session is unavailable");
         wake_word_rearm();
@@ -280,14 +293,21 @@ void on_wake_detected(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Wake word detected locally; activating conversation");
-    set_conversation_active(true, WAKEWORD_EVENT_REASON, true);
+    ESP_LOGI(TAG, "Wake word detected locally; activating conversation (model=%s, phrase=%s)",
+             model_name ? model_name : "unknown",
+             phrase ? phrase : "unknown");
+    set_conversation_active(true, phrase, true);
 
     esp_err_t err = mitr_device_notify_wake_detected(
         session.token.session_id,
-        WAKEWORD_PHRASE,
+        model_name ? model_name : "unknown",
+        phrase,
         WAKEWORD_DETECTION_SCORE);
     if (err != ESP_OK) {
+        if (err == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Backend already has a conversation in flight; staying active and waiting for agent state");
+            return;
+        }
         ESP_LOGW(TAG, "Wake notification rejected or failed: %s", esp_err_to_name(err));
         set_conversation_active(false, "wake_rejected", false);
         wake_word_rearm();
@@ -296,6 +316,14 @@ void on_wake_detected(void)
 
 static void on_state_changed(livekit_connection_state_t state, void *ctx)
 {
+    if (!is_current_room_callback(ctx)) {
+        ESP_LOGW(TAG, "Ignoring stale room state callback: state=%s gen=%u current=%u",
+                 livekit_connection_state_str(state),
+                 (unsigned)callback_room_generation(ctx),
+                 (unsigned)session.room_generation);
+        return;
+    }
+
     const livekit_connection_state_t previous_state = session.connection_state;
     session.connection_state = state;
     ESP_LOGI(TAG, "Room state changed: %s", livekit_connection_state_str(state));
@@ -348,6 +376,10 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
 
 static void on_participant_info(const livekit_participant_info_t *info, void *ctx)
 {
+    if (!is_current_room_callback(ctx)) {
+        return;
+    }
+
     if (info->kind != LIVEKIT_PARTICIPANT_KIND_AGENT) {
         return;
     }
@@ -422,6 +454,10 @@ static void handle_device_control_message(const cJSON *root)
 
 static void on_data_received(const livekit_data_received_t *data, void *ctx)
 {
+    if (!is_current_room_callback(ctx)) {
+        return;
+    }
+
     if (!data || !data->payload.bytes || data->payload.size == 0) {
         return;
     }
@@ -516,14 +552,17 @@ static void rpc_restart_session(const livekit_rpc_invocation_t *invocation, void
 
 static void cleanup_room(void)
 {
-    if (room_handle != NULL) {
-        if (livekit_room_close(room_handle) != LIVEKIT_ERR_NONE) {
+    livekit_room_handle_t handle = room_handle;
+    room_handle = NULL;
+
+    if (handle != NULL) {
+        if (livekit_room_close(handle) != LIVEKIT_ERR_NONE) {
             ESP_LOGW(TAG, "Failed to close room cleanly");
         }
-        if (livekit_room_destroy(room_handle) != LIVEKIT_ERR_NONE) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (livekit_room_destroy(handle) != LIVEKIT_ERR_NONE) {
             ESP_LOGW(TAG, "Failed to destroy room cleanly");
         }
-        room_handle = NULL;
     }
 
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
@@ -557,6 +596,7 @@ static bool wait_for_initial_connect(void)
 
 static bool create_and_connect_room(void)
 {
+    const uint32_t room_generation = session.room_generation + 1;
     livekit_room_options_t room_options = {
         .publish = {
             .kind = LIVEKIT_MEDIA_TYPE_AUDIO,
@@ -574,12 +614,15 @@ static bool create_and_connect_room(void)
         .on_state_changed = on_state_changed,
         .on_participant_info = on_participant_info,
         .on_data_received = on_data_received,
+        .ctx = (void *)(uintptr_t)room_generation,
     };
 
     if (livekit_room_create(&room_handle, &room_options) != LIVEKIT_ERR_NONE) {
         ESP_LOGE(TAG, "Failed to create LiveKit room");
         return false;
     }
+
+    session.room_generation = room_generation;
 
     livekit_room_rpc_register(room_handle, "mitr_ping", rpc_ping);
     livekit_room_rpc_register(room_handle, "mitr_get_device_status", rpc_get_device_status);
