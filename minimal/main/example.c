@@ -19,10 +19,14 @@
 #include "ota_manager.h"
 #include "boot_feedback.h"
 #include "sounds.h"
+#include "wake_word.h"
 
 static const char *TAG = "mitr_livekit_device";
 static const char *DEVICE_EVENT_TOPIC = "mitr.device_event";
 static const char *DEVICE_CONTROL_TOPIC = "mitr.device_control";
+static const char *WAKEWORD_EVENT_REASON = "hey_mitr";
+static const char *WAKEWORD_PHRASE = "hey mitr";
+static const float WAKEWORD_DETECTION_SCORE = 1.0f;
 
 static livekit_room_handle_t room_handle;
 
@@ -263,6 +267,33 @@ static void request_session_restart(const char *reason)
     report_telemetry("restart_requested", "warn", session.last_end_reason);
 }
 
+void on_wake_detected(void)
+{
+    if (!session.token.session_id || session.token.session_id[0] == '\0') {
+        ESP_LOGW(TAG, "Ignoring wake because the device session is unavailable");
+        wake_word_rearm();
+        return;
+    }
+
+    if (session.conversation_active) {
+        ESP_LOGW(TAG, "Ignoring wake because a conversation is already active");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Wake word detected locally; activating conversation");
+    set_conversation_active(true, WAKEWORD_EVENT_REASON, true);
+
+    esp_err_t err = mitr_device_notify_wake_detected(
+        session.token.session_id,
+        WAKEWORD_PHRASE,
+        WAKEWORD_DETECTION_SCORE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Wake notification rejected or failed: %s", esp_err_to_name(err));
+        set_conversation_active(false, "wake_rejected", false);
+        wake_word_rearm();
+    }
+}
+
 static void on_state_changed(livekit_connection_state_t state, void *ctx)
 {
     const livekit_connection_state_t previous_state = session.connection_state;
@@ -356,10 +387,11 @@ static void handle_device_control_message(const cJSON *root)
     }
 
     if (strcmp(message_type, "conversation_started") == 0) {
-        const cJSON *play_chime = cJSON_GetObjectItemCaseSensitive(root, "playChime");
         const cJSON *wakeword = cJSON_GetObjectItemCaseSensitive(root, "wakeword");
         const char *reason = (cJSON_IsString(wakeword) && wakeword->valuestring) ? wakeword->valuestring : "wake_detected";
-        set_conversation_active(true, reason, cJSON_IsTrue(play_chime));
+        if (!session.conversation_active) {
+            set_conversation_active(true, reason, false);
+        }
         return;
     }
 
@@ -367,6 +399,7 @@ static void handle_device_control_message(const cJSON *root)
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
         const char *reason_str = (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "conversation_ended";
         set_conversation_active(false, reason_str, false);
+        wake_word_rearm();
         return;
     }
 
@@ -377,6 +410,7 @@ static void handle_device_control_message(const cJSON *root)
         mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
         publish_device_event("conversation_error", reason_str);
         report_telemetry("conversation_error", "warn", reason_str);
+        wake_word_rearm();
         return;
     }
 
@@ -609,6 +643,7 @@ bool join_room(void)
 
 void leave_room(void)
 {
+    wake_word_stop();
     const char *reason =
         session.restart_requested
             ? (session.last_end_reason[0] != '\0' ? session.last_end_reason : "remote_restart")
