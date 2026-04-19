@@ -1,4 +1,5 @@
 #include "wake_word.h"
+#include "latency_trace.h"
 #include "preconnect_audio_src.h"
 
 #include "esp_wn_iface.h"
@@ -108,6 +109,7 @@ static void wake_word_task(void *arg)
 {
     ESP_LOGI(TAG, "Wake word task started (chunk=%d samples, %d ms)",
              s_chunk, s_chunk / 16);
+    mitr_latency_mark("wake_service_started");
 
     if (s_pcm_stream == NULL) {
         s_pcm_stream = xStreamBufferCreate(WAKE_WORD_STREAM_BUFFER_BYTES, s_chunk * sizeof(int16_t));
@@ -157,6 +159,7 @@ static void wake_word_task(void *arg)
         if (state == WAKENET_DETECTED) {
             ESP_LOGI(TAG, "*** WAKE WORD DETECTED *** start_point=%d",
                      s_wakenet->get_start_point(s_model));
+            mitr_latency_mark("wake_detected");
             s_detection_pending_stop = true;
 
             if (s_eg) {

@@ -16,6 +16,7 @@
 
 #include "device_api.h"
 #include "example.h"
+#include "latency_trace.h"
 #include "media.h"
 #include "ota_manager.h"
 #include "boot_feedback.h"
@@ -265,6 +266,9 @@ static void set_conversation_active(bool active, const char *reason, bool play_c
     if (active && play_chime) {
         sounds_play_chime();
     }
+    if (!active) {
+        mitr_latency_end_wake(reason ? reason : "conversation_ended");
+    }
     publish_device_event(active ? "conversation_started" : "conversation_ended", reason);
     report_telemetry(active ? "conversation_started" : "conversation_ended", "info", reason ? reason : "");
 }
@@ -277,26 +281,29 @@ static void request_session_restart(const char *reason)
     report_telemetry("restart_requested", "warn", session.last_end_reason);
 }
 
-void on_wake_detected(void)
+bool session_begin_local_wake(const char *model_name, const char *phrase, bool play_chime)
 {
-    const char *model_name = wake_word_model_name();
-    const char *phrase = wake_word_phrase();
-
-    if (!session.token.session_id || session.token.session_id[0] == '\0') {
-        ESP_LOGW(TAG, "Ignoring wake because the device session is unavailable");
-        wake_word_rearm();
-        return;
-    }
-
     if (session.conversation_active) {
         ESP_LOGW(TAG, "Ignoring wake because a conversation is already active");
-        return;
+        return false;
     }
 
+    mitr_latency_begin_wake("wake_detected");
     ESP_LOGI(TAG, "Wake word detected locally; activating conversation (model=%s, phrase=%s)",
              model_name ? model_name : "unknown",
              phrase ? phrase : "unknown");
-    set_conversation_active(true, phrase, true);
+    set_conversation_active(true, phrase ? phrase : "wake_detected", play_chime);
+    mitr_latency_mark_wake("wake_local_ready");
+    return true;
+}
+
+esp_err_t session_notify_wake_detected(const char *model_name, const char *phrase)
+{
+    if (!session.token.session_id || session.token.session_id[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    mitr_latency_mark_wake("wake_notify_start");
 
     esp_err_t err = mitr_device_notify_wake_detected(
         session.token.session_id,
@@ -306,12 +313,27 @@ void on_wake_detected(void)
     if (err != ESP_OK) {
         if (err == ESP_ERR_INVALID_STATE) {
             ESP_LOGW(TAG, "Backend already has a conversation in flight; staying active and waiting for agent state");
-            return;
+            mitr_latency_mark_wake("wake_notify_rejected");
+            return err;
         }
         ESP_LOGW(TAG, "Wake notification rejected or failed: %s", esp_err_to_name(err));
+        mitr_latency_mark_wake("wake_notify_failed");
         set_conversation_active(false, "wake_rejected", false);
         wake_word_rearm();
+        return err;
     }
+    mitr_latency_mark_wake("wake_notify_ok");
+    return ESP_OK;
+}
+
+void on_wake_detected(void)
+{
+    const char *model_name = wake_word_model_name();
+    const char *phrase = wake_word_phrase();
+    if (!session_begin_local_wake(model_name, phrase, true)) {
+        return;
+    }
+    (void)session_notify_wake_detected(model_name, phrase);
 }
 
 static void on_state_changed(livekit_connection_state_t state, void *ctx)
@@ -336,6 +358,10 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
         case LIVEKIT_CONNECTION_STATE_CONNECTED:
             session.last_boot_ok = true;
             set_last_end_reason("");
+            mitr_latency_mark("room_connected");
+            if (session.conversation_active) {
+                mitr_latency_mark_wake("room_connected");
+            }
             if (previous_state == LIVEKIT_CONNECTION_STATE_RECONNECTING) {
                 publish_device_event("reconnected", "room_reconnected");
                 report_telemetry("room_reconnected", "info", "LiveKit room reconnected");
@@ -402,6 +428,12 @@ static void on_participant_info(const livekit_participant_info_t *info, void *ct
 
     session.agent_joined = joined;
     ESP_LOGI(TAG, "Agent participant %s the room", joined ? "joined" : "left");
+    if (joined) {
+        mitr_latency_mark("agent_joined");
+        if (session.conversation_active) {
+            mitr_latency_mark_wake("agent_joined");
+        }
+    }
     publish_device_event(joined ? "agent_joined" : "agent_left", joined ? "agent_joined" : "agent_left");
     report_telemetry(joined ? "agent_joined" : "agent_left", "info", joined ? "Agent participant active" : "Agent participant left");
 }
@@ -630,7 +662,7 @@ static bool create_and_connect_room(void)
     livekit_room_rpc_register(room_handle, "mitr_restart_session", rpc_restart_session);
 
     session.connection_state = LIVEKIT_CONNECTION_STATE_CONNECTING;
-    report_telemetry("session_bootstrap", "info", "Fetched LiveKit token and starting room connect");
+    mitr_latency_mark("room_connect_start");
 
     livekit_err_t connect_res = livekit_room_connect(room_handle, session.token.server_url, session.token.participant_token);
     if (connect_res != LIVEKIT_ERR_NONE) {
@@ -668,11 +700,13 @@ bool join_room(void)
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
     session.conversation_active = false;
 
+    mitr_latency_mark("token_fetch_start");
     esp_err_t token_err = mitr_device_request_token(&session.token);
     if (token_err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to obtain device token: %s", esp_err_to_name(token_err));
         return false;
     }
+    mitr_latency_mark("token_fetch_end");
 
     ESP_LOGI(
         TAG,
@@ -701,6 +735,11 @@ bool session_is_active(void)
            !session.restart_requested &&
            session.connection_state != LIVEKIT_CONNECTION_STATE_FAILED &&
            session.connection_state != LIVEKIT_CONNECTION_STATE_DISCONNECTED;
+}
+
+bool session_has_livekit_session(void)
+{
+    return session.token.session_id != NULL && session.token.session_id[0] != '\0';
 }
 
 bool session_is_conversation_active(void)

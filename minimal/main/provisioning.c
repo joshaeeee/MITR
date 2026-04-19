@@ -18,6 +18,8 @@
 #include "provisioning.h"
 
 static const char *TAG = "mitr_provisioning";
+static bool s_handlers_registered = false;
+static bool s_manager_initialized = false;
 
 static int64_t boot_now_ms(void)
 {
@@ -140,6 +142,7 @@ static void provisioning_event_handler(void *arg, esp_event_base_t event_base, i
             case WIFI_PROV_END:
                 ESP_LOGI(TAG, "Provisioning manager ended");
                 wifi_prov_mgr_deinit();
+                s_manager_initialized = false;
                 break;
             default:
                 break;
@@ -185,21 +188,28 @@ esp_err_t mitr_provisioning_start_if_needed(bool *started)
 
     ESP_RETURN_ON_ERROR(mitr_device_storage_init(), TAG, "Failed to initialize device storage");
 
-    ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &provisioning_event_handler, NULL), TAG, "Failed to register provisioning events");
-    ESP_RETURN_ON_ERROR(esp_event_handler_register(PROTOCOMM_TRANSPORT_BLE_EVENT, ESP_EVENT_ANY_ID, &provisioning_event_handler, NULL), TAG, "Failed to register BLE transport events");
-    ESP_RETURN_ON_ERROR(esp_event_handler_register(PROTOCOMM_SECURITY_SESSION_EVENT, ESP_EVENT_ANY_ID, &provisioning_event_handler, NULL), TAG, "Failed to register provisioning security events");
+    if (!s_handlers_registered) {
+        ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &provisioning_event_handler, NULL), TAG, "Failed to register provisioning events");
+        ESP_RETURN_ON_ERROR(esp_event_handler_register(PROTOCOMM_TRANSPORT_BLE_EVENT, ESP_EVENT_ANY_ID, &provisioning_event_handler, NULL), TAG, "Failed to register BLE transport events");
+        ESP_RETURN_ON_ERROR(esp_event_handler_register(PROTOCOMM_SECURITY_SESSION_EVENT, ESP_EVENT_ANY_ID, &provisioning_event_handler, NULL), TAG, "Failed to register provisioning security events");
+        s_handlers_registered = true;
+    }
 
     wifi_prov_mgr_config_t config = {
         .scheme = wifi_prov_scheme_ble,
         .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM,
     };
 
-    ESP_RETURN_ON_ERROR(wifi_prov_mgr_init(config), TAG, "Failed to init provisioning manager");
+    if (!s_manager_initialized) {
+        ESP_RETURN_ON_ERROR(wifi_prov_mgr_init(config), TAG, "Failed to init provisioning manager");
+        s_manager_initialized = true;
+    }
 
     bool provisioned = false;
     ESP_RETURN_ON_ERROR(wifi_prov_mgr_is_provisioned(&provisioned), TAG, "Failed to read provisioning state");
     if (provisioned) {
         wifi_prov_mgr_deinit();
+        s_manager_initialized = false;
         return ESP_OK;
     }
 

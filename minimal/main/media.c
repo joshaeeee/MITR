@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 
 #include "media.h"
+#include "latency_trace.h"
 #include "preconnect_audio_src.h"
 
 static const char *TAG = "media";
@@ -148,6 +149,7 @@ esp_err_t media_start_preconnect_capture(void)
         return err;
     }
     ESP_LOGI(TAG, "[PRECONNECT] Capture started");
+    mitr_latency_mark("preconnect_capture_started");
     return ESP_OK;
 }
 
