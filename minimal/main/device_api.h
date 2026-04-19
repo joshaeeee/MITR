@@ -83,6 +83,10 @@ esp_err_t mitr_device_send_telemetry(
     const char *event_type,
     const char *level,
     const char *message);
+esp_err_t mitr_device_notify_wake_detected(
+    const char *session_id,
+    const char *phrase,
+    float score);
 esp_err_t mitr_device_end_session(const char *session_id, const char *reason);
 
 #ifdef __cplusplus

@@ -12,6 +12,7 @@ idf_component_register(
         "ota_manager.c"
         "atomic_compat.c"
         "sounds.c"
+        "wake_word.c"
     INCLUDE_DIRS
         "."
     EMBED_FILES
@@ -29,6 +30,7 @@ idf_component_register(
         nvs_flash
         espressif__esp_audio_codec
         espressif__esp_capture
+        espressif__esp-sr
         livekit__example_utils
         livekit__livekit
         tempotian__av_render
