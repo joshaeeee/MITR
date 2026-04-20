@@ -133,6 +133,16 @@ int media_get_output_volume(void)
     return renderer_system.output_volume;
 }
 
+void media_set_mic_muted(bool muted)
+{
+    mitr_preconnect_audio_src_set_muted(muted);
+}
+
+bool media_is_mic_muted(void)
+{
+    return mitr_preconnect_audio_src_is_muted();
+}
+
 void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples)
 {
     (void)delay_samples;

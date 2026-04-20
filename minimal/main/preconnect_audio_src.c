@@ -41,13 +41,12 @@ typedef struct {
     size_t dropped_bytes;
     uint32_t frame_num;
     bool overflow_logged;
-    bool has_primed_preroll;
     bool use_fixed_caps;
-    bool open;
     bool consumer_started;
     bool prebuffering;
     bool capture_running;
     bool stop_requested;
+    bool muted;
 } mitr_preconnect_audio_src_t;
 
 static mitr_preconnect_audio_src_t *s_src = NULL;
@@ -60,7 +59,6 @@ static void reset_ring_locked(mitr_preconnect_audio_src_t *src)
     src->dropped_bytes = 0;
     src->frame_num = 0;
     src->overflow_logged = false;
-    src->has_primed_preroll = false;
 }
 
 static size_t ring_write_locked(mitr_preconnect_audio_src_t *src, const uint8_t *data, size_t bytes)
@@ -70,17 +68,22 @@ static size_t ring_write_locked(mitr_preconnect_audio_src_t *src, const uint8_t 
         bytes = src->ring_capacity;
         reset_ring_locked(src);
     } else {
-        while ((src->ring_capacity - src->ring_size) < bytes) {
-            src->ring_tail = (src->ring_tail + 1) % src->ring_capacity;
-            src->ring_size--;
-            src->dropped_bytes++;
+        const size_t free_space = src->ring_capacity - src->ring_size;
+        if (free_space < bytes) {
+            const size_t drop = bytes - free_space;
+            src->ring_tail = (src->ring_tail + drop) % src->ring_capacity;
+            src->ring_size -= drop;
+            src->dropped_bytes += drop;
         }
     }
 
-    for (size_t i = 0; i < bytes; ++i) {
-        src->ring[src->ring_head] = data[i];
-        src->ring_head = (src->ring_head + 1) % src->ring_capacity;
+    const size_t head_to_end = src->ring_capacity - src->ring_head;
+    const size_t first = bytes < head_to_end ? bytes : head_to_end;
+    memcpy(src->ring + src->ring_head, data, first);
+    if (first < bytes) {
+        memcpy(src->ring, data + first, bytes - first);
     }
+    src->ring_head = (src->ring_head + bytes) % src->ring_capacity;
     src->ring_size += bytes;
     if (src->dropped_bytes > 0 && !src->overflow_logged) {
         src->overflow_logged = true;
@@ -92,11 +95,14 @@ static size_t ring_write_locked(mitr_preconnect_audio_src_t *src, const uint8_t 
 
 static size_t ring_read_locked(mitr_preconnect_audio_src_t *src, uint8_t *data, size_t bytes)
 {
-    size_t to_read = bytes < src->ring_size ? bytes : src->ring_size;
-    for (size_t i = 0; i < to_read; ++i) {
-        data[i] = src->ring[src->ring_tail];
-        src->ring_tail = (src->ring_tail + 1) % src->ring_capacity;
+    const size_t to_read = bytes < src->ring_size ? bytes : src->ring_size;
+    const size_t tail_to_end = src->ring_capacity - src->ring_tail;
+    const size_t first = to_read < tail_to_end ? to_read : tail_to_end;
+    memcpy(data, src->ring + src->ring_tail, first);
+    if (first < to_read) {
+        memcpy(data + first, src->ring, to_read - first);
     }
+    src->ring_tail = (src->ring_tail + to_read) % src->ring_capacity;
     src->ring_size -= to_read;
     return to_read;
 }
@@ -243,8 +249,7 @@ static void stop_capture_task_locked(mitr_preconnect_audio_src_t *src)
 
 static esp_capture_err_t src_open(esp_capture_audio_src_if_t *h)
 {
-    mitr_preconnect_audio_src_t *src = (mitr_preconnect_audio_src_t *)h;
-    src->open = true;
+    (void)h;
     return ESP_CAPTURE_ERR_OK;
 }
 
@@ -307,21 +312,40 @@ static esp_capture_err_t src_read_frame(esp_capture_audio_src_if_t *h, esp_captu
         return ESP_CAPTURE_ERR_INVALID_ARG;
     }
 
-    size_t copied = 0;
-    while (copied < (size_t)frame->size) {
-        xSemaphoreTake(src->lock, portMAX_DELAY);
-        if (!src->capture_running && src->ring_size == 0) {
-            xSemaphoreGive(src->lock);
-            return ESP_CAPTURE_ERR_INVALID_STATE;
+    xSemaphoreTake(src->lock, portMAX_DELAY);
+    const bool muted = src->muted;
+    xSemaphoreGive(src->lock);
+
+    const int samples = frame->size / (PREBUFFER_BITS_PER_SAMPLE / 8 * PREBUFFER_CHANNELS_MONO);
+
+    if (muted) {
+        memset(frame->data, 0, (size_t)frame->size);
+        const int ms = (samples * 1000) / PREBUFFER_SAMPLE_RATE;
+        if (ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(ms));
         }
-        copied += ring_read_locked(src, ((uint8_t *)frame->data) + copied, (size_t)frame->size - copied);
-        xSemaphoreGive(src->lock);
-        if (copied < (size_t)frame->size) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+    } else {
+        size_t copied = 0;
+        while (copied < (size_t)frame->size) {
+            xSemaphoreTake(src->lock, portMAX_DELAY);
+            if (src->muted) {
+                xSemaphoreGive(src->lock);
+                memset(((uint8_t *)frame->data) + copied, 0, (size_t)frame->size - copied);
+                copied = (size_t)frame->size;
+                break;
+            }
+            if (!src->capture_running && src->ring_size == 0) {
+                xSemaphoreGive(src->lock);
+                return ESP_CAPTURE_ERR_INVALID_STATE;
+            }
+            copied += ring_read_locked(src, ((uint8_t *)frame->data) + copied, (size_t)frame->size - copied);
+            xSemaphoreGive(src->lock);
+            if (copied < (size_t)frame->size) {
+                vTaskDelay(pdMS_TO_TICKS(2));
+            }
         }
     }
 
-    const int samples = frame->size / (PREBUFFER_BITS_PER_SAMPLE / 8 * PREBUFFER_CHANNELS_MONO);
     frame->pts = src->frame_num * samples * 1000 / PREBUFFER_SAMPLE_RATE;
     src->frame_num++;
     return ESP_CAPTURE_ERR_OK;
@@ -341,8 +365,7 @@ static esp_capture_err_t src_stop(esp_capture_audio_src_if_t *h)
 
 static esp_capture_err_t src_close(esp_capture_audio_src_if_t *h)
 {
-    mitr_preconnect_audio_src_t *src = (mitr_preconnect_audio_src_t *)h;
-    src->open = false;
+    (void)h;
     return ESP_CAPTURE_ERR_OK;
 }
 
@@ -389,6 +412,7 @@ esp_capture_audio_src_if_t *mitr_preconnect_audio_src_new(esp_codec_dev_handle_t
         .bits_per_sample = PREBUFFER_BITS_PER_SAMPLE,
     };
     src->use_fixed_caps = true;
+    src->muted = true;
     s_src = src;
     return &src->base;
 }
@@ -400,9 +424,7 @@ esp_err_t mitr_preconnect_audio_src_start_prebuffer(void)
     }
     xSemaphoreTake(s_src->lock, portMAX_DELAY);
     s_src->prebuffering = true;
-    const bool preserve_primed_preroll = s_src->has_primed_preroll;
-    esp_err_t err = ensure_capture_running_locked(s_src, !preserve_primed_preroll);
-    s_src->has_primed_preroll = false;
+    esp_err_t err = ensure_capture_running_locked(s_src, true);
     xSemaphoreGive(s_src->lock);
     return err;
 }
@@ -442,28 +464,30 @@ void mitr_preconnect_audio_src_reset_buffer(void)
     xSemaphoreGive(s_src->lock);
 }
 
-esp_err_t mitr_preconnect_audio_src_prime_preroll(const int16_t *mono_pcm, size_t sample_count)
+void mitr_preconnect_audio_src_set_muted(bool muted)
 {
     if (s_src == NULL) {
-        return ESP_ERR_INVALID_STATE;
+        return;
     }
-    if (mono_pcm == NULL || sample_count == 0) {
-        return ESP_OK;
-    }
-
     xSemaphoreTake(s_src->lock, portMAX_DELAY);
-    if (s_src->consumer_started || s_src->capture_running || s_src->prebuffering) {
-        xSemaphoreGive(s_src->lock);
-        return ESP_ERR_INVALID_STATE;
+    const bool was_muted = s_src->muted;
+    s_src->muted = muted;
+    if (muted && !was_muted) {
+        reset_ring_locked(s_src);
     }
-
-    reset_ring_locked(s_src);
-    ring_write_locked(s_src, (const uint8_t *)mono_pcm, sample_count * sizeof(int16_t));
-    s_src->has_primed_preroll = true;
     xSemaphoreGive(s_src->lock);
+    ESP_LOGI(TAG, "[MIC] muted=%d", muted ? 1 : 0);
+}
 
-    ESP_LOGW(TAG, "[PREROLL] primed_samples=%u", (unsigned)sample_count);
-    return ESP_OK;
+bool mitr_preconnect_audio_src_is_muted(void)
+{
+    if (s_src == NULL) {
+        return true;
+    }
+    xSemaphoreTake(s_src->lock, portMAX_DELAY);
+    const bool muted = s_src->muted;
+    xSemaphoreGive(s_src->lock);
+    return muted;
 }
 
 esp_err_t mitr_preconnect_audio_src_register_tap(mitr_preconnect_tap_cb_t cb, void *ctx)

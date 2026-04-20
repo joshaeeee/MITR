@@ -31,7 +31,6 @@ static TaskHandle_t       s_task       = NULL;
 static volatile bool      s_stop       = false;
 static EventGroupHandle_t s_eg         = NULL;
 static EventBits_t        s_detect_bit = 0;
-static bool               s_detect_initialized = false;
 static bool               s_detection_pending_stop = false;
 static volatile bool      s_rearm_requested = false;
 
@@ -50,13 +49,11 @@ static bool reset_wakenet_model(void)
     s_model = s_wakenet->create(model_name, DET_MODE_95);
     if (s_model == NULL) {
         ESP_LOGE(TAG, "Failed to recreate WakeNet model");
-        s_detect_initialized = false;
         s_detection_pending_stop = true;
         return false;
     }
 
     s_chunk = s_wakenet->get_samp_chunksize(s_model);
-    s_detect_initialized = false;
     s_detection_pending_stop = false;
     return true;
 }
@@ -151,7 +148,6 @@ static void wake_word_task(void *arg)
             continue;
         }
 
-        s_detect_initialized = true;
         wakenet_state_t state = s_wakenet->detect(s_model, buf);
 
         if (state == WAKENET_DETECTED) {

@@ -625,13 +625,6 @@ static void event_free(engine_event_t *ev)
 /// Enqueues an event.
 static bool event_enqueue(engine_t *eng, engine_event_t *ev, bool send_to_front)
 {
-    // Guard: queue may already be deleted during engine_destroy() teardown.
-    // The WebSocket client task can fire events after the queue is gone if
-    // signal_destroy() is called after vQueueDelete() — see engine_destroy().
-    if (eng->event_queue == NULL) {
-        ESP_LOGW(TAG, "event_enqueue: queue already destroyed, dropping event type=%d", ev->type);
-        return false;
-    }
     bool enqueued = (send_to_front ?
         xQueueSendToFront(eng->event_queue, ev, 0) :
         xQueueSend(eng->event_queue, ev, 0)) == pdPASS;
@@ -1192,17 +1185,13 @@ engine_err_t engine_destroy(engine_handle_t handle)
         xTimerDelete(eng->timer, portMAX_DELAY);
         eng->timer = NULL;
     }
-    // IMPORTANT: destroy signal (WebSocket client) BEFORE deleting the event
-    // queue. esp_websocket_client_destroy() stops the WS task and blocks until
-    // it exits. If we delete the queue first, the WS task can still be running
-    // and call event_enqueue → xQueueSend(NULL) → assert crash.
-    if (eng->signal_handle != NULL) {
-        signal_destroy(eng->signal_handle);
-        eng->signal_handle = NULL;
-    }
     if (eng->event_queue != NULL) {
         vQueueDelete(eng->event_queue);
         eng->event_queue = NULL;
+    }
+    if (eng->signal_handle != NULL) {
+        signal_destroy(eng->signal_handle);
+        eng->signal_handle = NULL;
     }
     if (eng->pub_peer_handle != NULL) {
         peer_destroy(eng->pub_peer_handle);

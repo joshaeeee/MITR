@@ -261,6 +261,7 @@ static void heartbeat_task(void *arg)
 static void set_conversation_active(bool active, const char *reason, bool play_chime)
 {
     session.conversation_active = active;
+    media_set_mic_muted(!active);
     mitr_boot_feedback_set_state(active ? MITR_BOOT_STATE_ACTIVE_SESSION : MITR_BOOT_STATE_READY_CONNECTED);
     if (active && play_chime) {
         sounds_play_chime();
@@ -351,6 +352,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             break;
         case LIVEKIT_CONNECTION_STATE_FAILED:
             session.conversation_active = false;
+            media_set_mic_muted(true);
             if (session.last_failure_reason[0] == '\0') {
                 copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "room_failed");
             }
@@ -361,6 +363,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             break;
         case LIVEKIT_CONNECTION_STATE_DISCONNECTED:
             session.conversation_active = false;
+            media_set_mic_muted(true);
             if (session.last_failure_reason[0] == '\0') {
                 copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "room_disconnected");
             }
@@ -439,6 +442,7 @@ static void handle_device_control_message(const cJSON *root)
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
         const char *reason_str = (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "conversation_error";
         session.conversation_active = false;
+        media_set_mic_muted(true);
         mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
         publish_device_event("conversation_error", reason_str);
         report_telemetry("conversation_error", "warn", reason_str);
@@ -570,6 +574,7 @@ static void cleanup_room(void)
     session.conversation_active = false;
     session.session_end_sent = false;
     session.restart_requested = false;
+    media_set_mic_muted(true);
     mitr_device_token_response_free(&session.token);
 }
 

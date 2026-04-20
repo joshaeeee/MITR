@@ -14,11 +14,13 @@ extern "C" {
 
 esp_capture_audio_src_if_t *mitr_preconnect_audio_src_new(esp_codec_dev_handle_t record_handle);
 
-esp_err_t mitr_preconnect_audio_src_prime_preroll(const int16_t *mono_pcm, size_t sample_count);
 esp_err_t mitr_preconnect_audio_src_start_prebuffer(void);
 void mitr_preconnect_audio_src_stop_prebuffer(void);
 bool mitr_preconnect_audio_src_is_prebuffering(void);
 void mitr_preconnect_audio_src_reset_buffer(void);
+
+void mitr_preconnect_audio_src_set_muted(bool muted);
+bool mitr_preconnect_audio_src_is_muted(void);
 
 typedef void (*mitr_preconnect_tap_cb_t)(const int16_t *mono_pcm,
                                          size_t sample_count,

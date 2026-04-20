@@ -287,28 +287,11 @@ peer_err_t peer_create(peer_handle_t *handle, peer_options_t *options)
 
      // Configuration for the default peer implementation
     esp_peer_default_cfg_t default_peer_cfg = {
-        .agent_recv_timeout = 100,
         .data_ch_cfg = {
             .cache_timeout = 5000,
-            .send_cache_size = 1536,
-            .recv_cache_size = 1536
-        },
-        .rtp_cfg = {
-            .audio_recv_jitter = {
-                .cache_timeout = 100,
-                .resend_delay = 20,
-                .cache_size = 4 * 1024,
-            },
-            .video_recv_jitter = {
-                .cache_timeout = 100,
-                .resend_delay = 20,
-                .cache_size = 1024,
-            },
-            .send_pool_size = 8 * 1024,
-            .send_queue_num = 32,
-            .max_resend_count = 1,
-        },
-        .max_candidates = 6,
+            .send_cache_size = 100 * 1024,
+            .recv_cache_size = 100 * 1024
+        }
     };
     esp_peer_media_dir_t audio_dir = get_media_direction(options->media->audio_dir, peer->options.role);
     esp_peer_media_dir_t video_dir = get_media_direction(options->media->video_dir, peer->options.role);
