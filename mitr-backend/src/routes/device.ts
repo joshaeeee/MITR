@@ -42,7 +42,6 @@ const bootstrapCompleteSchema = z.object({
 
 const deviceTokenSchema = z.object({
   language: z.string().optional(),
-  roomName: z.string().optional(),
   firmwareVersion: z.string().optional(),
   hardwareRev: z.string().optional(),
   metadata: z.record(z.unknown()).optional()

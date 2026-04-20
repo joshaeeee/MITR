@@ -11,12 +11,27 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "sdkconfig.h"
 
 #include "device_api.h"
 #include "device_storage.h"
 
 static const char *TAG = "mitr_device_api";
+
+// Serializes background HTTPS calls (heartbeat + telemetry) so they don't
+// contend for the ESP32's TLS session pool. Wake-detection and token-fetch
+// paths intentionally bypass this mutex to keep user-visible latency unchanged.
+static SemaphoreHandle_t s_bg_http_mutex = NULL;
+
+static SemaphoreHandle_t bg_http_mutex(void)
+{
+    if (s_bg_http_mutex == NULL) {
+        s_bg_http_mutex = xSemaphoreCreateMutex();
+    }
+    return s_bg_http_mutex;
+}
 
 typedef struct {
     char *data;
@@ -463,7 +478,14 @@ esp_err_t mitr_device_send_heartbeat(
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize heartbeat body");
 
     cJSON *response_json = NULL;
+    SemaphoreHandle_t lock = bg_http_mutex();
+    if (lock != NULL) {
+        xSemaphoreTake(lock, portMAX_DELAY);
+    }
     esp_err_t err = http_post_json("/devices/heartbeat", body_string, mitr_device_storage_access_token(), &response_json, NULL);
+    if (lock != NULL) {
+        xSemaphoreGive(lock);
+    }
     free(body_string);
     if (err != ESP_OK) {
         if (response_json) {
@@ -553,7 +575,14 @@ esp_err_t mitr_device_send_telemetry(
     ESP_RETURN_ON_FALSE(body_string != NULL, ESP_ERR_NO_MEM, TAG, "Failed to serialize telemetry body");
 
     cJSON *response = NULL;
+    SemaphoreHandle_t lock = bg_http_mutex();
+    if (lock != NULL) {
+        xSemaphoreTake(lock, portMAX_DELAY);
+    }
     esp_err_t err = http_post_json("/devices/telemetry", body_string, mitr_device_storage_access_token(), &response, NULL);
+    if (lock != NULL) {
+        xSemaphoreGive(lock);
+    }
     free(body_string);
     if (response) {
         cJSON_Delete(response);

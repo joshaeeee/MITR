@@ -79,6 +79,7 @@ const envSchema = z.object({
   DEVICE_TOKEN_TTL_SEC: z.coerce.number().default(86_400),
   SESSION_IDLE_TIMEOUT_SEC: z.coerce.number().default(1_800),
   DEVICE_CONVERSATION_IDLE_TIMEOUT_MS: z.coerce.number().default(20_000),
+  DEVICE_SESSION_STALE_SEC: z.coerce.number().default(60 * 60 * 24),
   INTERNAL_SERVICE_TOKEN: z.string().min(1).optional(),
   REDIS_URL: z.string().url().optional(),
   POSTGRES_URL: z.string().url(),
