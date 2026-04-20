@@ -153,8 +153,7 @@ static void _free_align(void *addr)
 #endif
 
 #if defined(CONFIG_SPIRAM_BOOT_INIT) &&                                        \
-    (CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY ||                              \
-     CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM)
+    (CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY)
 BaseType_t __attribute__((weak)) xTaskCreateRestrictedPinnedToCore(
     const TaskParameters_t *const pxTaskDefinition, TaskHandle_t *pxCreatedTask,
     const BaseType_t xCoreID)

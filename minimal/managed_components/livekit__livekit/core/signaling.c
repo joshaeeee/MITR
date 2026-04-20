@@ -31,7 +31,7 @@
 
 static const char *TAG = "livekit_signaling";
 
-#define SIGNAL_WS_BUFFER_SIZE          4 * 1024
+#define SIGNAL_WS_BUFFER_SIZE          20 * 1024
 #define SIGNAL_WS_RECONNECT_TIMEOUT_MS 1000
 #define SIGNAL_WS_NETWORK_TIMEOUT_MS   10000
 #define SIGNAL_WS_CLOSE_CODE           1000

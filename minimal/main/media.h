@@ -41,6 +41,9 @@ esp_err_t media_set_output_muted(bool muted);
 bool media_is_output_muted(void);
 int media_get_output_volume(void);
 
+void media_set_mic_muted(bool muted);
+bool media_is_mic_muted(void);
+
 esp_err_t media_start_preconnect_capture(void);
 void media_stop_preconnect_capture(void);
 bool media_is_preconnect_capture_active(void);

@@ -80,42 +80,6 @@ services:
     networks:
       - mitr-internal
 
-  wakeword-worker:
-    image: ${WAKEWORD_WORKER_IMAGE:-mitr-wakeword-worker:local}
-    build:
-      context: ../../mitr-wakeword-worker
-    container_name: mitr-wakeword-worker
-    restart: unless-stopped
-    env_file:
-      - .env.prod
-    environment:
-      LIVEKIT_URL: ${LIVEKIT_URL}
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
-      REDIS_URL: ${REDIS_URL}
-      WAKEWORD_INTERNAL_API_BASE_URL: http://api:8080
-      WAKEWORD_INTERNAL_API_TOKEN: ${INTERNAL_SERVICE_TOKEN}
-      WAKEWORD_MODEL_MANIFEST_PATH: ${WAKEWORD_MODEL_MANIFEST_PATH:-/app/models/hey_livekit.meta.json}
-      WAKEWORD_JOIN_IDENTITY_PREFIX: wakeword-worker
-      WAKEWORD_DETECTION_DEBOUNCE_MS: 2000
-      WAKEWORD_ROOM_IDLE_EVICT_MS: 300000
-    depends_on:
-      api:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    cpus: 1.0
-    mem_limit: 768m
-    logging:
-      driver: awslogs
-      options:
-        awslogs-region: ${AWS_REGION}
-        awslogs-group: ${CLOUDWATCH_LOG_GROUP}
-        awslogs-stream: wakeword-worker
-        awslogs-create-group: "true"
-    networks:
-      - mitr-internal
-
   reminder-worker:
     image: ${REMINDER_IMAGE}
     container_name: mitr-reminder-worker
