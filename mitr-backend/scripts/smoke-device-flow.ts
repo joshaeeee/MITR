@@ -10,7 +10,6 @@ type Args = {
   language?: string;
   hardwareRev?: string;
   firmwareVersion?: string;
-  roomName?: string;
 };
 
 const readArg = (flag: string): string | undefined => {
@@ -30,8 +29,7 @@ Optional:
   --display-name <label>
   --language <hi-IN>
   --hardware-rev <esp32-s3-wroom-revA>
-  --firmware-version <v0.1.0>
-  --room-name <explicit-room-name>`;
+  --firmware-version <v0.1.0>`;
 
 const parseArgs = (): Args => {
   const deviceId = readArg('--device-id')?.trim();
@@ -52,8 +50,7 @@ const parseArgs = (): Args => {
     displayName: readArg('--display-name')?.trim(),
     language: readArg('--language')?.trim(),
     hardwareRev: readArg('--hardware-rev')?.trim(),
-    firmwareVersion: readArg('--firmware-version')?.trim(),
-    roomName: readArg('--room-name')?.trim()
+    firmwareVersion: readArg('--firmware-version')?.trim()
   };
 };
 
@@ -92,7 +89,6 @@ const main = async (): Promise<void> => {
   const token = await devices.mintLiveKitToken({
     device,
     language: args.language,
-    roomName: args.roomName,
     firmwareVersion: args.firmwareVersion,
     hardwareRev: args.hardwareRev,
     metadata: {

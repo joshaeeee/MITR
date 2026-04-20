@@ -745,7 +745,6 @@ export class DeviceControlService {
     language?: string;
     firmwareVersion?: string;
     hardwareRev?: string;
-    roomName?: string;
     metadata?: Record<string, unknown>;
   }): Promise<{
     sessionId: string;
@@ -765,9 +764,10 @@ export class DeviceControlService {
     // Persistent warm connection model: every token for a given device maps to
     // the same stable room. The device joins this room once at boot and stays
     // connected until reboot, so sessionId represents a connection lifecycle
-    // rather than a single wake-turn.
-    const stableRoomName = `mitr-persistent-${slug(input.device.deviceId)}`;
-    const roomName = input.roomName?.trim() || stableRoomName;
+    // rather than a single wake-turn. Room name is derived from the authenticated
+    // deviceId only — never from client input — so a device cannot request a
+    // token for another device's room.
+    const roomName = `mitr-persistent-${slug(input.device.deviceId)}`;
     // Keep the identity stable per device so repeated token mints don't create
     // ghost participants in the room.
     const identity = `device-${slug(input.device.deviceId)}`;
@@ -829,6 +829,10 @@ export class DeviceControlService {
         ...metadataBase,
         session_id: sessionId
       };
+      // Device just rebooted and is re-minting its token. Any prior conversation
+      // is gone, so clear the conversation state. Without this, sessions whose
+      // previous boot died mid-conversation stay pinned to `starting`/`active`
+      // and reject every future wake as `conversation_not_idle`.
       await db
         .update(deviceSessions)
         .set({
@@ -837,7 +841,8 @@ export class DeviceControlService {
           firmwareVersion,
           hardwareRev,
           metadataJson: dispatchMetadata,
-          lastHeartbeatAt: new Date()
+          lastHeartbeatAt: new Date(),
+          conversationState: 'idle'
         })
         .where(eq(deviceSessions.id, existingSession.id));
     } else {

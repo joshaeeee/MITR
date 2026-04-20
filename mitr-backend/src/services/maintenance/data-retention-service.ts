@@ -1,7 +1,7 @@
-import { and, isNotNull, lt, or } from 'drizzle-orm';
+import { and, inArray, isNotNull, lt, or } from 'drizzle-orm';
 import { env } from '../../config/env.js';
 import { db } from '../../db/client.js';
-import { authSessions, otpChallenges, refreshTokens, userEventStream } from '../../db/schema.js';
+import { authSessions, deviceSessions, otpChallenges, refreshTokens, userEventStream } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 
 export class DataRetentionService {
@@ -36,8 +36,22 @@ export class DataRetentionService {
     const revokedSessionCutoff = new Date(now.getTime() - env.AUTH_REVOKED_SESSION_RETENTION_SEC * 1000);
     const consumedOtpCutoff = new Date(now.getTime() - env.AUTH_OTP_CONSUMED_RETENTION_SEC * 1000);
     const eventCutoff = new Date(now.getTime() - env.USER_EVENT_STREAM_RETENTION_SEC * 1000);
+    const deviceSessionCutoff = new Date(now.getTime() - env.DEVICE_SESSION_STALE_SEC * 1000);
 
     try {
+      const endedDeviceSessions = env.DEVICE_SESSION_STALE_SEC > 0
+        ? await db
+            .update(deviceSessions)
+            .set({ status: 'ended' })
+            .where(
+              and(
+                inArray(deviceSessions.status, ['issued', 'active']),
+                lt(deviceSessions.lastHeartbeatAt, deviceSessionCutoff)
+              )
+            )
+            .returning({ id: deviceSessions.id })
+        : [];
+
       const [deletedSessions, deletedRefreshTokens, deletedOtpChallenges, deletedUserEvents] = await Promise.all([
         db
           .delete(authSessions)
@@ -76,7 +90,8 @@ export class DataRetentionService {
         authSessions: deletedSessions.length,
         refreshTokens: deletedRefreshTokens.length,
         otpChallenges: deletedOtpChallenges.length,
-        userEventStream: deletedUserEvents.length
+        userEventStream: deletedUserEvents.length,
+        deviceSessionsEnded: endedDeviceSessions.length
       };
 
       if (Object.values(deleted).some((count) => count > 0)) {
