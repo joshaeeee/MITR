@@ -8,6 +8,7 @@ idf_component_register(
         "device_api.c"
         "device_storage.c"
         "boot_feedback.c"
+        "latency_trace.c"
         "network.c"
         "provisioning.c"
         "ota_manager.c"

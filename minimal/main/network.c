@@ -11,6 +11,7 @@
 #include "sdkconfig.h"
 
 #include "device_storage.h"
+#include "latency_trace.h"
 #include "network.h"
 #include "provisioning.h"
 
@@ -73,6 +74,7 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
         (void)mitr_device_storage_store_wifi_hint(ap_info.primary, ap_info.bssid);
     }
+    mitr_latency_mark("wifi_connected");
     log_boot_state("wifi_connected");
     xEventGroupSetBits(state.event_group, NETWORK_EVENT_CONNECTED);
 }
@@ -201,6 +203,7 @@ bool mitr_network_connect(void)
     if (provisioning_started) {
         ESP_LOGI(TAG, "Device is not provisioned yet; waiting for BLE onboarding to provide Wi-Fi credentials");
     } else {
+        mitr_latency_mark("wifi_connect_start");
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
         ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
