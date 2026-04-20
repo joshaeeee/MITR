@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -7,6 +8,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -36,6 +38,7 @@ typedef struct {
     bool session_end_sent;
     bool restart_requested;
     bool last_boot_ok;
+    bool wake_pending;
     bool conversation_active;
     TaskHandle_t heartbeat_task;
     int reconnect_attempt_count;
@@ -43,6 +46,8 @@ typedef struct {
     int heartbeat_interval_sec;
     int telemetry_backoff_sec;
     uint32_t room_generation;
+    char boot_id[48];
+    char current_conversation_id[64];
     char last_failure_reason[64];
     char last_end_reason[64];
 } session_state_t;
@@ -57,6 +62,16 @@ static session_state_t session = {
 static int64_t now_ms(void)
 {
     return esp_timer_get_time() / 1000;
+}
+
+static void generate_boot_id(char *dest, size_t capacity)
+{
+    if (!dest || capacity == 0) {
+        return;
+    }
+    uint32_t hi = esp_random();
+    uint32_t lo = esp_random();
+    snprintf(dest, capacity, "%08" PRIx32 "%08" PRIx32, hi, lo);
 }
 
 static uint32_t callback_room_generation(void *ctx)
@@ -76,6 +91,14 @@ static void copy_string(char *dest, size_t capacity, const char *value)
     }
     strlcpy(dest, value ? value : "", capacity);
 }
+
+static void clear_current_conversation(void)
+{
+    session.current_conversation_id[0] = '\0';
+    session.wake_pending = false;
+}
+
+static void request_session_restart(const char *reason);
 
 static int current_wifi_rssi_dbm(void)
 {
@@ -136,7 +159,7 @@ static void report_telemetry(const char *event_type, const char *level, const ch
         return;
     }
 
-    esp_err_t err = mitr_device_send_telemetry(session.token.session_id, event_type, level, message);
+    esp_err_t err = mitr_device_send_telemetry(session.token.session_id, session.boot_id, event_type, level, message);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to send telemetry event %s: %s", event_type, esp_err_to_name(err));
     }
@@ -169,7 +192,7 @@ static void report_session_end(const char *reason)
         return;
     }
 
-    esp_err_t err = mitr_device_end_session(session.token.session_id, effective_reason);
+    esp_err_t err = mitr_device_end_session(session.token.session_id, session.boot_id, effective_reason);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to report session end: %s", esp_err_to_name(err));
     } else {
@@ -218,6 +241,7 @@ static void heartbeat_task(void *arg)
         if (state == LIVEKIT_CONNECTION_STATE_CONNECTED || state == LIVEKIT_CONNECTION_STATE_RECONNECTING) {
             mitr_device_heartbeat_t heartbeat = {
                 .session_id = session.token.session_id,
+                .boot_id = session.boot_id,
                 .wifi_rssi_dbm = current_wifi_rssi_dbm(),
                 .network_type = "wifi",
                 .ip_address = NULL,
@@ -235,6 +259,11 @@ static void heartbeat_task(void *arg)
             mitr_device_heartbeat_response_t response = {0};
             esp_err_t err = mitr_device_send_heartbeat(&heartbeat, &response);
             if (err != ESP_OK) {
+                if (err == ESP_ERR_INVALID_STATE) {
+                    ESP_LOGW(TAG, "Heartbeat rejected because session was superseded; restarting session");
+                    request_session_restart("session_superseded");
+                    break;
+                }
                 ESP_LOGW(TAG, "Heartbeat failed: %s", esp_err_to_name(err));
             } else {
                 mitr_ota_note_heartbeat_success();
@@ -261,6 +290,9 @@ static void heartbeat_task(void *arg)
 static void set_conversation_active(bool active, const char *reason, bool play_chime)
 {
     session.conversation_active = active;
+    if (!active) {
+        clear_current_conversation();
+    }
     media_set_mic_muted(!active);
     mitr_boot_feedback_set_state(active ? MITR_BOOT_STATE_ACTIVE_SESSION : MITR_BOOT_STATE_READY_CONNECTED);
     if (active && play_chime) {
@@ -290,23 +322,31 @@ void on_wake_detected(void)
     }
 
     if (session.conversation_active) {
-        ESP_LOGW(TAG, "Ignoring wake because a conversation is already active");
+        ESP_LOGW(TAG, "Ignoring wake because a conversation is already active or pending");
         return;
     }
 
-    ESP_LOGI(TAG, "Wake word detected locally; activating conversation (model=%s, phrase=%s)",
+    ESP_LOGI(TAG, "Wake word detected locally; opening conversation (model=%s, phrase=%s)",
              model_name ? model_name : "unknown",
              phrase ? phrase : "unknown");
+    session.wake_pending = true;
     set_conversation_active(true, phrase, true);
 
+    char conversation_id[64] = {0};
     esp_err_t err = mitr_device_notify_wake_detected(
         session.token.session_id,
+        session.boot_id,
         model_name ? model_name : "unknown",
         phrase,
-        WAKEWORD_DETECTION_SCORE);
+        WAKEWORD_DETECTION_SCORE,
+        conversation_id,
+        sizeof(conversation_id));
+    if (conversation_id[0] != '\0') {
+        copy_string(session.current_conversation_id, sizeof(session.current_conversation_id), conversation_id);
+    }
     if (err != ESP_OK) {
         if (err == ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "Backend already has a conversation in flight; staying active and waiting for agent state");
+            ESP_LOGW(TAG, "Backend already has a conversation in flight; waiting for conversation state");
             return;
         }
         ESP_LOGW(TAG, "Wake notification rejected or failed: %s", esp_err_to_name(err));
@@ -352,6 +392,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             break;
         case LIVEKIT_CONNECTION_STATE_FAILED:
             session.conversation_active = false;
+            clear_current_conversation();
             media_set_mic_muted(true);
             if (session.last_failure_reason[0] == '\0') {
                 copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "room_failed");
@@ -363,6 +404,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             break;
         case LIVEKIT_CONNECTION_STATE_DISCONNECTED:
             session.conversation_active = false;
+            clear_current_conversation();
             media_set_mic_muted(true);
             if (session.last_failure_reason[0] == '\0') {
                 copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "room_disconnected");
@@ -416,14 +458,37 @@ static void handle_device_control_message(const cJSON *root)
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
     const char *type_str = (cJSON_IsString(type) && type->valuestring) ? type->valuestring : NULL;
     const char *message_type = action_str ? action_str : type_str;
+    const cJSON *session_id = cJSON_GetObjectItemCaseSensitive(root, "deviceSessionId");
+    const char *session_id_str = (cJSON_IsString(session_id) && session_id->valuestring) ? session_id->valuestring : session.token.session_id;
+    const cJSON *boot_id = cJSON_GetObjectItemCaseSensitive(root, "bootId");
+    const char *boot_id_str = (cJSON_IsString(boot_id) && boot_id->valuestring) ? boot_id->valuestring : NULL;
+    const cJSON *conversation_id = cJSON_GetObjectItemCaseSensitive(root, "conversationId");
+    const char *conversation_id_str = (cJSON_IsString(conversation_id) && conversation_id->valuestring) ? conversation_id->valuestring : NULL;
 
     if (!message_type) {
+        return;
+    }
+    if (session.token.session_id && session_id_str && strcmp(session.token.session_id, session_id_str) != 0) {
+        ESP_LOGW(TAG, "Ignoring control message for stale session %s", session_id_str);
+        return;
+    }
+    if (boot_id_str && session.boot_id[0] != '\0' && strcmp(session.boot_id, boot_id_str) != 0) {
+        ESP_LOGW(TAG, "Ignoring control message for stale boot %s", boot_id_str);
+        return;
+    }
+    if (conversation_id_str && session.current_conversation_id[0] != '\0' &&
+        strcmp(session.current_conversation_id, conversation_id_str) != 0) {
+        ESP_LOGW(TAG, "Ignoring control message for stale conversation %s", conversation_id_str);
         return;
     }
 
     if (strcmp(message_type, "conversation_started") == 0) {
         const cJSON *wakeword = cJSON_GetObjectItemCaseSensitive(root, "wakeword");
         const char *reason = (cJSON_IsString(wakeword) && wakeword->valuestring) ? wakeword->valuestring : "wake_detected";
+        if (conversation_id_str) {
+            copy_string(session.current_conversation_id, sizeof(session.current_conversation_id), conversation_id_str);
+        }
+        session.wake_pending = false;
         if (!session.conversation_active) {
             set_conversation_active(true, reason, false);
         }
@@ -441,12 +506,15 @@ static void handle_device_control_message(const cJSON *root)
     if (strcmp(message_type, "conversation_error") == 0) {
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
         const char *reason_str = (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "conversation_error";
-        session.conversation_active = false;
-        media_set_mic_muted(true);
-        mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
+        set_conversation_active(false, reason_str, false);
         publish_device_event("conversation_error", reason_str);
         report_telemetry("conversation_error", "warn", reason_str);
         wake_word_rearm();
+        return;
+    }
+
+    if (strcmp(message_type, "session_superseded") == 0) {
+        request_session_restart("session_superseded");
         return;
     }
 
@@ -572,6 +640,7 @@ static void cleanup_room(void)
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
     session.agent_joined = false;
     session.conversation_active = false;
+    clear_current_conversation();
     session.session_end_sent = false;
     session.restart_requested = false;
     media_set_mic_muted(true);
@@ -672,8 +741,12 @@ bool join_room(void)
     session.last_end_reason[0] = '\0';
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
     session.conversation_active = false;
+    clear_current_conversation();
+    if (session.boot_id[0] == '\0') {
+        generate_boot_id(session.boot_id, sizeof(session.boot_id));
+    }
 
-    esp_err_t token_err = mitr_device_request_token(&session.token);
+    esp_err_t token_err = mitr_device_request_token(session.boot_id, &session.token);
     if (token_err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to obtain device token: %s", esp_err_to_name(token_err));
         return false;

@@ -41,6 +41,7 @@ const bootstrapCompleteSchema = z.object({
 });
 
 const deviceTokenSchema = z.object({
+  bootId: z.string().min(8),
   language: z.string().optional(),
   firmwareVersion: z.string().optional(),
   hardwareRev: z.string().optional(),
@@ -49,6 +50,7 @@ const deviceTokenSchema = z.object({
 
 const deviceHeartbeatSchema = z.object({
   sessionId: z.string().uuid().optional(),
+  bootId: z.string().min(8).optional(),
   firmwareVersion: z.string().optional(),
   wifiRssiDbm: z.number().int().optional(),
   batteryPct: z.number().min(0).max(100).optional(),
@@ -59,6 +61,7 @@ const deviceHeartbeatSchema = z.object({
 
 const deviceTelemetrySchema = z.object({
   sessionId: z.string().uuid().optional(),
+  bootId: z.string().min(8).optional(),
   eventType: z.string().min(1),
   level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
   payload: z.record(z.unknown()).optional()
@@ -66,7 +69,13 @@ const deviceTelemetrySchema = z.object({
 
 const deviceSessionEndSchema = z.object({
   sessionId: z.string().uuid(),
+  bootId: z.string().min(8).optional(),
   reason: z.string().optional()
+});
+
+const deviceTokenRefreshSchema = z.object({
+  sessionId: z.string().uuid(),
+  bootId: z.string().min(8)
 });
 
 const revokeDeviceSchema = z.object({
@@ -166,13 +175,29 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
     }
   });
 
+  app.post('/devices/session/open', { preHandler: deviceGuard }, async (request, reply) => {
+    const parsed = deviceTokenSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    try {
+      return reply.send(
+        await control.openDeviceSession({
+          device: request.deviceAuth!.device,
+          ...parsed.data
+        })
+      );
+    } catch (error) {
+      return reply.status(500).send({ error: (error as Error).message });
+    }
+  });
+
   app.post('/devices/token', { preHandler: deviceGuard }, async (request, reply) => {
     const parsed = deviceTokenSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
     try {
       return reply.send(
-        await control.mintLiveKitToken({
+        await control.openDeviceSession({
           device: request.deviceAuth!.device,
           ...parsed.data
         })
@@ -186,15 +211,20 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
   // Does NOT create a new session row or re-dispatch the agent — use it only
   // when a session is already live and the token is approaching expiry.
   app.post('/devices/token/refresh', { preHandler: deviceGuard }, async (request, reply) => {
+    const parsed = deviceTokenRefreshSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
     try {
       return reply.send(
         await control.refreshLiveKitToken({
-          device: request.deviceAuth!.device
+          device: request.deviceAuth!.device,
+          sessionId: parsed.data.sessionId,
+          bootId: parsed.data.bootId
         })
       );
     } catch (error) {
       const message = (error as Error).message;
-      const status = message.includes('No active session') ? 409 : 500;
+      const status = message.includes('No active session') || message.includes('session_superseded') ? 409 : 500;
       return reply.status(status).send({ error: message });
     }
   });
@@ -203,48 +233,69 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
     const parsed = deviceHeartbeatSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-    return reply.send(
-      await control.heartbeat({
-        device: request.deviceAuth!.device,
-        sessionId: parsed.data.sessionId,
-        firmwareVersion: parsed.data.firmwareVersion,
-        payload: {
-          wifiRssiDbm: parsed.data.wifiRssiDbm,
-          batteryPct: parsed.data.batteryPct,
-          networkType: parsed.data.networkType,
-          ipAddress: parsed.data.ipAddress,
-          ...(parsed.data.metadata ?? {})
-        }
-      })
-    );
+    try {
+      return reply.send(
+        await control.heartbeat({
+          device: request.deviceAuth!.device,
+          sessionId: parsed.data.sessionId,
+          bootId: parsed.data.bootId,
+          firmwareVersion: parsed.data.firmwareVersion,
+          payload: {
+            wifiRssiDbm: parsed.data.wifiRssiDbm,
+            batteryPct: parsed.data.batteryPct,
+            networkType: parsed.data.networkType,
+            ipAddress: parsed.data.ipAddress,
+            ...(parsed.data.metadata ?? {})
+          }
+        })
+      );
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message.includes('session_superseded') ? 409 : 500;
+      return reply.status(status).send({ error: message });
+    }
   });
 
   app.post('/devices/telemetry', { preHandler: deviceGuard }, async (request, reply) => {
     const parsed = deviceTelemetrySchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-    return reply.send(
-      await control.appendTelemetry({
-        device: request.deviceAuth!.device,
-        sessionId: parsed.data.sessionId,
-        eventType: parsed.data.eventType,
-        level: parsed.data.level,
-        payload: parsed.data.payload
-      })
-    );
+    try {
+      return reply.send(
+        await control.appendTelemetry({
+          device: request.deviceAuth!.device,
+          sessionId: parsed.data.sessionId,
+          bootId: parsed.data.bootId,
+          eventType: parsed.data.eventType,
+          level: parsed.data.level,
+          payload: parsed.data.payload
+        })
+      );
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message.includes('session_superseded') ? 409 : 500;
+      return reply.status(status).send({ error: message });
+    }
   });
 
   app.post('/devices/session/end', { preHandler: deviceGuard }, async (request, reply) => {
     const parsed = deviceSessionEndSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-    return reply.send(
-      await control.endSession({
-        device: request.deviceAuth!.device,
-        sessionId: parsed.data.sessionId,
-        reason: parsed.data.reason
-      })
-    );
+    try {
+      return reply.send(
+        await control.endSession({
+          device: request.deviceAuth!.device,
+          sessionId: parsed.data.sessionId,
+          bootId: parsed.data.bootId,
+          reason: parsed.data.reason
+        })
+      );
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message.includes('session_superseded') ? 409 : 500;
+      return reply.status(status).send({ error: message });
+    }
   });
 
   app.post('/devices/revoke', { preHandler: guard }, async (request, reply) => {

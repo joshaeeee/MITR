@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -11,6 +12,7 @@ extern "C" {
 
 typedef struct {
     char *session_id;
+    char *boot_id;
     char *server_url;
     char *participant_token;
     char *room_name;
@@ -23,6 +25,7 @@ typedef struct {
 
 typedef struct {
     const char *session_id;
+    const char *boot_id;
     int wifi_rssi_dbm;
     const char *network_type;
     const char *ip_address;
@@ -72,7 +75,7 @@ bool mitr_device_has_access_token(void);
 bool mitr_device_has_pairing_token(void);
 
 esp_err_t mitr_device_complete_bootstrap(void);
-esp_err_t mitr_device_request_token(mitr_device_token_response_t *out);
+esp_err_t mitr_device_request_token(const char *boot_id, mitr_device_token_response_t *out);
 void mitr_device_token_response_free(mitr_device_token_response_t *response);
 
 esp_err_t mitr_device_send_heartbeat(
@@ -80,15 +83,19 @@ esp_err_t mitr_device_send_heartbeat(
     mitr_device_heartbeat_response_t *response);
 esp_err_t mitr_device_send_telemetry(
     const char *session_id,
+    const char *boot_id,
     const char *event_type,
     const char *level,
     const char *message);
 esp_err_t mitr_device_notify_wake_detected(
     const char *session_id,
+    const char *boot_id,
     const char *model_name,
     const char *phrase,
-    float score);
-esp_err_t mitr_device_end_session(const char *session_id, const char *reason);
+    float score,
+    char *conversation_id,
+    size_t conversation_id_capacity);
+esp_err_t mitr_device_end_session(const char *session_id, const char *boot_id, const char *reason);
 
 #ifdef __cplusplus
 }

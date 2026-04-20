@@ -392,6 +392,7 @@ export const devices = pgTable('devices', {
   hardwareRev: text('hardware_rev'),
   firmwareVersion: text('firmware_version'),
   deviceAccessTokenHash: text('device_access_token_hash').notNull(),
+  currentDeviceSessionId: uuid('current_device_session_id'),
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
   claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
@@ -452,6 +453,7 @@ export const deviceSessions = pgTable('device_sessions', {
   claimedByUserId: text('claimed_by_user_id'),
   roomName: text('room_name').notNull(),
   participantIdentity: text('participant_identity').notNull(),
+  bootId: text('boot_id').notNull(),
   language: text('language').default('hi-IN').notNull(),
   firmwareVersion: text('firmware_version'),
   hardwareRev: text('hardware_rev'),
@@ -482,6 +484,24 @@ export const deviceSessions = pgTable('device_sessions', {
     table.conversationState,
     table.startedAt
   )
+}));
+
+export const deviceConversations = pgTable('device_conversations', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  deviceSessionId: uuid('device_session_id').notNull(),
+  deviceId: text('device_id').notNull(),
+  state: text('state').$type<'opening' | 'active' | 'ended' | 'errored' | 'abandoned'>().default('opening').notNull(),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endReason: text('end_reason'),
+  lastUserActivityAt: timestamp('last_user_activity_at', { withTimezone: true }),
+  wakewordModel: text('wakeword_model'),
+  wakewordPhrase: text('wakeword_phrase'),
+  wakewordScore: text('wakeword_score')
+}, (table) => ({
+  sessionRequestedIdx: index('device_conversations_session_requested_idx').on(table.deviceSessionId, table.requestedAt),
+  deviceStateRequestedIdx: index('device_conversations_device_state_requested_idx').on(table.deviceId, table.state, table.requestedAt)
 }));
 
 export const deviceTelemetry = pgTable('device_telemetry', {

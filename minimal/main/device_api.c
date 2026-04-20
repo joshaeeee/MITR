@@ -342,13 +342,15 @@ esp_err_t mitr_device_complete_bootstrap(void)
     return err;
 }
 
-esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
+esp_err_t mitr_device_request_token(const char *boot_id, mitr_device_token_response_t *out)
 {
+    ESP_RETURN_ON_FALSE(boot_id != NULL && strlen(boot_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing boot id");
     ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Missing token response");
     memset(out, 0, sizeof(*out));
 
     cJSON *body = cJSON_CreateObject();
     ESP_RETURN_ON_FALSE(body != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create token request body");
+    cJSON_AddStringToObject(body, "bootId", boot_id);
     cJSON_AddStringToObject(body, "language", mitr_device_language());
     cJSON_AddStringToObject(body, "firmwareVersion", DEVICE_FIRMWARE_VERSION);
     cJSON_AddStringToObject(body, "hardwareRev", DEVICE_HARDWARE_REV);
@@ -363,7 +365,7 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
 
     cJSON *response = NULL;
     int token_http_status = 0;
-    esp_err_t err = http_post_json("/devices/token", body_string, mitr_device_storage_access_token(), &response, &token_http_status);
+    esp_err_t err = http_post_json("/devices/session/open", body_string, mitr_device_storage_access_token(), &response, &token_http_status);
     free(body_string);
     if (err != ESP_OK) {
         if (token_http_status == 401) {
@@ -376,6 +378,7 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
     }
 
     out->session_id = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "sessionId"));
+    out->boot_id = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "bootId"));
     out->server_url = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "serverUrl"));
     out->participant_token = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "participantToken"));
     out->room_name = dup_json_string(cJSON_GetObjectItemCaseSensitive(response, "roomName"));
@@ -398,7 +401,7 @@ esp_err_t mitr_device_request_token(mitr_device_token_response_t *out)
 
     cJSON_Delete(response);
 
-    if (!out->session_id || !out->server_url || !out->participant_token) {
+    if (!out->session_id || !out->boot_id || !out->server_url || !out->participant_token) {
         mitr_device_token_response_free(out);
         return ESP_FAIL;
     }
@@ -413,6 +416,7 @@ void mitr_device_token_response_free(mitr_device_token_response_t *response)
     }
 
     free(response->session_id);
+    free(response->boot_id);
     free(response->server_url);
     free(response->participant_token);
     free(response->room_name);
@@ -436,6 +440,9 @@ esp_err_t mitr_device_send_heartbeat(
 
     if (heartbeat->session_id) {
         cJSON_AddStringToObject(body, "sessionId", heartbeat->session_id);
+    }
+    if (heartbeat->boot_id) {
+        cJSON_AddStringToObject(body, "bootId", heartbeat->boot_id);
     }
     cJSON_AddStringToObject(body, "firmwareVersion", DEVICE_FIRMWARE_VERSION);
     cJSON_AddNumberToObject(body, "wifiRssiDbm", heartbeat->wifi_rssi_dbm);
@@ -482,12 +489,21 @@ esp_err_t mitr_device_send_heartbeat(
     if (lock != NULL) {
         xSemaphoreTake(lock, portMAX_DELAY);
     }
-    esp_err_t err = http_post_json("/devices/heartbeat", body_string, mitr_device_storage_access_token(), &response_json, NULL);
+    int status_code = 0;
+    esp_err_t err = http_post_json("/devices/heartbeat", body_string, mitr_device_storage_access_token(), &response_json, &status_code);
     if (lock != NULL) {
         xSemaphoreGive(lock);
     }
     free(body_string);
     if (err != ESP_OK) {
+        if (status_code == 409 && response_json != NULL) {
+            const cJSON *error = cJSON_GetObjectItemCaseSensitive(response_json, "error");
+            const char *error_str = (cJSON_IsString(error) && error->valuestring) ? error->valuestring : "";
+            if (strcmp(error_str, "session_superseded") == 0) {
+                cJSON_Delete(response_json);
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
         if (response_json) {
             cJSON_Delete(response_json);
         }
@@ -546,6 +562,7 @@ esp_err_t mitr_device_send_heartbeat(
 
 esp_err_t mitr_device_send_telemetry(
     const char *session_id,
+    const char *boot_id,
     const char *event_type,
     const char *level,
     const char *message)
@@ -557,6 +574,9 @@ esp_err_t mitr_device_send_telemetry(
 
     if (session_id) {
         cJSON_AddStringToObject(body, "sessionId", session_id);
+    }
+    if (boot_id) {
+        cJSON_AddStringToObject(body, "bootId", boot_id);
     }
     cJSON_AddStringToObject(body, "eventType", event_type);
     cJSON_AddStringToObject(body, "level", level ? level : "info");
@@ -592,13 +612,20 @@ esp_err_t mitr_device_send_telemetry(
 
 esp_err_t mitr_device_notify_wake_detected(
     const char *session_id,
+    const char *boot_id,
     const char *model_name,
     const char *phrase,
-    float score)
+    float score,
+    char *conversation_id,
+    size_t conversation_id_capacity)
 {
     ESP_RETURN_ON_FALSE(session_id != NULL && strlen(session_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing session id");
+    ESP_RETURN_ON_FALSE(boot_id != NULL && strlen(boot_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing boot id");
     ESP_RETURN_ON_FALSE(model_name != NULL && strlen(model_name) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing model name");
     ESP_RETURN_ON_FALSE(phrase != NULL && strlen(phrase) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing wake phrase");
+    if (conversation_id && conversation_id_capacity > 0) {
+        conversation_id[0] = '\0';
+    }
 
     int path_len = snprintf(NULL, 0, "/internal/device-sessions/%s/wake-detected", session_id);
     ESP_RETURN_ON_FALSE(path_len > 0, ESP_FAIL, TAG, "Failed to size wake-detected path");
@@ -612,6 +639,7 @@ esp_err_t mitr_device_notify_wake_detected(
         free(path);
         return ESP_ERR_NO_MEM;
     }
+    cJSON_AddStringToObject(body, "bootId", boot_id);
     cJSON_AddStringToObject(body, "modelName", model_name);
     cJSON_AddStringToObject(body, "phrase", phrase);
     cJSON_AddNumberToObject(body, "score", score);
@@ -636,6 +664,10 @@ esp_err_t mitr_device_notify_wake_detected(
     }
 
     const cJSON *accepted = cJSON_GetObjectItemCaseSensitive(response, "accepted");
+    const cJSON *conversation = cJSON_GetObjectItemCaseSensitive(response, "conversationId");
+    if (conversation_id && conversation_id_capacity > 0) {
+        copy_json_string(conversation, conversation_id, conversation_id_capacity);
+    }
     if (!cJSON_IsTrue(accepted)) {
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(response, "reason");
         const char *reason_str =
@@ -645,7 +677,7 @@ esp_err_t mitr_device_notify_wake_detected(
             "Wake detection rejected: %s",
             reason_str);
         cJSON_Delete(response);
-        if (strcmp(reason_str, "conversation_not_idle") == 0) {
+        if (strcmp(reason_str, "conversation_not_idle") == 0 || strcmp(reason_str, "conversation_already_active") == 0) {
             return ESP_ERR_INVALID_STATE;
         }
         return ESP_FAIL;
@@ -655,13 +687,15 @@ esp_err_t mitr_device_notify_wake_detected(
     return ESP_OK;
 }
 
-esp_err_t mitr_device_end_session(const char *session_id, const char *reason)
+esp_err_t mitr_device_end_session(const char *session_id, const char *boot_id, const char *reason)
 {
     ESP_RETURN_ON_FALSE(session_id != NULL && strlen(session_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing session id");
+    ESP_RETURN_ON_FALSE(boot_id != NULL && strlen(boot_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing boot id");
 
     cJSON *body = cJSON_CreateObject();
     ESP_RETURN_ON_FALSE(body != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create end-session body");
     cJSON_AddStringToObject(body, "sessionId", session_id);
+    cJSON_AddStringToObject(body, "bootId", boot_id);
     cJSON_AddStringToObject(body, "reason", reason ? reason : "device_shutdown");
 
     char *body_string = cJSON_PrintUnformatted(body);

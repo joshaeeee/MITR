@@ -62,6 +62,8 @@ dotenv.config({ path: '.env.local' });
 
 type DispatchMetadata = {
   session_id?: string;
+  boot_id?: string;
+  conversation_id?: string;
   user_id?: string;
   family_id?: string | null;
   elder_id?: string | null;
@@ -706,6 +708,8 @@ export default defineAgent({
     const roomNameFromJob = (ctx.job as { room?: { name?: string } }).room?.name;
     const roomName = roomNameFromJob ?? (ctx.room as { name?: string } | undefined)?.name ?? 'unknown-room';
     const sessionId = metadata.session_id ?? `${roomName}:${userId}`;
+    const bootId = asNonEmptyString(metadata.boot_id);
+    const conversationId = asNonEmptyString(metadata.conversation_id);
     const isManagedDeviceSession = isEsp32Session && !!metadata.session_id;
     let lastFinalTranscript: string | null = null;
     const MAX_AUTO_ADVANCE_TURNS = 6;
@@ -730,6 +734,7 @@ export default defineAgent({
     let satsangAmbiencePublisher: SatsangAmbiencePublisher | null = null;
     let nudgePlaybackStatusTimer: NodeJS.Timeout | null = null;
     let activeNudgePlayback: QueuedNudgePlayback | null = null;
+    let managedConversationIdleTimer: NodeJS.Timeout | null = null;
     const queuedNudgePlaybacks: QueuedNudgePlayback[] = [];
     const conversations = new ConversationService();
     const userTranscripts = new UserTranscriptService();
@@ -753,13 +758,19 @@ export default defineAgent({
       });
     }
 
-    const publishDeviceControl = (type: 'conversation_ended' | 'conversation_error', payload: Record<string, unknown>) => {
+    const publishDeviceControl = (
+      type: 'conversation_started' | 'conversation_ended' | 'conversation_error' | 'session_superseded',
+      payload: Record<string, unknown>
+    ) => {
       const localParticipant = ctx.room.localParticipant;
       if (!localParticipant) return;
       const body = {
         type,
         action: type,
+        deviceSessionId: sessionId,
         sessionId,
+        bootId,
+        conversationId,
         ts: Date.now(),
         ...payload
       };
@@ -777,12 +788,18 @@ export default defineAgent({
         });
     };
 
+    const clearManagedConversationIdleTimer = (): void => {
+      if (!managedConversationIdleTimer) return;
+      clearTimeout(managedConversationIdleTimer);
+      managedConversationIdleTimer = null;
+    };
+
     const postDeviceSessionUpdate = async (
-      path: 'conversation-active' | 'conversation-ended' | 'conversation-error',
+      path: 'conversation-active' | 'conversation-ended' | 'conversation-error' | 'user-activity',
       payload?: Record<string, unknown>
     ): Promise<void> => {
-      if (!isManagedDeviceSession) return;
-      const response = await fetch(`${getInternalApiBaseUrl()}/internal/device-sessions/${sessionId}/${path}`, {
+      if (!isManagedDeviceSession || !conversationId) return;
+      const response = await fetch(`${getInternalApiBaseUrl()}/internal/device-conversations/${conversationId}/${path}`, {
         method: 'POST',
         headers: buildInternalHeaders(),
         body: JSON.stringify(payload ?? {})
@@ -792,8 +809,20 @@ export default defineAgent({
       }
     };
 
+    const touchManagedConversationUserActivity = (activityAt: number): void => {
+      if (!isManagedDeviceSession || !conversationId) return;
+      void postDeviceSessionUpdate('user-activity', { activityAtMs: activityAt }).catch((error) => {
+        logger.warn('Failed to update managed device conversation activity', {
+          sessionId,
+          conversationId,
+          error: (error as Error).message
+        });
+      });
+    };
+
     const completeManagedDeviceConversation = (type: 'conversation_ended' | 'conversation_error', reason: string) => {
-      if (!isManagedDeviceSession || lifecycleCompletionSent) return;
+      clearManagedConversationIdleTimer();
+      if (!isManagedDeviceSession || !conversationId || lifecycleCompletionSent) return;
       lifecycleCompletionSent = true;
       publishDeviceControl(type, { reason });
       const path = type === 'conversation_ended' ? 'conversation-ended' : 'conversation-error';
@@ -804,6 +833,47 @@ export default defineAgent({
           reason,
           error: (error as Error).message
         });
+      });
+    };
+
+    const managedConversationIdleTimeoutMs = isManagedDeviceSession
+      ? Math.max(1_000, env.DEVICE_CONVERSATION_IDLE_TIMEOUT_MS)
+      : 0;
+
+    const closeManagedConversationForIdleTimeout = (): void => {
+      if (!isManagedDeviceSession || !sessionRef || lifecycleCompletionSent) return;
+      logger.info('Managed device conversation idle timeout reached', {
+        sessionId,
+        conversationId,
+        idleTimeoutMs: managedConversationIdleTimeoutMs
+      });
+      completeManagedDeviceConversation('conversation_ended', 'user_idle_timeout');
+      void sessionRef.close();
+    };
+
+    const scheduleManagedConversationIdleTimeout = (source: string): void => {
+      clearManagedConversationIdleTimer();
+      if (!isManagedDeviceSession || !sessionRef || lifecycleCompletionSent || managedConversationIdleTimeoutMs <= 0) {
+        return;
+      }
+      if (latestUserState === 'speaking') return;
+      if (latestAgentState !== 'idle' && latestAgentState !== 'listening') return;
+
+      managedConversationIdleTimer = setTimeout(() => {
+        managedConversationIdleTimer = null;
+        if (!sessionRef || lifecycleCompletionSent) return;
+        if (latestUserState === 'speaking' || (latestAgentState !== 'idle' && latestAgentState !== 'listening')) {
+          scheduleManagedConversationIdleTimeout(`${source}_deferred`);
+          return;
+        }
+        closeManagedConversationForIdleTimeout();
+      }, managedConversationIdleTimeoutMs);
+      managedConversationIdleTimer.unref?.();
+      logger.debug('Managed device conversation idle timeout armed', {
+        sessionId,
+        conversationId,
+        source,
+        idleTimeoutMs: managedConversationIdleTimeoutMs
       });
     };
 
@@ -1703,6 +1773,7 @@ export default defineAgent({
       }
       lastFinalTranscript = transcript || null;
       if (transcript.length > 0) {
+        touchManagedConversationUserActivity(event.createdAt);
         autoFlowState.pendingAutoAdvance = false;
         autoFlowState.autoTurnsRemaining = MAX_AUTO_ADVANCE_TURNS;
       }
@@ -1909,10 +1980,14 @@ export default defineAgent({
         turn.firstAudioAt = event.createdAt;
         logTurnMarker(turn, 'first_audio_playback_started', event.createdAt);
       }
+      if (event.newState === 'thinking' || event.newState === 'speaking') {
+        clearManagedConversationIdleTimer();
+      }
       if (event.newState === 'idle' || event.newState === 'listening') {
         dispatchNextQueuedNudgePlayback();
         scheduleAutoAdvance(session);
         flushFollowups();
+        scheduleManagedConversationIdleTimeout(`agent_state_${event.newState}`);
       }
     });
 
@@ -1922,6 +1997,8 @@ export default defineAgent({
         lastUserSpeechStoppedAt = event.createdAt;
       }
       if (event.newState === 'speaking') {
+        touchManagedConversationUserActivity(event.createdAt);
+        clearManagedConversationIdleTimer();
         clearSpeechStuckTimer();
         speechStuckTimer = setTimeout(() => {
           if (latestUserState !== 'speaking') return;
@@ -1935,11 +2012,14 @@ export default defineAgent({
       dispatchNextQueuedNudgePlayback();
       scheduleAutoAdvance(session);
       flushFollowups();
+      scheduleManagedConversationIdleTimeout(`user_state_${event.newState}`);
     });
 
     session.on(voice.AgentSessionEventTypes.Error, (event) => {
+      clearManagedConversationIdleTimer();
       logger.error('Agent session error', {
         sessionId,
+        conversationId,
         source: String((event.source as { constructor?: { name?: string } })?.constructor?.name ?? 'unknown'),
         error: (event.error as Error)?.message ?? String(event.error)
       });
@@ -1947,9 +2027,11 @@ export default defineAgent({
         'conversation_error',
         (event.error as Error)?.message ?? 'agent_session_error'
       );
+      void sessionRef?.close();
     });
 
     session.on(voice.AgentSessionEventTypes.Close, (event) => {
+      clearManagedConversationIdleTimer();
       clearSpeechStuckTimer();
       clearNudgePlaybackStatusTimer();
       activeNudgePlayback = null;
@@ -2041,7 +2123,9 @@ export default defineAgent({
       });
 
       if (isManagedDeviceSession) {
+        publishDeviceControl('conversation_started', {});
         await postDeviceSessionUpdate('conversation-active');
+        scheduleManagedConversationIdleTimeout('session_started');
       }
     } catch (error) {
       completeManagedDeviceConversation('conversation_error', (error as Error).message || 'session_start_failed');

@@ -85,6 +85,13 @@
       "when": 1775487600000,
       "tag": "0011_device_session_conversation_state",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1776692370042,
+      "tag": "0012_marvelous_serpent_society",
+      "breakpoints": true
     }
   ]
 }

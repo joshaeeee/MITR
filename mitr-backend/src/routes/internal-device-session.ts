@@ -8,7 +8,12 @@ const sessionParamsSchema = z.object({
   sessionId: z.string().uuid()
 });
 
+const conversationParamsSchema = z.object({
+  conversationId: z.string().uuid()
+});
+
 const wakeDetectedSchema = z.object({
+  bootId: z.string().min(8),
   modelName: z.string().min(1),
   phrase: z.string().min(1),
   score: z.number(),
@@ -21,6 +26,10 @@ const conversationEndedSchema = z.object({
 
 const conversationErrorSchema = z.object({
   reason: z.string().min(1)
+});
+
+const conversationUserActivitySchema = z.object({
+  activityAtMs: z.number().int().optional()
 });
 
 export const registerInternalDeviceSessionRoutes = (app: FastifyInstance): void => {
@@ -74,34 +83,46 @@ export const registerInternalDeviceSessionRoutes = (app: FastifyInstance): void 
     }
   });
 
-  app.post('/internal/device-sessions/:sessionId/conversation-active', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
-    const params = sessionParamsSchema.safeParse(request.params ?? {});
+  app.post('/internal/device-conversations/:conversationId/conversation-active', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
+    const params = conversationParamsSchema.safeParse(request.params ?? {});
     if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
 
-    const session = await control.markConversationActive(params.data.sessionId);
-    if (!session) return reply.status(404).send({ error: 'Device session not found' });
-    return reply.send({ ok: true, session });
+    const conversation = await control.markConversationActive(params.data.conversationId);
+    if (!conversation) return reply.status(404).send({ error: 'Device conversation not found' });
+    return reply.send({ ok: true, conversation });
   });
 
-  app.post('/internal/device-sessions/:sessionId/conversation-ended', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
-    const params = sessionParamsSchema.safeParse(request.params ?? {});
+  app.post('/internal/device-conversations/:conversationId/user-activity', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
+    const params = conversationParamsSchema.safeParse(request.params ?? {});
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    const body = conversationUserActivitySchema.safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
+
+    const activityAt = typeof body.data.activityAtMs === 'number' ? new Date(body.data.activityAtMs) : new Date();
+    const conversation = await control.markConversationUserActivity(params.data.conversationId, activityAt);
+    if (!conversation) return reply.status(404).send({ error: 'Device conversation not found' });
+    return reply.send({ ok: true, conversation });
+  });
+
+  app.post('/internal/device-conversations/:conversationId/conversation-ended', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
+    const params = conversationParamsSchema.safeParse(request.params ?? {});
     if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
     const body = conversationEndedSchema.safeParse(request.body ?? {});
     if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
 
-    const session = await control.markConversationEnded(params.data.sessionId, body.data.reason);
-    if (!session) return reply.status(404).send({ error: 'Device session not found' });
-    return reply.send({ ok: true, session });
+    const conversation = await control.markConversationEnded(params.data.conversationId, body.data.reason);
+    if (!conversation) return reply.status(404).send({ error: 'Device conversation not found' });
+    return reply.send({ ok: true, conversation });
   });
 
-  app.post('/internal/device-sessions/:sessionId/conversation-error', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
-    const params = sessionParamsSchema.safeParse(request.params ?? {});
+  app.post('/internal/device-conversations/:conversationId/conversation-error', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
+    const params = conversationParamsSchema.safeParse(request.params ?? {});
     if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
     const body = conversationErrorSchema.safeParse(request.body ?? {});
     if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
 
-    const session = await control.markConversationError(params.data.sessionId, body.data.reason);
-    if (!session) return reply.status(404).send({ error: 'Device session not found' });
-    return reply.send({ ok: true, session });
+    const conversation = await control.markConversationError(params.data.conversationId, body.data.reason);
+    if (!conversation) return reply.status(404).send({ error: 'Device conversation not found' });
+    return reply.send({ ok: true, conversation });
   });
 };

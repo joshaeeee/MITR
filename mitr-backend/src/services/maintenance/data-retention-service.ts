@@ -1,8 +1,9 @@
-import { and, inArray, isNotNull, lt, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, lt, or } from 'drizzle-orm';
 import { env } from '../../config/env.js';
 import { db } from '../../db/client.js';
-import { authSessions, deviceSessions, otpChallenges, refreshTokens, userEventStream } from '../../db/schema.js';
+import { authSessions, deviceConversations, devices, deviceSessions, otpChallenges, refreshTokens, userEventStream } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
+import { detachDeviceParticipant } from '../device/livekit-device-room-control.js';
 
 export class DataRetentionService {
   private timer: NodeJS.Timeout | null = null;
@@ -42,15 +43,61 @@ export class DataRetentionService {
       const endedDeviceSessions = env.DEVICE_SESSION_STALE_SEC > 0
         ? await db
             .update(deviceSessions)
-            .set({ status: 'ended' })
+            .set({
+              status: 'ended',
+              conversationState: 'idle',
+              endedAt: now,
+              endReason: 'heartbeat_timeout',
+              lastConversationEndReason: 'heartbeat_timeout',
+              conversationEndedAt: now
+            })
             .where(
               and(
                 inArray(deviceSessions.status, ['issued', 'active']),
                 lt(deviceSessions.lastHeartbeatAt, deviceSessionCutoff)
               )
             )
-            .returning({ id: deviceSessions.id })
+            .returning({
+              id: deviceSessions.id,
+              deviceId: deviceSessions.deviceId,
+              roomName: deviceSessions.roomName,
+              participantIdentity: deviceSessions.participantIdentity,
+              bootId: deviceSessions.bootId
+            })
         : [];
+
+      if (endedDeviceSessions.length > 0) {
+        const endedIds = endedDeviceSessions.map((row) => row.id);
+        await db
+          .update(deviceConversations)
+          .set({
+            state: 'abandoned',
+            endedAt: now,
+            endReason: 'heartbeat_timeout'
+          })
+          .where(
+            and(
+              inArray(deviceConversations.deviceSessionId, endedIds),
+              inArray(deviceConversations.state, ['opening', 'active'])
+            )
+          );
+
+        for (const row of endedDeviceSessions) {
+          await db
+            .update(devices)
+            .set({ currentDeviceSessionId: null })
+            .where(and(eq(devices.deviceId, row.deviceId), eq(devices.currentDeviceSessionId, row.id)));
+          await detachDeviceParticipant(
+            {
+              sessionId: row.id,
+              roomName: row.roomName,
+              participantIdentity: row.participantIdentity,
+              bootId: row.bootId
+            },
+            'heartbeat_timeout'
+          );
+        }
+      }
 
       const [deletedSessions, deletedRefreshTokens, deletedOtpChallenges, deletedUserEvents] = await Promise.all([
         db

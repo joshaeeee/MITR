@@ -1,9 +1,10 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { and, desc, eq, gt, inArray, isNull, or } from 'drizzle-orm';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { and, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { AccessToken, AgentDispatchClient, VideoGrant } from 'livekit-server-sdk';
 import { db } from '../../db/client.js';
 import {
   deviceClaims,
+  deviceConversations,
   devicePairings,
   devices,
   deviceSessions,
@@ -14,9 +15,11 @@ import {
 import { getRequiredLivekitConfig } from '../../config/livekit-config.js';
 import { getFamilyRepository } from '../family/family-repository.js';
 import { publishDeviceSessionEvent } from './device-session-events.js';
+import { detachDeviceParticipant, notifyAndDetachSupersededSession, type DeviceRoomSessionTarget } from './livekit-device-room-control.js';
 
 type DevicePairingStatus = 'pending_device' | 'bootstrapping' | 'completed' | 'expired' | 'revoked';
 export type DeviceConversationState = 'idle' | 'starting' | 'active' | 'ending';
+export type DeviceConversationStatus = 'opening' | 'active' | 'ended' | 'errored' | 'abandoned';
 
 export interface DeviceAuthRecord {
   id: string;
@@ -40,6 +43,7 @@ export interface DeviceSessionRecord {
   claimedByUserId: string | null;
   roomName: string;
   participantIdentity: string;
+  bootId: string;
   language: string;
   firmwareVersion: string | null;
   hardwareRev: string | null;
@@ -75,6 +79,7 @@ export interface ClaimedDeviceSummary {
     id: string;
     roomName: string;
     participantIdentity: string;
+    bootId: string;
     status: 'issued' | 'active' | 'ended';
     conversationState: DeviceConversationState;
     startedAt: number;
@@ -88,6 +93,21 @@ export interface ClaimedDeviceSummary {
     endedAt: number | null;
     endReason: string | null;
   } | null;
+}
+
+export interface DeviceConversationRecord {
+  id: string;
+  deviceSessionId: string;
+  deviceId: string;
+  state: DeviceConversationStatus;
+  requestedAt: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  endReason: string | null;
+  lastUserActivityAt: number | null;
+  wakewordModel: string | null;
+  wakewordPhrase: string | null;
+  wakewordScore: string | null;
 }
 
 export interface DevicePairingSummary {
@@ -209,6 +229,7 @@ export class DeviceControlService {
       claimedByUserId: row.claimedByUserId,
       roomName: row.roomName,
       participantIdentity: row.participantIdentity,
+      bootId: row.bootId,
       language: row.language,
       firmwareVersion: row.firmwareVersion,
       hardwareRev: row.hardwareRev,
@@ -228,6 +249,23 @@ export class DeviceControlService {
     };
   }
 
+  private conversationRecord(row: typeof deviceConversations.$inferSelect): DeviceConversationRecord {
+    return {
+      id: row.id,
+      deviceSessionId: row.deviceSessionId,
+      deviceId: row.deviceId,
+      state: row.state,
+      requestedAt: row.requestedAt.getTime(),
+      startedAt: toMillis(row.startedAt),
+      endedAt: toMillis(row.endedAt),
+      endReason: row.endReason ?? null,
+      lastUserActivityAt: toMillis(row.lastUserActivityAt),
+      wakewordModel: row.wakewordModel ?? null,
+      wakewordPhrase: row.wakewordPhrase ?? null,
+      wakewordScore: row.wakewordScore ?? null
+    };
+  }
+
   private async publishSessionState(row: typeof deviceSessions.$inferSelect, type: 'session_upserted' | 'session_ended' | 'conversation_state_changed'): Promise<void> {
     await publishDeviceSessionEvent({
       type,
@@ -244,6 +282,50 @@ export class DeviceControlService {
   private async getSessionRowById(sessionId: string): Promise<typeof deviceSessions.$inferSelect | null> {
     const [session] = await db.select().from(deviceSessions).where(eq(deviceSessions.id, sessionId)).limit(1);
     return session ?? null;
+  }
+
+  private async getCurrentSessionRowForDevice(deviceRowId: string): Promise<typeof deviceSessions.$inferSelect | null> {
+    const rows = await db
+      .select({
+        session: deviceSessions
+      })
+      .from(devices)
+      .leftJoin(deviceSessions, eq(devices.currentDeviceSessionId, deviceSessions.id))
+      .where(eq(devices.id, deviceRowId))
+      .limit(1);
+    return rows[0]?.session ?? null;
+  }
+
+  private async getCurrentSessionRowForDeviceByDeviceId(deviceId: string): Promise<typeof deviceSessions.$inferSelect | null> {
+    const rows = await db
+      .select({
+        session: deviceSessions
+      })
+      .from(devices)
+      .leftJoin(deviceSessions, eq(devices.currentDeviceSessionId, deviceSessions.id))
+      .where(eq(devices.deviceId, deviceId))
+      .limit(1);
+    return rows[0]?.session ?? null;
+  }
+
+  private async getConversationRowById(conversationId: string): Promise<typeof deviceConversations.$inferSelect | null> {
+    const [conversation] = await db.select().from(deviceConversations).where(eq(deviceConversations.id, conversationId)).limit(1);
+    return conversation ?? null;
+  }
+
+  private async getOpenConversationForSession(sessionId: string): Promise<typeof deviceConversations.$inferSelect | null> {
+    const [conversation] = await db
+      .select()
+      .from(deviceConversations)
+      .where(
+        and(
+          eq(deviceConversations.deviceSessionId, sessionId),
+          inArray(deviceConversations.state, ['opening', 'active'])
+        )
+      )
+      .orderBy(desc(deviceConversations.requestedAt))
+      .limit(1);
+    return conversation ?? null;
   }
 
   async getCurrentFamilyContextForUser(
@@ -326,6 +408,7 @@ export class DeviceControlService {
               id: lastSession.id,
               roomName: lastSession.roomName,
               participantIdentity: lastSession.participantIdentity,
+              bootId: lastSession.bootId,
               status: lastSession.status,
               conversationState: lastSession.conversationState,
               startedAt: lastSession.startedAt.getTime(),
@@ -740,14 +823,16 @@ export class DeviceControlService {
     };
   }
 
-  async mintLiveKitToken(input: {
+  async openDeviceSession(input: {
     device: DeviceAuthRecord;
+    bootId: string;
     language?: string;
     firmwareVersion?: string;
     hardwareRev?: string;
     metadata?: Record<string, unknown>;
   }): Promise<{
     sessionId: string;
+    bootId: string;
     serverUrl: string;
     participantToken: string;
     roomName: string;
@@ -761,20 +846,165 @@ export class DeviceControlService {
       throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
     }
 
-    // Persistent warm connection model: every token for a given device maps to
-    // the same stable room. The device joins this room once at boot and stays
-    // connected until reboot, so sessionId represents a connection lifecycle
-    // rather than a single wake-turn. Room name is derived from the authenticated
-    // deviceId only — never from client input — so a device cannot request a
-    // token for another device's room.
-    const roomName = `mitr-persistent-${slug(input.device.deviceId)}`;
-    // Keep the identity stable per device so repeated token mints don't create
-    // ghost participants in the room.
-    const identity = `device-${slug(input.device.deviceId)}`;
+    const bootId = input.bootId.trim();
+    if (!bootId) {
+      throw new Error('bootId is required');
+    }
+
     const metadataLanguage = readMetadataString(input.device.metadataJson, 'elderLanguage');
     const language = input.language?.trim() || metadataLanguage || DEFAULT_LANGUAGE;
     const firmwareVersion = input.firmwareVersion?.trim() || input.device.firmwareVersion || null;
     const hardwareRev = input.hardwareRev?.trim() || input.device.hardwareRev || null;
+
+    const metadataBase = {
+      user_id: input.device.userId,
+      family_id: input.device.familyId,
+      elder_id: input.device.elderId,
+      claimed_by_user_id: input.device.claimedByUserId,
+      device_id: input.device.deviceId,
+      language,
+      firmware_version: firmwareVersion,
+      hardware_rev: hardwareRev,
+      ...(input.metadata ?? {})
+    };
+
+    let sessionId = '';
+    let roomName = '';
+    let identity = '';
+    let sessionRow: typeof deviceSessions.$inferSelect | null = null;
+    let supersededSession: DeviceRoomSessionTarget | null = null;
+
+    await db.transaction(async (tx) => {
+      const locked = await tx.execute(sql`
+        SELECT id, current_device_session_id
+        FROM ${devices}
+        WHERE id = ${input.device.id}
+        FOR UPDATE
+      `);
+      if (!locked.rows?.length) {
+        throw new Error('Device not found');
+      }
+
+      const currentSessionId = String(locked.rows[0]?.current_device_session_id ?? '');
+      const currentSession = currentSessionId
+        ? await tx.select().from(deviceSessions).where(eq(deviceSessions.id, currentSessionId)).limit(1).then((rows) => rows[0] ?? null)
+        : null;
+
+      if (currentSession && currentSession.bootId === bootId && currentSession.status !== 'ended') {
+        sessionId = currentSession.id;
+        roomName = currentSession.roomName;
+        identity = currentSession.participantIdentity;
+        const dispatchMetadata = {
+          ...metadataBase,
+          session_id: sessionId,
+          boot_id: bootId
+        };
+        await tx
+          .update(deviceSessions)
+          .set({
+            language,
+            firmwareVersion,
+            hardwareRev,
+            metadataJson: dispatchMetadata,
+            lastHeartbeatAt: new Date()
+          })
+          .where(eq(deviceSessions.id, sessionId));
+      } else {
+        if (currentSession && currentSession.status !== 'ended') {
+          supersededSession = {
+            sessionId: currentSession.id,
+            roomName: currentSession.roomName,
+            participantIdentity: currentSession.participantIdentity,
+            bootId: currentSession.bootId
+          };
+          await tx
+            .update(deviceSessions)
+            .set({
+              status: 'ended',
+              conversationState: 'idle',
+              endedAt: new Date(),
+              endReason: 'session_superseded',
+              lastConversationEndReason: 'session_superseded',
+              conversationEndedAt: new Date()
+            })
+            .where(eq(deviceSessions.id, currentSession.id));
+
+          await tx
+            .update(deviceConversations)
+            .set({
+              state: 'abandoned',
+              endedAt: new Date(),
+              endReason: 'session_superseded'
+            })
+            .where(
+              and(
+                eq(deviceConversations.deviceSessionId, currentSession.id),
+                inArray(deviceConversations.state, ['opening', 'active'])
+              )
+            );
+        }
+
+        sessionId = randomUUID();
+        roomName = `mitr-device-${slug(input.device.deviceId)}-s${sessionId.slice(0, 8)}`;
+        identity = `device-${slug(input.device.deviceId)}-s${sessionId.slice(0, 8)}`;
+        const dispatchMetadata = {
+          ...metadataBase,
+          session_id: sessionId,
+          boot_id: bootId
+        };
+        await tx.insert(deviceSessions).values({
+          id: sessionId,
+          deviceId: input.device.deviceId,
+          userId: input.device.userId,
+          familyId: input.device.familyId,
+          elderId: input.device.elderId,
+          claimedByUserId: input.device.claimedByUserId,
+          roomName,
+          participantIdentity: identity,
+          bootId,
+          language,
+          firmwareVersion,
+          hardwareRev,
+          status: 'issued',
+          conversationState: 'idle',
+          metadataJson: dispatchMetadata
+        });
+
+        await tx
+          .update(devices)
+          .set({
+            currentDeviceSessionId: sessionId,
+            firmwareVersion,
+            hardwareRev,
+            lastSeenAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(devices.id, input.device.id));
+      }
+
+      sessionRow = await tx.select().from(deviceSessions).where(eq(deviceSessions.id, sessionId)).limit(1).then((rows) => rows[0] ?? null);
+      if (!sessionRow) {
+        throw new Error('Failed to load device session');
+      }
+      await tx
+        .update(devices)
+        .set({
+          firmwareVersion,
+          hardwareRev,
+          lastSeenAt: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(devices.id, input.device.id));
+    });
+
+    if (!sessionRow) {
+      throw new Error('Failed to open device session');
+    }
+
+    await this.publishSessionState(sessionRow, 'session_upserted');
+    if (supersededSession) {
+      await notifyAndDetachSupersededSession(supersededSession);
+    }
 
     const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
       identity,
@@ -789,116 +1019,17 @@ export class DeviceControlService {
       canPublishData: true
     };
     at.addGrant(videoGrant);
-
-    const metadataBase = {
-      user_id: input.device.userId,
-      family_id: input.device.familyId,
-      elder_id: input.device.elderId,
-      claimed_by_user_id: input.device.claimedByUserId,
-      device_id: input.device.deviceId,
-      language,
-      firmware_version: firmwareVersion,
-      hardware_rev: hardwareRev,
-      ...(input.metadata ?? {})
-    };
-
     const participantToken = await at.toJwt();
-
-    // Reuse an existing active session row if we already have one for this
-    // device + room. Under the persistent-warm model a device typically lives
-    // in a single session until reboot; tearing prior sessions down on every
-    // mint caused the device log churn (and the transient `used_prefetch=0`
-    // retry loop) documented in the 2026-04-17 trace.
-    const [existingSession] = await db
-      .select({ id: deviceSessions.id })
-      .from(deviceSessions)
-      .where(
-        and(
-          eq(deviceSessions.deviceId, input.device.deviceId),
-          eq(deviceSessions.roomName, roomName),
-          inArray(deviceSessions.status, ['issued', 'active'])
-        )
-      )
-      .orderBy(desc(deviceSessions.startedAt))
-      .limit(1);
-
-    let sessionId: string;
-    if (existingSession) {
-      sessionId = existingSession.id;
-      const dispatchMetadata = {
-        ...metadataBase,
-        session_id: sessionId
-      };
-      // Device just rebooted and is re-minting its token. Any prior conversation
-      // is gone, so clear the conversation state. Without this, sessions whose
-      // previous boot died mid-conversation stay pinned to `starting`/`active`
-      // and reject every future wake as `conversation_not_idle`.
-      await db
-        .update(deviceSessions)
-        .set({
-          participantIdentity: identity,
-          language,
-          firmwareVersion,
-          hardwareRev,
-          metadataJson: dispatchMetadata,
-          lastHeartbeatAt: new Date(),
-          conversationState: 'idle'
-        })
-        .where(eq(deviceSessions.id, existingSession.id));
-    } else {
-      const [session] = await db
-        .insert(deviceSessions)
-        .values({
-          deviceId: input.device.deviceId,
-          userId: input.device.userId,
-          familyId: input.device.familyId,
-          elderId: input.device.elderId,
-          claimedByUserId: input.device.claimedByUserId,
-          roomName,
-          participantIdentity: identity,
-          language,
-          firmwareVersion,
-          hardwareRev,
-          status: 'issued',
-          conversationState: 'idle',
-          metadataJson: metadataBase
-        })
-        .returning({ id: deviceSessions.id });
-      sessionId = session.id;
-      const dispatchMetadata = {
-        ...metadataBase,
-        session_id: sessionId
-      };
-      await db
-        .update(deviceSessions)
-        .set({
-          metadataJson: dispatchMetadata
-        })
-        .where(eq(deviceSessions.id, sessionId));
-    }
-
-    await db
-      .update(devices)
-      .set({
-        firmwareVersion,
-        hardwareRev,
-        lastSeenAt: new Date(),
-        updatedAt: new Date()
-      })
-      .where(eq(devices.id, input.device.id));
-
-    const sessionRow = await this.getSessionRowById(sessionId);
-    if (sessionRow) {
-      await this.publishSessionState(sessionRow, 'session_upserted');
-    }
 
     const dispatchMetadata = {
       ...metadataBase,
-      session_id: sessionId
+      session_id: sessionId,
+      boot_id: bootId
     };
 
     return {
       sessionId,
+      bootId,
       serverUrl: livekit.url,
       participantToken,
       roomName,
@@ -909,6 +1040,29 @@ export class DeviceControlService {
     };
   }
 
+  async mintLiveKitToken(input: {
+    device: DeviceAuthRecord;
+    language?: string;
+    firmwareVersion?: string;
+    hardwareRev?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    sessionId: string;
+    bootId: string;
+    serverUrl: string;
+    participantToken: string;
+    roomName: string;
+    identity: string;
+    agentName: string;
+    dispatchMetadata: Record<string, unknown>;
+    participantTokenExpiresAtMs: number;
+  }> {
+    return this.openDeviceSession({
+      ...input,
+      bootId: randomUUID().replace(/-/g, '')
+    });
+  }
+
   /**
    * Mint a fresh participant JWT for a device's persistent room without
    * creating a new session row. Used by the firmware's background token
@@ -916,8 +1070,11 @@ export class DeviceControlService {
    */
   async refreshLiveKitToken(input: {
     device: DeviceAuthRecord;
+    sessionId: string;
+    bootId: string;
   }): Promise<{
     sessionId: string;
+    bootId: string;
     serverUrl: string;
     participantToken: string;
     roomName: string;
@@ -929,25 +1086,16 @@ export class DeviceControlService {
       throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
     }
 
-    const roomName = `mitr-persistent-${slug(input.device.deviceId)}`;
-    const identity = `device-${slug(input.device.deviceId)}`;
-
-    const [existingSession] = await db
-      .select({ id: deviceSessions.id })
-      .from(deviceSessions)
-      .where(
-        and(
-          eq(deviceSessions.deviceId, input.device.deviceId),
-          eq(deviceSessions.roomName, roomName),
-          inArray(deviceSessions.status, ['issued', 'active'])
-        )
-      )
-      .orderBy(desc(deviceSessions.startedAt))
-      .limit(1);
-
-    if (!existingSession) {
+    const currentSession = await this.getCurrentSessionRowForDevice(input.device.id);
+    if (!currentSession || currentSession.status === 'ended') {
       throw new Error('No active session to refresh; call /devices/token instead');
     }
+    if (currentSession.id !== input.sessionId || currentSession.bootId !== input.bootId) {
+      throw new Error('session_superseded');
+    }
+
+    const roomName = currentSession.roomName;
+    const identity = currentSession.participantIdentity;
 
     const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
       identity,
@@ -970,10 +1118,11 @@ export class DeviceControlService {
     await db
       .update(deviceSessions)
       .set({ lastHeartbeatAt: new Date() })
-      .where(eq(deviceSessions.id, existingSession.id));
+      .where(eq(deviceSessions.id, currentSession.id));
 
     return {
-      sessionId: existingSession.id,
+      sessionId: currentSession.id,
+      bootId: currentSession.bootId,
       serverUrl: livekit.url,
       participantToken,
       roomName,
@@ -996,7 +1145,7 @@ export class DeviceControlService {
     return row ? this.sessionRecord(row) : null;
   }
 
-  async dispatchAgentToPersistentRoom(sessionId: string): Promise<void> {
+  async dispatchAgentToPersistentRoom(sessionId: string, metadata: Record<string, unknown>): Promise<void> {
     const session = await this.getSessionRowById(sessionId);
     if (!session) {
       throw new Error('Device session not found');
@@ -1009,26 +1158,45 @@ export class DeviceControlService {
 
     const dispatchClient = new AgentDispatchClient(livekit.url, livekit.apiKey, livekit.apiSecret);
     await dispatchClient.createDispatch(session.roomName, livekit.agentName, {
-      metadata: JSON.stringify(normalizeMetadata(session.metadataJson))
+      metadata: JSON.stringify(metadata)
     });
   }
 
   async handleWakeDetected(input: {
     sessionId: string;
+    bootId: string;
     modelName: string;
     phrase: string;
     score: number;
     detectedAtMs: number;
-  }): Promise<{ accepted: boolean; reason?: string; session: DeviceSessionRecord | null }> {
+  }): Promise<{
+    accepted: boolean;
+    reason?: string;
+    session: DeviceSessionRecord | null;
+    conversationId?: string;
+  }> {
     const session = await this.getSessionRowById(input.sessionId);
     if (!session) {
       return { accepted: false, reason: 'session_not_found', session: null };
     }
+    const currentSession = await this.getCurrentSessionRowForDeviceByDeviceId(session.deviceId);
+    if (!currentSession || currentSession.id !== session.id) {
+      return { accepted: false, reason: 'session_superseded', session: this.sessionRecord(session) };
+    }
+    if (session.bootId !== input.bootId) {
+      return { accepted: false, reason: 'session_superseded', session: this.sessionRecord(session) };
+    }
     if (!['issued', 'active'].includes(session.status)) {
       return { accepted: false, reason: 'session_not_live', session: this.sessionRecord(session) };
     }
-    if (session.conversationState !== 'idle') {
-      return { accepted: false, reason: 'conversation_not_idle', session: this.sessionRecord(session) };
+    const openConversation = await this.getOpenConversationForSession(input.sessionId);
+    if (openConversation) {
+      return {
+        accepted: false,
+        reason: 'conversation_already_active',
+        session: this.sessionRecord(session),
+        conversationId: openConversation.id
+      };
     }
 
     const wakeDetectedAt = new Date(input.detectedAtMs);
@@ -1036,6 +1204,7 @@ export class DeviceControlService {
       ...normalizeMetadata(session.metadataJson),
       last_wakeword_phrase: input.phrase
     };
+    const conversationId = randomUUID();
     await db
       .update(deviceSessions)
       .set({
@@ -1047,8 +1216,26 @@ export class DeviceControlService {
       })
       .where(eq(deviceSessions.id, input.sessionId));
 
+    await db.insert(deviceConversations).values({
+      id: conversationId,
+      deviceSessionId: input.sessionId,
+      deviceId: session.deviceId,
+      state: 'opening',
+      requestedAt: wakeDetectedAt,
+      lastUserActivityAt: wakeDetectedAt,
+      wakewordModel: input.modelName,
+      wakewordPhrase: input.phrase,
+      wakewordScore: String(input.score)
+    });
+
     try {
-      await this.dispatchAgentToPersistentRoom(input.sessionId);
+      await this.dispatchAgentToPersistentRoom(input.sessionId, {
+        ...normalizeMetadata(session.metadataJson),
+        session_id: input.sessionId,
+        boot_id: session.bootId,
+        conversation_id: conversationId,
+        last_wakeword_phrase: input.phrase
+      });
     } catch (error) {
       await db
         .update(deviceSessions)
@@ -1058,6 +1245,14 @@ export class DeviceControlService {
           conversationEndedAt: new Date()
         })
         .where(eq(deviceSessions.id, input.sessionId));
+      await db
+        .update(deviceConversations)
+        .set({
+          state: 'errored',
+          endedAt: new Date(),
+          endReason: 'dispatch_failed'
+        })
+        .where(eq(deviceConversations.id, conversationId));
       const failedSession = await this.getSessionRowById(input.sessionId);
       if (failedSession) {
         await this.publishSessionState(failedSession, 'conversation_state_changed');
@@ -1071,36 +1266,81 @@ export class DeviceControlService {
     }
     return {
       accepted: true,
-      session: updated ? this.sessionRecord(updated) : null
+      session: updated ? this.sessionRecord(updated) : null,
+      conversationId
     };
   }
 
-  async markConversationActive(sessionId: string): Promise<DeviceSessionRecord | null> {
+  async markConversationActive(conversationId: string): Promise<DeviceConversationRecord | null> {
+    const conversation = await this.getConversationRowById(conversationId);
+    if (!conversation) return null;
+    const session = await this.getSessionRowById(conversation.deviceSessionId);
+    if (!session) return null;
+    const currentSession = await this.getCurrentSessionRowForDeviceByDeviceId(session.deviceId);
+    if (!currentSession || currentSession.id !== session.id) {
+      return null;
+    }
+
+    await db
+      .update(deviceConversations)
+      .set({
+        state: 'active',
+        startedAt: new Date(),
+        lastUserActivityAt: new Date()
+      })
+      .where(and(eq(deviceConversations.id, conversationId), inArray(deviceConversations.state, ['opening', 'active'])));
+
     await db
       .update(deviceSessions)
       .set({
         conversationState: 'active',
         conversationStartedAt: new Date()
       })
-      .where(and(eq(deviceSessions.id, sessionId), inArray(deviceSessions.conversationState, ['starting', 'active'])));
+      .where(and(eq(deviceSessions.id, session.id), inArray(deviceSessions.conversationState, ['starting', 'active'])));
 
-    const session = await this.getSessionRowById(sessionId);
-    if (session) {
-      await this.publishSessionState(session, 'conversation_state_changed');
-      return this.sessionRecord(session);
+    const updatedConversation = await this.getConversationRowById(conversationId);
+    const updatedSession = await this.getSessionRowById(session.id);
+    if (updatedSession) {
+      await this.publishSessionState(updatedSession, 'conversation_state_changed');
     }
-    return null;
+    return updatedConversation ? this.conversationRecord(updatedConversation) : null;
   }
 
-  async markConversationEnded(sessionId: string, reason: string): Promise<DeviceSessionRecord | null> {
+  async markConversationUserActivity(
+    conversationId: string,
+    activityAt = new Date()
+  ): Promise<DeviceConversationRecord | null> {
+    const conversation = await this.getConversationRowById(conversationId);
+    if (!conversation) return null;
+    const session = await this.getSessionRowById(conversation.deviceSessionId);
+    if (!session) return null;
+    const currentSession = await this.getCurrentSessionRowForDeviceByDeviceId(session.deviceId);
+    if (!currentSession || currentSession.id !== session.id) {
+      return null;
+    }
+
     await db
-      .update(deviceSessions)
+      .update(deviceConversations)
       .set({
-        conversationState: 'ending',
-        lastConversationEndReason: reason,
-        conversationEndedAt: new Date()
+        lastUserActivityAt: activityAt
       })
-      .where(and(eq(deviceSessions.id, sessionId), inArray(deviceSessions.status, ['issued', 'active'])));
+      .where(and(eq(deviceConversations.id, conversationId), inArray(deviceConversations.state, ['opening', 'active'])));
+
+    const updatedConversation = await this.getConversationRowById(conversationId);
+    return updatedConversation ? this.conversationRecord(updatedConversation) : null;
+  }
+
+  async markConversationEnded(conversationId: string, reason: string): Promise<DeviceConversationRecord | null> {
+    const conversation = await this.getConversationRowById(conversationId);
+    if (!conversation) return null;
+    await db
+      .update(deviceConversations)
+      .set({
+        state: 'ended',
+        endReason: reason,
+        endedAt: new Date()
+      })
+      .where(eq(deviceConversations.id, conversationId));
 
     await db
       .update(deviceSessions)
@@ -1109,17 +1349,28 @@ export class DeviceControlService {
         lastConversationEndReason: reason,
         conversationEndedAt: new Date()
       })
-      .where(eq(deviceSessions.id, sessionId));
+      .where(eq(deviceSessions.id, conversation.deviceSessionId));
 
-    const session = await this.getSessionRowById(sessionId);
-    if (session) {
-      await this.publishSessionState(session, 'conversation_state_changed');
-      return this.sessionRecord(session);
+    const updatedSession = await this.getSessionRowById(conversation.deviceSessionId);
+    const updatedConversation = await this.getConversationRowById(conversationId);
+    if (updatedSession) {
+      await this.publishSessionState(updatedSession, 'conversation_state_changed');
     }
-    return null;
+    return updatedConversation ? this.conversationRecord(updatedConversation) : null;
   }
 
-  async markConversationError(sessionId: string, reason: string): Promise<DeviceSessionRecord | null> {
+  async markConversationError(conversationId: string, reason: string): Promise<DeviceConversationRecord | null> {
+    const conversation = await this.getConversationRowById(conversationId);
+    if (!conversation) return null;
+    await db
+      .update(deviceConversations)
+      .set({
+        state: 'errored',
+        endReason: reason,
+        endedAt: new Date()
+      })
+      .where(eq(deviceConversations.id, conversationId));
+
     await db
       .update(deviceSessions)
       .set({
@@ -1127,19 +1378,20 @@ export class DeviceControlService {
         lastConversationEndReason: reason,
         conversationEndedAt: new Date()
       })
-      .where(eq(deviceSessions.id, sessionId));
+      .where(eq(deviceSessions.id, conversation.deviceSessionId));
 
-    const session = await this.getSessionRowById(sessionId);
-    if (session) {
-      await this.publishSessionState(session, 'conversation_state_changed');
-      return this.sessionRecord(session);
+    const updatedSession = await this.getSessionRowById(conversation.deviceSessionId);
+    const updatedConversation = await this.getConversationRowById(conversationId);
+    if (updatedSession) {
+      await this.publishSessionState(updatedSession, 'conversation_state_changed');
     }
-    return null;
+    return updatedConversation ? this.conversationRecord(updatedConversation) : null;
   }
 
   async heartbeat(input: {
     device: DeviceAuthRecord;
     sessionId?: string;
+    bootId?: string;
     firmwareVersion?: string;
     payload?: Record<string, unknown>;
   }): Promise<{
@@ -1192,6 +1444,15 @@ export class DeviceControlService {
       .where(eq(devices.id, input.device.id));
 
     if (input.sessionId) {
+      const session = await this.getSessionRowById(input.sessionId);
+      const currentSession = await this.getCurrentSessionRowForDevice(input.device.id);
+      if (!session || !currentSession || currentSession.id !== session.id) {
+        throw new Error('session_superseded');
+      }
+      if (input.bootId && session.bootId !== input.bootId) {
+        throw new Error('session_superseded');
+      }
+
       await db
         .update(deviceSessions)
         .set({
@@ -1201,9 +1462,9 @@ export class DeviceControlService {
         })
         .where(and(eq(deviceSessions.id, input.sessionId), eq(deviceSessions.deviceId, input.device.deviceId)));
 
-      const session = await this.getSessionRowById(input.sessionId);
-      if (session) {
-        await this.publishSessionState(session, 'session_upserted');
+      const updatedSession = await this.getSessionRowById(input.sessionId);
+      if (updatedSession) {
+        await this.publishSessionState(updatedSession, 'session_upserted');
       }
     }
 
@@ -1244,10 +1505,22 @@ export class DeviceControlService {
   async appendTelemetry(input: {
     device: DeviceAuthRecord;
     sessionId?: string;
+    bootId?: string;
     eventType: string;
     level?: 'debug' | 'info' | 'warn' | 'error';
     payload?: Record<string, unknown>;
   }): Promise<{ ok: true }> {
+    if (input.sessionId) {
+      const session = await this.getSessionRowById(input.sessionId);
+      const currentSession = await this.getCurrentSessionRowForDevice(input.device.id);
+      if (!session || !currentSession || currentSession.id !== session.id) {
+        throw new Error('session_superseded');
+      }
+      if (input.bootId && session.bootId !== input.bootId) {
+        throw new Error('session_superseded');
+      }
+    }
+
     await db.insert(deviceTelemetry).values({
       deviceId: input.device.deviceId,
       userId: input.device.userId,
@@ -1274,8 +1547,18 @@ export class DeviceControlService {
   async endSession(input: {
     device: DeviceAuthRecord;
     sessionId: string;
+    bootId?: string;
     reason?: string;
   }): Promise<{ ok: true }> {
+    const session = await this.getSessionRowById(input.sessionId);
+    const currentSession = await this.getCurrentSessionRowForDevice(input.device.id);
+    if (!session || !currentSession || currentSession.id !== session.id) {
+      throw new Error('session_superseded');
+    }
+    if (input.bootId && session.bootId !== input.bootId) {
+      throw new Error('session_superseded');
+    }
+
     await db
       .update(deviceSessions)
       .set({
@@ -1289,17 +1572,41 @@ export class DeviceControlService {
       .where(and(eq(deviceSessions.id, input.sessionId), eq(deviceSessions.deviceId, input.device.deviceId)));
 
     await db
+      .update(deviceConversations)
+      .set({
+        state: 'abandoned',
+        endedAt: new Date(),
+        endReason: input.reason?.trim() || 'device_end'
+      })
+      .where(
+        and(
+          eq(deviceConversations.deviceSessionId, input.sessionId),
+          inArray(deviceConversations.state, ['opening', 'active'])
+        )
+      );
+
+    await db
       .update(devices)
       .set({
+        currentDeviceSessionId: null,
         lastSeenAt: new Date(),
         updatedAt: new Date()
       })
       .where(eq(devices.id, input.device.id));
 
-    const session = await this.getSessionRowById(input.sessionId);
-    if (session) {
-      await this.publishSessionState(session, 'session_ended');
+    const updatedSession = await this.getSessionRowById(input.sessionId);
+    if (updatedSession) {
+      await this.publishSessionState(updatedSession, 'session_ended');
     }
+    await detachDeviceParticipant(
+      {
+        sessionId: session.id,
+        roomName: session.roomName,
+        participantIdentity: session.participantIdentity,
+        bootId: session.bootId
+      },
+      input.reason?.trim() || 'device_end'
+    );
 
     return { ok: true };
   }
