@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { AuthService } from '../services/auth/auth-service.js';
 import { requireAuth } from '../services/auth/auth-middleware.js';
+import { logger } from '../lib/logger.js';
 
 const otpStartSchema = z.object({
   phone: z.string().min(6)
@@ -33,6 +34,13 @@ const oauthSchema = z.object({
 
 const refreshSchema = z.object({
   refreshToken: z.string().min(1)
+});
+
+const swiggyCallbackSchema = z.object({
+  code: z.string().optional(),
+  state: z.string().optional(),
+  error: z.string().optional(),
+  error_description: z.string().optional()
 });
 
 export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): void => {
@@ -118,5 +126,29 @@ export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): voi
 
   app.get('/auth/me', { preHandler: requireAuth(auth) }, async (request, reply) => {
     return reply.send({ user: request.auth!.user });
+  });
+
+  app.get('/auth/swiggy/callback', async (request, reply) => {
+    const parsed = swiggyCallbackSchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+    const { code, state, error, error_description: errorDescription } = parsed.data;
+    logger.info('Swiggy OAuth callback received', {
+      hasCode: Boolean(code),
+      hasState: Boolean(state),
+      error: error ?? null,
+      errorDescription: errorDescription ?? null
+    });
+    if (error) {
+      return reply
+        .status(400)
+        .type('text/html; charset=utf-8')
+        .send(`<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${error}</p></body></html>`);
+    }
+    return reply
+      .status(200)
+      .type('text/html; charset=utf-8')
+      .send('<!doctype html><html><body><h1>Mitr &times; Swiggy</h1><p>Authorization received. You can close this window.</p></body></html>');
   });
 };
