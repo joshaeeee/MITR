@@ -865,8 +865,3 @@ bool session_is_conversation_active(void)
 {
     return room_handle != NULL && session.conversation_active;
 }
-
-int session_reconnect_window_sec(void)
-{
-    return session.reconnect_window_sec > 0 ? session.reconnect_window_sec : 180;
-}

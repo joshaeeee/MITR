@@ -15,7 +15,6 @@ static const char *NAMESPACE = "mitr_device";
 #define STORAGE_STR_CAPACITY 256
 #define STORAGE_TOKEN_CAPACITY 160
 #define STORAGE_DEVICE_ID_CAPACITY 96
-#define WIFI_BSSID_LEN 6
 
 typedef struct {
     bool initialized;
@@ -176,18 +175,6 @@ esp_err_t mitr_device_storage_store_bootstrap(
     }
     state.device_access_token[0] = '\0';
 
-    err = nvs_erase_key(handle, "wifi_chan");
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGE(TAG, "Failed to clear stale Wi-Fi hint channel on re-provisioning: %s", esp_err_to_name(err));
-        goto exit;
-    }
-
-    err = nvs_erase_key(handle, "wifi_bssid");
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGE(TAG, "Failed to clear stale Wi-Fi hint BSSID on re-provisioning: %s", esp_err_to_name(err));
-        goto exit;
-    }
-
     err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit bootstrap config: %s", esp_err_to_name(err));
@@ -261,98 +248,6 @@ esp_err_t mitr_device_storage_store_access_token(
     }
 
 exit:
-    nvs_close(handle);
-    return err;
-}
-
-bool mitr_device_storage_get_wifi_hint(uint8_t *channel, uint8_t bssid[6])
-{
-    ESP_RETURN_ON_FALSE(channel != NULL, false, TAG, "Missing Wi-Fi hint channel");
-    ESP_RETURN_ON_FALSE(bssid != NULL, false, TAG, "Missing Wi-Fi hint BSSID");
-    if (mitr_device_storage_init() != ESP_OK) {
-        return false;
-    }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to open device storage for Wi-Fi hint read: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    uint8_t stored_channel = 0;
-    err = nvs_get_u8(handle, "wifi_chan", &stored_channel);
-    if (err != ESP_OK || stored_channel == 0) {
-        nvs_close(handle);
-        return false;
-    }
-
-    size_t bssid_size = WIFI_BSSID_LEN;
-    err = nvs_get_blob(handle, "wifi_bssid", bssid, &bssid_size);
-    nvs_close(handle);
-    if (err != ESP_OK || bssid_size != WIFI_BSSID_LEN) {
-        return false;
-    }
-
-    *channel = stored_channel;
-    return true;
-}
-
-esp_err_t mitr_device_storage_store_wifi_hint(uint8_t channel, const uint8_t bssid[6])
-{
-    ESP_RETURN_ON_FALSE(channel != 0, ESP_ERR_INVALID_ARG, TAG, "Missing Wi-Fi hint channel");
-    ESP_RETURN_ON_FALSE(bssid != NULL, ESP_ERR_INVALID_ARG, TAG, "Missing Wi-Fi hint BSSID");
-    ESP_RETURN_ON_ERROR(mitr_device_storage_init(), TAG, "Storage is unavailable");
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NAMESPACE, NVS_READWRITE, &handle);
-    ESP_RETURN_ON_ERROR(err, TAG, "Failed to open device storage");
-
-    err = nvs_set_u8(handle, "wifi_chan", channel);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to store Wi-Fi hint channel: %s", esp_err_to_name(err));
-        goto exit;
-    }
-
-    err = nvs_set_blob(handle, "wifi_bssid", bssid, WIFI_BSSID_LEN);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to store Wi-Fi hint BSSID: %s", esp_err_to_name(err));
-        goto exit;
-    }
-
-    err = nvs_commit(handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to commit Wi-Fi hint: %s", esp_err_to_name(err));
-    }
-
-exit:
-    nvs_close(handle);
-    return err;
-}
-
-esp_err_t mitr_device_storage_clear_wifi_hint(void)
-{
-    ESP_RETURN_ON_ERROR(mitr_device_storage_init(), TAG, "Storage is unavailable");
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NAMESPACE, NVS_READWRITE, &handle);
-    ESP_RETURN_ON_ERROR(err, TAG, "Failed to open device storage");
-
-    err = nvs_erase_key(handle, "wifi_chan");
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGE(TAG, "Failed to clear Wi-Fi hint channel: %s", esp_err_to_name(err));
-        nvs_close(handle);
-        return err;
-    }
-
-    err = nvs_erase_key(handle, "wifi_bssid");
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGE(TAG, "Failed to clear Wi-Fi hint BSSID: %s", esp_err_to_name(err));
-        nvs_close(handle);
-        return err;
-    }
-
-    err = nvs_commit(handle);
     nvs_close(handle);
     return err;
 }

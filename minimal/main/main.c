@@ -22,11 +22,7 @@
 static const char *TAG = "mitr_device_main";
 static const EventBits_t WAKE_DETECTED_BIT = BIT0;
 
-static const int ROOM_RETRY_BACKOFFS_SEC[] = {2, 5, 10, 30};
-static const int ROOM_RETRY_CAP_SEC = 60;
-static const int BOOTSTRAP_RETRY_SEC = 10;
-static const int NETWORK_RETRY_SEC = 30;
-static const int CONFIG_RETRY_SEC = 60;
+static const int CLOUD_RETRY_SEC = 5;
 static const int ROOM_RECONNECT_GRACE_MS = 1000;
 
 static int64_t now_ms(void)
@@ -42,20 +38,6 @@ static void log_boot_state(const char *state)
 static void sleep_seconds(int seconds)
 {
     vTaskDelay(pdMS_TO_TICKS(seconds * 1000));
-}
-
-static int next_room_retry_delay_sec(int attempt, int64_t recovery_started_at_ms)
-{
-    const int reconnect_window_sec = session_reconnect_window_sec();
-    if (recovery_started_at_ms > 0 &&
-        reconnect_window_sec > 0 &&
-        (now_ms() - recovery_started_at_ms) >= ((int64_t)reconnect_window_sec * 1000)) {
-        return ROOM_RETRY_CAP_SEC;
-    }
-
-    const size_t backoff_count = sizeof(ROOM_RETRY_BACKOFFS_SEC) / sizeof(ROOM_RETRY_BACKOFFS_SEC[0]);
-    const size_t index = attempt < (int)backoff_count ? (size_t)attempt : (backoff_count - 1);
-    return ROOM_RETRY_BACKOFFS_SEC[index];
 }
 
 static bool ensure_device_bootstrapped(void)
@@ -76,38 +58,59 @@ static bool ensure_device_bootstrapped(void)
         }
 
         ESP_LOGW(TAG, "Device bootstrap failed: %s. Retrying in %d seconds",
-                 esp_err_to_name(err), BOOTSTRAP_RETRY_SEC);
-        sleep_seconds(BOOTSTRAP_RETRY_SEC);
+                 esp_err_to_name(err), CLOUD_RETRY_SEC);
+        sleep_seconds(CLOUD_RETRY_SEC);
     }
 
     return true;
 }
 
-static void connect_room_blocking(void)
+static void wait_for_network_blocking(void)
 {
-    int attempt = 0;
-    int64_t recovery_started_ms = 0;
-
     while (true) {
-        if (!mitr_network_connect()) {
-            ESP_LOGW(TAG, "[ROOM] Wi-Fi unavailable; retrying in %d s", NETWORK_RETRY_SEC);
-            sleep_seconds(NETWORK_RETRY_SEC);
-            continue;
+        if (mitr_network_wait_connected(pdMS_TO_TICKS(CLOUD_RETRY_SEC * 1000))) {
+            return;
         }
 
+        ESP_LOGW(TAG, "Wi-Fi still connecting; checking again in %d seconds", CLOUD_RETRY_SEC);
+        bool provisioning_started = false;
+        esp_err_t err = mitr_network_start(&provisioning_started);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Wi-Fi start failed: %s", esp_err_to_name(err));
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
+        }
+        if (provisioning_started) {
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_PROVISIONING_WAIT);
+        } else {
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_WIFI_CONNECTING);
+        }
+    }
+}
+
+static void connect_room_blocking(void)
+{
+    while (true) {
+        wait_for_network_blocking();
         if (join_room()) {
             return;
         }
 
-        if (recovery_started_ms == 0) recovery_started_ms = now_ms();
-        const int delay = next_room_retry_delay_sec(attempt, recovery_started_ms);
-        ESP_LOGW(TAG, "[ROOM] join_room() failed; retry #%d in %d s", attempt + 1, delay);
-        attempt++;
-        sleep_seconds(delay);
+        ESP_LOGW(TAG, "[ROOM] join_room() failed; retrying in %d seconds", CLOUD_RETRY_SEC);
+        mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
+        sleep_seconds(CLOUD_RETRY_SEC);
     }
 }
 
-static void maybe_apply_pending_update_if_idle(void)
+static void start_wake_detection(EventGroupHandle_t wake_event_group, bool wake_word_ready)
+{
+    if (!wake_word_ready || wake_event_group == NULL || session_is_conversation_active()) {
+        return;
+    }
+    xEventGroupClearBits(wake_event_group, WAKE_DETECTED_BIT);
+    wake_word_start(wake_event_group, WAKE_DETECTED_BIT);
+}
+
+static void maybe_apply_pending_update_if_idle(EventGroupHandle_t wake_event_group, bool wake_word_ready)
 {
     if (!mitr_ota_has_pending_update()) {
         return;
@@ -123,20 +126,15 @@ static void maybe_apply_pending_update_if_idle(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "[OTA] apply failed: %s — reconnecting room", esp_err_to_name(err));
         connect_room_blocking();
+        start_wake_detection(wake_event_group, wake_word_ready);
+        if (!session_is_conversation_active()) {
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
+        }
         return;
     }
 
     ESP_LOGW(TAG, "[OTA] apply returned without rebooting; forcing restart");
     esp_restart();
-}
-
-static void start_wake_detection(EventGroupHandle_t wake_event_group, bool wake_word_ready)
-{
-    if (!wake_word_ready || wake_event_group == NULL || session_is_conversation_active()) {
-        return;
-    }
-    xEventGroupClearBits(wake_event_group, WAKE_DETECTED_BIT);
-    wake_word_start(wake_event_group, WAKE_DETECTED_BIT);
 }
 
 static void mitr_device_task(void *arg)
@@ -147,6 +145,13 @@ static void mitr_device_task(void *arg)
 
     ESP_ERROR_CHECK(mitr_device_storage_init());
     ESP_ERROR_CHECK(mitr_ota_init());
+    mitr_boot_feedback_init();
+    mitr_boot_feedback_set_state(MITR_BOOT_STATE_WIFI_CONNECTING);
+    log_boot_state("wifi_connecting");
+
+    bool provisioning_started = false;
+    ESP_ERROR_CHECK(mitr_network_start(&provisioning_started));
+
     ESP_ERROR_CHECK(livekit_system_init());
     board_init();
     ESP_ERROR_CHECK(media_init());
@@ -155,7 +160,6 @@ static void mitr_device_task(void *arg)
     esp_log_level_set("preconnect_audio", ESP_LOG_INFO);
     const bool wake_word_ready = wake_word_init() == 0;
     sounds_init();
-    mitr_boot_feedback_init();
 
     ESP_LOGI(
         TAG,
@@ -180,37 +184,26 @@ static void mitr_device_task(void *arg)
         ESP_SNTP_SERVER_LIST("time.google.com", "pool.ntp.org"));
     esp_netif_sntp_init(&sntp_config);
 
-    mitr_boot_feedback_set_state(MITR_BOOT_STATE_WIFI_CONNECTING);
-    log_boot_state("wifi_connecting");
+    if (provisioning_started) {
+        mitr_boot_feedback_set_state(MITR_BOOT_STATE_PROVISIONING_WAIT);
+    }
+
     while (true) {
-        if (!mitr_network_connect()) {
-            ESP_LOGW(TAG, "Wi-Fi connection failed; retrying in %d seconds", NETWORK_RETRY_SEC);
-            mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
-            sleep_seconds(NETWORK_RETRY_SEC);
-            mitr_boot_feedback_set_state(MITR_BOOT_STATE_WIFI_CONNECTING);
-            log_boot_state("wifi_connecting");
-            continue;
-        }
+        wait_for_network_blocking();
 
         mitr_boot_feedback_set_state(MITR_BOOT_STATE_BACKEND_BOOTSTRAP);
         log_boot_state("bootstrap_start");
         if (!ensure_device_bootstrapped()) {
             ESP_LOGW(TAG, "Device bootstrap prerequisites are incomplete; retrying in %d seconds",
-                     CONFIG_RETRY_SEC);
+                     CLOUD_RETRY_SEC);
             mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
-            sleep_seconds(CONFIG_RETRY_SEC);
+            sleep_seconds(CLOUD_RETRY_SEC);
             mitr_boot_feedback_set_state(MITR_BOOT_STATE_BACKEND_BOOTSTRAP);
             log_boot_state("bootstrap_start");
             continue;
         }
 
         log_boot_state("bootstrap_complete");
-        if (mitr_ota_has_pending_update()) {
-            esp_err_t err = mitr_ota_apply_pending_update();
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Pending OTA update was not applied: %s", esp_err_to_name(err));
-            }
-        }
         break;
     }
 
@@ -218,8 +211,8 @@ static void mitr_device_task(void *arg)
         ESP_LOGW(TAG, "Preconnect capture failed to start; wake detector may not receive audio until room capture starts");
     }
 
-    start_wake_detection(wake_event_group, wake_word_ready);
     connect_room_blocking();
+    start_wake_detection(wake_event_group, wake_word_ready);
     mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
     log_boot_state("ready_connected");
     esp_log_level_set("*", ESP_LOG_INFO);
@@ -260,7 +253,7 @@ static void mitr_device_task(void *arg)
         }
 
         if (!session_is_conversation_active()) {
-            maybe_apply_pending_update_if_idle();
+            maybe_apply_pending_update_if_idle(wake_event_group, wake_word_ready);
         }
     }
 }

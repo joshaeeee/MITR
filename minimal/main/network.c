@@ -27,7 +27,9 @@ typedef struct {
     bool wifi_initialized;
     bool handlers_registered;
     bool wifi_started;
-    int64_t connect_started_ms;
+    bool connect_failed;
+    bool provisioning_started;
+    int64_t started_ms;
 } network_state_t;
 
 static network_state_t state = {0};
@@ -49,7 +51,7 @@ static void log_boot_elapsed(const char *state_name)
              "[BOOT] t=%lldms state=%s elapsed=%lldms",
              (long long)now,
              state_name,
-             (long long)(state.connect_started_ms > 0 ? now - state.connect_started_ms : 0));
+             (long long)(state.started_ms > 0 ? now - state.started_ms : 0));
 }
 
 static bool should_retry(void)
@@ -84,6 +86,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             return;
         }
 
+        state.connect_failed = true;
         ESP_LOGE(TAG, "Unable to establish Wi-Fi after %d attempt(s)", state.retry_attempt);
         xEventGroupSetBits(state.event_group, NETWORK_EVENT_FAILED);
     }
@@ -100,6 +103,7 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
 
     state.retry_attempt = 0;
     state.connected = true;
+    state.connect_failed = false;
     log_boot_elapsed("wifi_connected");
     xEventGroupSetBits(state.event_group, NETWORK_EVENT_CONNECTED);
 }
@@ -175,46 +179,81 @@ static esp_err_t ensure_wifi_initialized(void)
     return ESP_OK;
 }
 
-bool mitr_network_connect(void)
+esp_err_t mitr_network_start(bool *provisioning_started)
 {
-    state.connect_started_ms = boot_now_ms();
-    state.retry_attempt = 0;
-    log_boot_state("wifi_connect_enter");
+    if (provisioning_started != NULL) {
+        *provisioning_started = false;
+    }
 
-    ESP_ERROR_CHECK(ensure_wifi_initialized());
+    ESP_RETURN_ON_ERROR(ensure_wifi_initialized(), TAG, "Failed to initialize Wi-Fi");
     xEventGroupClearBits(state.event_group, NETWORK_EVENT_CONNECTED | NETWORK_EVENT_FAILED);
 
     if (state.connected) {
         log_boot_elapsed("wifi_already_connected");
-        return true;
+        xEventGroupSetBits(state.event_group, NETWORK_EVENT_CONNECTED);
+        return ESP_OK;
     }
 
     const bool has_static_wifi = strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) > 0;
-    bool provisioning_started = false;
     if (!has_static_wifi) {
-        ESP_ERROR_CHECK(mitr_provisioning_start_if_needed(&provisioning_started));
+        if (state.provisioning_started) {
+            if (provisioning_started != NULL) {
+                *provisioning_started = true;
+            }
+            return ESP_OK;
+        }
+
+        bool started = false;
+        ESP_RETURN_ON_ERROR(mitr_provisioning_start_if_needed(&started), TAG, "Failed to start provisioning");
+        if (provisioning_started != NULL) {
+            *provisioning_started = started;
+        }
+        if (started) {
+            state.provisioning_started = true;
+            return ESP_OK;
+        }
     }
 
-    if (!provisioning_started) {
-        wifi_config_t wifi_config = {0};
-        if (has_static_wifi) {
-            fill_static_wifi_config(&wifi_config);
-        } else {
-            ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &wifi_config));
-        }
+    if (state.wifi_started && !state.connect_failed) {
+        return ESP_OK;
+    }
 
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
-        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    state.started_ms = boot_now_ms();
+    state.retry_attempt = 0;
+    state.connect_failed = false;
+    log_boot_state("wifi_start_enter");
 
-        if (!state.wifi_started) {
-            log_boot_state("wifi_start");
-            ESP_ERROR_CHECK(esp_wifi_start());
-            state.wifi_started = true;
-        } else {
-            ESP_ERROR_CHECK(esp_wifi_connect());
-        }
+    wifi_config_t wifi_config = {0};
+    if (has_static_wifi) {
+        fill_static_wifi_config(&wifi_config);
+    } else {
+        ESP_RETURN_ON_ERROR(esp_wifi_get_config(WIFI_IF_STA, &wifi_config), TAG, "Failed to read provisioned Wi-Fi config");
+    }
+
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Failed to set Wi-Fi station mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_FLASH), TAG, "Failed to set Wi-Fi storage");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "Failed to disable Wi-Fi power save");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_config), TAG, "Failed to set Wi-Fi config");
+
+    if (!state.wifi_started) {
+        log_boot_state("wifi_start");
+        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start Wi-Fi");
+        state.wifi_started = true;
+    } else {
+        log_boot_state("wifi_connect_retry");
+        ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "Failed to connect Wi-Fi");
+    }
+
+    return ESP_OK;
+}
+
+bool mitr_network_wait_connected(TickType_t timeout)
+{
+    if (state.connected) {
+        return true;
+    }
+    if (state.event_group == NULL) {
+        return false;
     }
 
     EventBits_t bits = xEventGroupWaitBits(
@@ -222,7 +261,12 @@ bool mitr_network_connect(void)
         NETWORK_EVENT_CONNECTED | NETWORK_EVENT_FAILED,
         pdFALSE,
         pdFALSE,
-        portMAX_DELAY);
+        timeout);
 
     return (bits & NETWORK_EVENT_CONNECTED) != 0;
+}
+
+bool mitr_network_is_connected(void)
+{
+    return state.connected;
 }
