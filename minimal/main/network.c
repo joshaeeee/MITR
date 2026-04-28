@@ -28,6 +28,7 @@ typedef struct {
     bool wifi_started;
     bool using_wifi_hint;
     bool fallback_scan_requested;
+    const char *active_profile;
     esp_netif_t *sta_netif;
     wifi_config_t hinted_config;
     wifi_config_t fallback_config;
@@ -74,6 +75,28 @@ static void log_bssid(const char *state_name, const uint8_t bssid[6], uint8_t ch
              bssid[3],
              bssid[4],
              bssid[5]);
+}
+
+static void configure_connect_scan_parameters(void)
+{
+    wifi_scan_default_params_t scan_params = WIFI_SCAN_PARAMS_DEFAULT_CONFIG();
+    scan_params.scan_time.active.min = 30;
+    scan_params.scan_time.active.max = 80;
+    scan_params.scan_time.passive = 120;
+    scan_params.home_chan_dwell_time = 30;
+
+    esp_err_t err = esp_wifi_set_scan_parameters(&scan_params);
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG,
+                 "[BOOT] t=%lldms state=wifi_scan_params active_min=%ums active_max=%ums passive=%ums home=%ums",
+                 (long long)boot_now_ms(),
+                 (unsigned)scan_params.scan_time.active.min,
+                 (unsigned)scan_params.scan_time.active.max,
+                 (unsigned)scan_params.scan_time.passive,
+                 (unsigned)scan_params.home_chan_dwell_time);
+    } else {
+        ESP_LOGW(TAG, "Failed to set Wi-Fi scan parameters: %s", esp_err_to_name(err));
+    }
 }
 
 static bool wifi_reason_invalidates_hint(wifi_err_reason_t reason)
@@ -140,6 +163,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     switch (event_id) {
         case WIFI_EVENT_STA_START:
             log_boot_timing("wifi_sta_start", state.wifi_start_called_ms);
+            configure_connect_scan_parameters();
             state.last_connect_call_ms = boot_now_ms();
             log_boot_state("wifi_connect_call");
             esp_wifi_connect();
@@ -148,12 +172,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             state.sta_connected_ms = boot_now_ms();
             ESP_LOGW(
                 TAG,
-                "[BOOT] t=%lldms state=wifi_sta_connected elapsed=%lldms connect_call_elapsed=%lldms used_hint=%d used_fallback=%d",
+                "[BOOT] t=%lldms state=wifi_sta_connected elapsed=%lldms connect_call_elapsed=%lldms used_hint=%d used_fallback=%d profile=%s",
                 (long long)state.sta_connected_ms,
                 (long long)(state.connect_started_ms > 0 ? state.sta_connected_ms - state.connect_started_ms : 0),
                 (long long)(state.last_connect_call_ms > 0 ? state.sta_connected_ms - state.last_connect_call_ms : 0),
                 state.using_wifi_hint,
-                state.fallback_scan_requested);
+                state.fallback_scan_requested,
+                state.active_profile ? state.active_profile : "none");
             break;
         case WIFI_EVENT_STA_DISCONNECTED: {
             const wifi_event_sta_disconnected_t *event = (const wifi_event_sta_disconnected_t *)event_data;
@@ -172,16 +197,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 (long long)(state.connect_started_ms > 0 ? boot_now_ms() - state.connect_started_ms : 0),
                 state.using_wifi_hint,
                 state.fallback_scan_requested);
-
             if (event && wifi_reason_invalidates_hint(event->reason)) {
                 (void)mitr_device_storage_clear_wifi_hint();
             }
 
             if (state.using_wifi_hint && !state.fallback_scan_requested) {
-                state.fallback_scan_requested = true;
                 state.using_wifi_hint = false;
-                ESP_LOGI(TAG, "Fast reconnect hint failed, falling back to full scan");
-                log_boot_state("wifi_fast_hint_failed_fallback_scan");
+                state.fallback_scan_requested = true;
+                state.active_profile = "all_channel_scan";
+                ESP_LOGW(TAG, "[BOOT] t=%lldms state=wifi_channel_hint_failed_fallback reason=%d",
+                         (long long)boot_now_ms(),
+                         event ? event->reason : -1);
                 ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &state.fallback_config));
                 state.last_connect_call_ms = boot_now_ms();
                 log_boot_state("wifi_connect_call");
@@ -279,7 +305,7 @@ bool mitr_network_connect(void)
     if (has_static_wifi) {
         strlcpy((char *)base_config.sta.ssid, CONFIG_LK_EXAMPLE_WIFI_SSID, sizeof(base_config.sta.ssid));
         strlcpy((char *)base_config.sta.password, CONFIG_LK_EXAMPLE_WIFI_PASSWORD, sizeof(base_config.sta.password));
-        base_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
+        base_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
         base_config.sta.pmf_cfg.capable = true;
         base_config.sta.pmf_cfg.required = false;
     } else {
@@ -313,28 +339,51 @@ bool mitr_network_connect(void)
 
         uint8_t hinted_channel = 0;
         uint8_t hinted_bssid[6] = {0};
-        if (mitr_device_storage_get_wifi_hint(&hinted_channel, hinted_bssid)) {
-            log_bssid("wifi_hint_ignored", hinted_bssid, hinted_channel);
+        const bool has_wifi_hint = mitr_device_storage_get_wifi_hint(&hinted_channel, hinted_bssid);
+        if (has_wifi_hint) {
+            log_bssid("wifi_hint_found", hinted_bssid, hinted_channel);
         }
+
+        wifi_config_t *active_config = &state.fallback_config;
         state.using_wifi_hint = false;
         state.fallback_scan_requested = true;
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &state.fallback_config));
-        ESP_LOGW(TAG, "[BOOT] t=%lldms state=wifi_config_done fast_hint=0 channel=0 bssid_set=0 reason=hint_disabled",
-                 (long long)boot_now_ms());
+        state.active_profile = "all_channel_scan";
+        if (has_wifi_hint && hinted_channel > 0) {
+            state.hinted_config = base_config;
+            state.hinted_config.sta.scan_method = WIFI_FAST_SCAN;
+            state.hinted_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+            state.hinted_config.sta.channel = hinted_channel;
+            // Keep BSSID unpinned for mesh/roaming APs; ESP-IDF documents
+            // bssid_set for cases where the app must check one exact AP.
+            state.hinted_config.sta.bssid_set = 0;
+            active_config = &state.hinted_config;
+            state.using_wifi_hint = true;
+            state.fallback_scan_requested = false;
+            state.active_profile = "channel_fast_scan";
+        }
+
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, active_config));
+        ESP_LOGW(TAG, "[BOOT] t=%lldms state=wifi_connect_profile profile=%s reason=%s",
+                 (long long)boot_now_ms(),
+                 state.active_profile,
+                 state.using_wifi_hint ? "stored_channel_hint" : "no_hint");
 
         ESP_LOGW(
             TAG,
-            "[BOOT] t=%lldms state=wifi_connect_config ssid=%s auth_threshold=%d fast_hint=%d",
+            "[BOOT] t=%lldms state=wifi_connect_config ssid=%s auth_threshold=%d profile=%s channel=%u bssid_set=%d",
             (long long)boot_now_ms(),
             base_config.sta.ssid[0] != '\0' ? (const char *)base_config.sta.ssid : "<saved-from-provisioning>",
             base_config.sta.threshold.authmode,
-            state.using_wifi_hint);
+            state.active_profile ? state.active_profile : "none",
+            active_config->sta.channel,
+            active_config->sta.bssid_set);
         if (!state.wifi_started) {
             state.wifi_start_called_ms = boot_now_ms();
             log_boot_state("wifi_start_call");
             ESP_ERROR_CHECK(esp_wifi_start());
             state.wifi_started = true;
         } else {
+            configure_connect_scan_parameters();
             state.last_connect_call_ms = boot_now_ms();
             log_boot_state("wifi_connect_call");
             ESP_ERROR_CHECK(esp_wifi_connect());
