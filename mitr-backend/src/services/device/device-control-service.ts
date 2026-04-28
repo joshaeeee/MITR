@@ -168,6 +168,34 @@ const runSessionOpenCleanup = (description: string, task: () => Promise<void>, c
   });
 };
 
+const markSupersededSessionEnded = async (target: DeviceRoomSessionTarget): Promise<void> => {
+  await db
+    .update(deviceSessions)
+    .set({
+      status: 'ended',
+      conversationState: 'idle',
+      endedAt: new Date(),
+      endReason: 'session_superseded',
+      lastConversationEndReason: 'session_superseded',
+      conversationEndedAt: new Date()
+    })
+    .where(eq(deviceSessions.id, target.sessionId));
+
+  await db
+    .update(deviceConversations)
+    .set({
+      state: 'abandoned',
+      endedAt: new Date(),
+      endReason: 'session_superseded'
+    })
+    .where(
+      and(
+        eq(deviceConversations.deviceSessionId, target.sessionId),
+        inArray(deviceConversations.state, ['opening', 'active'])
+      )
+    );
+};
+
 export class DeviceControlService {
   private readonly familyRepo = getFamilyRepository();
 
@@ -912,7 +940,7 @@ export class DeviceControlService {
           session_id: sessionId,
           boot_id: bootId
         };
-        await tx
+        const updatedSession = await tx
           .update(deviceSessions)
           .set({
             language,
@@ -921,7 +949,9 @@ export class DeviceControlService {
             metadataJson: dispatchMetadata,
             lastHeartbeatAt: new Date()
           })
-          .where(eq(deviceSessions.id, sessionId));
+          .where(eq(deviceSessions.id, sessionId))
+          .returning();
+        sessionRow = updatedSession[0] ?? currentSession;
       } else {
         if (currentSession && currentSession.status !== 'ended') {
           supersededSession = {
@@ -930,31 +960,6 @@ export class DeviceControlService {
             participantIdentity: currentSession.participantIdentity,
             bootId: currentSession.bootId
           };
-          await tx
-            .update(deviceSessions)
-            .set({
-              status: 'ended',
-              conversationState: 'idle',
-              endedAt: new Date(),
-              endReason: 'session_superseded',
-              lastConversationEndReason: 'session_superseded',
-              conversationEndedAt: new Date()
-            })
-            .where(eq(deviceSessions.id, currentSession.id));
-
-          await tx
-            .update(deviceConversations)
-            .set({
-              state: 'abandoned',
-              endedAt: new Date(),
-              endReason: 'session_superseded'
-            })
-            .where(
-              and(
-                eq(deviceConversations.deviceSessionId, currentSession.id),
-                inArray(deviceConversations.state, ['opening', 'active'])
-              )
-            );
         }
 
         sessionId = randomUUID();
@@ -965,7 +970,7 @@ export class DeviceControlService {
           session_id: sessionId,
           boot_id: bootId
         };
-        await tx.insert(deviceSessions).values({
+        const insertedSession = await tx.insert(deviceSessions).values({
           id: sessionId,
           deviceId: input.device.deviceId,
           userId: input.device.userId,
@@ -981,33 +986,24 @@ export class DeviceControlService {
           status: 'issued',
           conversationState: 'idle',
           metadataJson: dispatchMetadata
-        });
-
-        await tx
-          .update(devices)
-          .set({
-            currentDeviceSessionId: sessionId,
-            firmwareVersion,
-            hardwareRev,
-            lastSeenAt: new Date(),
-            updatedAt: new Date()
-          })
-          .where(eq(devices.id, input.device.id));
+        }).returning();
+        sessionRow = insertedSession[0] ?? null;
       }
 
-      sessionRow = await tx.select().from(deviceSessions).where(eq(deviceSessions.id, sessionId)).limit(1).then((rows) => rows[0] ?? null);
       if (!sessionRow) {
-        throw new Error('Failed to load device session');
+        throw new Error('Failed to write device session');
       }
-      await tx
-        .update(devices)
-        .set({
-          firmwareVersion,
-          hardwareRev,
-          lastSeenAt: new Date(),
-          updatedAt: new Date()
-        })
-        .where(eq(devices.id, input.device.id));
+
+      const deviceUpdate: Partial<typeof devices.$inferInsert> = {
+        firmwareVersion,
+        hardwareRev,
+        lastSeenAt: new Date(),
+        updatedAt: new Date()
+      };
+      if (!reusedCurrentSession) {
+        deviceUpdate.currentDeviceSessionId = sessionId;
+      }
+      await tx.update(devices).set(deviceUpdate).where(eq(devices.id, input.device.id));
     });
     const transactionDoneAt = Date.now();
 
@@ -1023,6 +1019,15 @@ export class DeviceControlService {
     const supersededSessionTarget = supersededSession as DeviceRoomSessionTarget | null;
     if (supersededSessionTarget) {
       const target = supersededSessionTarget;
+      runSessionOpenCleanup(
+        'mark_superseded_session_ended',
+        () => markSupersededSessionEnded(target),
+        {
+          deviceId: input.device.deviceId,
+          sessionId,
+          supersededSessionId: target.sessionId
+        }
+      );
       runSessionOpenCleanup(
         'detach_superseded_session',
         () => notifyAndDetachSupersededSession(target),
