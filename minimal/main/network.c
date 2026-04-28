@@ -279,7 +279,7 @@ bool mitr_network_connect(void)
     if (has_static_wifi) {
         strlcpy((char *)base_config.sta.ssid, CONFIG_LK_EXAMPLE_WIFI_SSID, sizeof(base_config.sta.ssid));
         strlcpy((char *)base_config.sta.password, CONFIG_LK_EXAMPLE_WIFI_PASSWORD, sizeof(base_config.sta.password));
-        base_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+        base_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
         base_config.sta.pmf_cfg.capable = true;
         base_config.sta.pmf_cfg.required = false;
     } else {
@@ -300,10 +300,6 @@ bool mitr_network_connect(void)
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
         ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-        ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20));
-        ESP_ERROR_CHECK(esp_wifi_set_protocol(
-            WIFI_IF_STA,
-            WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
         log_boot_timing("wifi_radio_config_done", state.connect_started_ms);
         if (!has_static_wifi) {
             ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &base_config));
@@ -318,25 +314,13 @@ bool mitr_network_connect(void)
         uint8_t hinted_channel = 0;
         uint8_t hinted_bssid[6] = {0};
         if (mitr_device_storage_get_wifi_hint(&hinted_channel, hinted_bssid)) {
-            log_bssid("wifi_hint_found", hinted_bssid, hinted_channel);
-            state.hinted_config = base_config;
-            state.hinted_config.sta.scan_method = WIFI_FAST_SCAN;
-            state.hinted_config.sta.channel = hinted_channel;
-            state.hinted_config.sta.bssid_set = 1;
-            memcpy(state.hinted_config.sta.bssid, hinted_bssid, sizeof(hinted_bssid));
-            state.using_wifi_hint = true;
-            state.fallback_scan_requested = false;
-            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &state.hinted_config));
-            ESP_LOGW(TAG, "[BOOT] t=%lldms state=wifi_config_done fast_hint=1 channel=%u bssid_set=1",
-                     (long long)boot_now_ms(),
-                     hinted_channel);
-        } else {
-            state.using_wifi_hint = false;
-            state.fallback_scan_requested = false;
-            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &state.fallback_config));
-            ESP_LOGW(TAG, "[BOOT] t=%lldms state=wifi_config_done fast_hint=0 channel=0 bssid_set=0",
-                     (long long)boot_now_ms());
+            log_bssid("wifi_hint_ignored", hinted_bssid, hinted_channel);
         }
+        state.using_wifi_hint = false;
+        state.fallback_scan_requested = true;
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &state.fallback_config));
+        ESP_LOGW(TAG, "[BOOT] t=%lldms state=wifi_config_done fast_hint=0 channel=0 bssid_set=0 reason=hint_disabled",
+                 (long long)boot_now_ms());
 
         ESP_LOGW(
             TAG,
