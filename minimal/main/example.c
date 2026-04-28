@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -62,6 +63,20 @@ static session_state_t session = {
 static int64_t now_ms(void)
 {
     return esp_timer_get_time() / 1000;
+}
+
+static void log_boot_timing(const char *state, int64_t started_at_ms)
+{
+    const int64_t now = now_ms();
+    if (started_at_ms > 0) {
+        ESP_LOGW(TAG, "[BOOT] t=%lldms state=%s elapsed=%lldms",
+                 (long long)now,
+                 state,
+                 (long long)(now - started_at_ms));
+        return;
+    }
+
+    ESP_LOGW(TAG, "[BOOT] t=%lldms state=%s", (long long)now, state);
 }
 
 static void generate_boot_id(char *dest, size_t capacity)
@@ -162,6 +177,48 @@ static void report_telemetry(const char *event_type, const char *level, const ch
     esp_err_t err = mitr_device_send_telemetry(session.token.session_id, session.boot_id, event_type, level, message);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to send telemetry event %s: %s", event_type, esp_err_to_name(err));
+    }
+}
+
+typedef struct {
+    char event_type[48];
+    char level[16];
+    char message[160];
+} telemetry_task_payload_t;
+
+static void telemetry_task(void *arg)
+{
+    telemetry_task_payload_t *payload = (telemetry_task_payload_t *)arg;
+    if (payload) {
+        report_telemetry(payload->event_type, payload->level, payload->message);
+        free(payload);
+    }
+    vTaskDelete(NULL);
+}
+
+static void report_telemetry_async(const char *event_type, const char *level, const char *message)
+{
+    telemetry_task_payload_t *payload = calloc(1, sizeof(*payload));
+    if (!payload) {
+        ESP_LOGW(TAG, "Skipping async telemetry %s: allocation failed", event_type ? event_type : "");
+        return;
+    }
+
+    strlcpy(payload->event_type, event_type ? event_type : "", sizeof(payload->event_type));
+    strlcpy(payload->level, level ? level : "", sizeof(payload->level));
+    strlcpy(payload->message, message ? message : "", sizeof(payload->message));
+
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        telemetry_task,
+        "mitr_telemetry",
+        8192,
+        payload,
+        4,
+        NULL,
+        tskNO_AFFINITY);
+    if (task_created != pdPASS) {
+        ESP_LOGW(TAG, "Skipping async telemetry %s: task creation failed", payload->event_type);
+        free(payload);
     }
 }
 
@@ -670,6 +727,9 @@ static bool wait_for_initial_connect(void)
 
 static bool create_and_connect_room(void)
 {
+    const int64_t room_started_ms = now_ms();
+    log_boot_timing("livekit_room_create_start", 0);
+
     const uint32_t room_generation = session.room_generation + 1;
     livekit_room_options_t room_options = {
         .publish = {
@@ -693,8 +753,10 @@ static bool create_and_connect_room(void)
 
     if (livekit_room_create(&room_handle, &room_options) != LIVEKIT_ERR_NONE) {
         ESP_LOGE(TAG, "Failed to create LiveKit room");
+        log_boot_timing("livekit_room_create_failed", room_started_ms);
         return false;
     }
+    log_boot_timing("livekit_room_create_done", room_started_ms);
 
     session.room_generation = room_generation;
 
@@ -704,26 +766,35 @@ static bool create_and_connect_room(void)
     livekit_room_rpc_register(room_handle, "mitr_restart_session", rpc_restart_session);
 
     session.connection_state = LIVEKIT_CONNECTION_STATE_CONNECTING;
-    report_telemetry("session_bootstrap", "info", "Fetched LiveKit token and starting room connect");
+    report_telemetry_async("session_bootstrap", "info", "Fetched LiveKit token and starting room connect");
 
+    const int64_t connect_call_started_ms = now_ms();
+    log_boot_timing("livekit_connect_call_start", 0);
     livekit_err_t connect_res = livekit_room_connect(room_handle, session.token.server_url, session.token.participant_token);
     if (connect_res != LIVEKIT_ERR_NONE) {
         ESP_LOGE(TAG, "Failed to connect to room");
+        log_boot_timing("livekit_connect_call_failed", connect_call_started_ms);
         copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "connect_error");
         report_telemetry("room_connect_error", "error", "livekit_room_connect returned an error");
         cleanup_room();
         return false;
     }
+    log_boot_timing("livekit_connect_call_done", connect_call_started_ms);
 
+    const int64_t wait_connected_started_ms = now_ms();
+    log_boot_timing("livekit_wait_connected_start", 0);
     if (!wait_for_initial_connect()) {
+        log_boot_timing("livekit_wait_connected_failed", wait_connected_started_ms);
         report_telemetry("room_connect_error", "error", session.last_failure_reason);
         cleanup_room();
         return false;
     }
+    log_boot_timing("livekit_wait_connected_done", wait_connected_started_ms);
 
     if (session.heartbeat_task == NULL) {
         xTaskCreatePinnedToCore(heartbeat_task, "mitr_heartbeat", 8192, NULL, 5, &session.heartbeat_task, tskNO_AFFINITY);
     }
+    log_boot_timing("livekit_room_ready", room_started_ms);
     return true;
 }
 
@@ -733,6 +804,9 @@ bool join_room(void)
         ESP_LOGW(TAG, "Room already created");
         return true;
     }
+
+    const int64_t join_started_ms = now_ms();
+    log_boot_timing("room_join_start", 0);
 
     session.restart_requested = false;
     session.session_end_sent = false;
@@ -746,11 +820,15 @@ bool join_room(void)
         generate_boot_id(session.boot_id, sizeof(session.boot_id));
     }
 
+    const int64_t token_started_ms = now_ms();
+    log_boot_timing("session_open_start", 0);
     esp_err_t token_err = mitr_device_request_token(session.boot_id, &session.token);
     if (token_err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to obtain device token: %s", esp_err_to_name(token_err));
+        log_boot_timing("session_open_failed", token_started_ms);
         return false;
     }
+    log_boot_timing("session_open_done", token_started_ms);
 
     ESP_LOGI(
         TAG,
@@ -759,7 +837,9 @@ bool join_room(void)
         session.token.identity ? session.token.identity : "(generated)",
         mitr_device_backend_base_url());
 
-    return create_and_connect_room();
+    const bool connected = create_and_connect_room();
+    log_boot_timing(connected ? "room_join_done" : "room_join_failed", join_started_ms);
+    return connected;
 }
 
 void leave_room(void)

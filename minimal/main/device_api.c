@@ -33,11 +33,25 @@ static SemaphoreHandle_t bg_http_mutex(void)
     return s_bg_http_mutex;
 }
 
+static int64_t now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
+
 typedef struct {
     char *data;
     size_t length;
     size_t capacity;
 } response_buffer_t;
+
+typedef struct {
+    response_buffer_t buffer;
+    const char *path;
+    bool log_boot_timing;
+    int64_t started_at_ms;
+    bool saw_first_header;
+    bool saw_first_data;
+} http_request_context_t;
 
 static const char *const DEVICE_HARDWARE_REV = CONFIG_MITR_DEVICE_HARDWARE_REV;
 static const char *const DEVICE_FIRMWARE_VERSION = CONFIG_MITR_DEVICE_FIRMWARE_VERSION;
@@ -73,9 +87,55 @@ static esp_err_t ensure_capacity(response_buffer_t *buffer, size_t extra_bytes)
 
 static esp_err_t http_event_handler(esp_http_client_event_t *event)
 {
-    response_buffer_t *buffer = (response_buffer_t *)event->user_data;
-    if (!buffer) {
+    http_request_context_t *ctx = (http_request_context_t *)event->user_data;
+    if (!ctx) {
         return ESP_OK;
+    }
+    response_buffer_t *buffer = &ctx->buffer;
+
+    if (ctx->log_boot_timing) {
+        const int64_t event_at_ms = now_ms();
+        switch (event->event_id) {
+        case HTTP_EVENT_ON_CONNECTED:
+            ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_connected path=%s elapsed=%lldms",
+                     (long long)event_at_ms,
+                     ctx->path,
+                     (long long)(event_at_ms - ctx->started_at_ms));
+            break;
+        case HTTP_EVENT_HEADERS_SENT:
+            ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_headers_sent path=%s elapsed=%lldms",
+                     (long long)event_at_ms,
+                     ctx->path,
+                     (long long)(event_at_ms - ctx->started_at_ms));
+            break;
+        case HTTP_EVENT_ON_HEADER:
+            if (!ctx->saw_first_header) {
+                ctx->saw_first_header = true;
+                ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_first_header path=%s elapsed=%lldms",
+                         (long long)event_at_ms,
+                         ctx->path,
+                         (long long)(event_at_ms - ctx->started_at_ms));
+            }
+            break;
+        case HTTP_EVENT_ON_DATA:
+            if (!ctx->saw_first_data) {
+                ctx->saw_first_data = true;
+                ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_first_data path=%s elapsed=%lldms len=%d",
+                         (long long)event_at_ms,
+                         ctx->path,
+                         (long long)(event_at_ms - ctx->started_at_ms),
+                         event->data_len);
+            }
+            break;
+        case HTTP_EVENT_DISCONNECTED:
+            ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_disconnected path=%s elapsed=%lldms",
+                     (long long)event_at_ms,
+                     ctx->path,
+                     (long long)(event_at_ms - ctx->started_at_ms));
+            break;
+        default:
+            break;
+        }
     }
 
     if (event->event_id == HTTP_EVENT_ON_DATA && event->data && event->data_len > 0) {
@@ -167,13 +227,21 @@ static esp_err_t http_post_json(const char *path, const char *body, const char *
     char *url = join_url(path);
     ESP_RETURN_ON_FALSE(url != NULL, ESP_ERR_NO_MEM, TAG, "Failed to build request URL");
 
-    response_buffer_t buffer = {0};
+    const bool log_boot_timing =
+        strcmp(path, "/devices/session/open") == 0 ||
+        strcmp(path, "/devices/bootstrap/complete") == 0;
+    const int64_t request_started_ms = now_ms();
+    http_request_context_t request_context = {
+        .path = path,
+        .log_boot_timing = log_boot_timing,
+        .started_at_ms = request_started_ms,
+    };
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 15000,
         .event_handler = http_event_handler,
-        .user_data = &buffer,
+        .user_data = &request_context,
         .buffer_size = 2048,
     };
 
@@ -216,20 +284,41 @@ static esp_err_t http_post_json(const char *path, const char *body, const char *
         }
     }
 
+    if (log_boot_timing) {
+        ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_post_start path=%s",
+                 (long long)request_started_ms,
+                 path);
+    }
+
     err = esp_http_client_perform(client);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
+        if (log_boot_timing) {
+            const int64_t failed_at_ms = now_ms();
+            ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_post_failed path=%s elapsed=%lldms",
+                     (long long)failed_at_ms,
+                     path,
+                     (long long)(failed_at_ms - request_started_ms));
+        }
         goto cleanup;
     }
 
     const int status = esp_http_client_get_status_code(client);
+    if (log_boot_timing) {
+        const int64_t done_at_ms = now_ms();
+        ESP_LOGW(TAG, "[BOOT] t=%lldms state=http_post_done path=%s status=%d elapsed=%lldms",
+                 (long long)done_at_ms,
+                 path,
+                 status,
+                 (long long)(done_at_ms - request_started_ms));
+    }
     if (status_code) {
         *status_code = status;
     }
 
-    if (buffer.length == 0) {
-        buffer.data = calloc(1, 1);
-        if (buffer.data == NULL) {
+    if (request_context.buffer.length == 0) {
+        request_context.buffer.data = calloc(1, 1);
+        if (request_context.buffer.data == NULL) {
             err = ESP_ERR_NO_MEM;
             ESP_LOGE(TAG, "Failed to allocate empty HTTP response");
             goto cleanup;
@@ -237,14 +326,14 @@ static esp_err_t http_post_json(const char *path, const char *body, const char *
     }
 
     if (status < 200 || status >= 300) {
-        ESP_LOGE(TAG, "Backend returned HTTP %d for %s: %s", status, path, buffer.data);
+        ESP_LOGE(TAG, "Backend returned HTTP %d for %s: %s", status, path, request_context.buffer.data);
         err = ESP_FAIL;
         goto cleanup;
     }
 
-    *response_json = cJSON_Parse(buffer.data);
+    *response_json = cJSON_Parse(request_context.buffer.data);
     if (*response_json == NULL) {
-        ESP_LOGE(TAG, "Failed to parse backend response for %s: %s", path, buffer.data);
+        ESP_LOGE(TAG, "Failed to parse backend response for %s: %s", path, request_context.buffer.data);
         err = ESP_FAIL;
         goto cleanup;
     }
@@ -254,7 +343,7 @@ cleanup:
         esp_http_client_cleanup(client);
     }
     free(url);
-    free_buffer(&buffer);
+    free_buffer(&request_context.buffer);
     return err;
 }
 

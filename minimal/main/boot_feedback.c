@@ -1,6 +1,13 @@
 #include "boot_feedback.h"
 
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "sounds.h"
+
+static const char *TAG = "mitr_boot_feedback";
 
 typedef struct {
     bool initialized;
@@ -13,6 +20,26 @@ static boot_feedback_state_t s_state = {
     .ready_announced = false,
     .last_state = MITR_BOOT_STATE_POWER_ON,
 };
+
+static int64_t now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
+
+static void ready_feedback_task(void *arg)
+{
+    (void)arg;
+
+    const int64_t ready_feedback_started_ms = now_ms();
+    ESP_LOGW(TAG, "[BOOT] t=%lldms state=ready_feedback_start",
+             (long long)ready_feedback_started_ms);
+    sounds_play_ready();
+    const int64_t ready_feedback_done_ms = now_ms();
+    ESP_LOGW(TAG, "[BOOT] t=%lldms state=ready_feedback_done elapsed=%lldms",
+             (long long)ready_feedback_done_ms,
+             (long long)(ready_feedback_done_ms - ready_feedback_started_ms));
+    vTaskDelete(NULL);
+}
 
 void mitr_boot_feedback_init(void)
 {
@@ -36,8 +63,18 @@ void mitr_boot_feedback_set_state(mitr_boot_state_t state)
         case MITR_BOOT_STATE_READY_LISTENING:
         case MITR_BOOT_STATE_READY_CONNECTED:
             if (!s_state.ready_announced) {
-                sounds_play_ready();
                 s_state.ready_announced = true;
+                BaseType_t task_created = xTaskCreatePinnedToCore(
+                    ready_feedback_task,
+                    "mitr_ready_cue",
+                    4096,
+                    NULL,
+                    4,
+                    NULL,
+                    tskNO_AFFINITY);
+                if (task_created != pdPASS) {
+                    ESP_LOGW(TAG, "Unable to start ready feedback task");
+                }
             }
             break;
         default:
