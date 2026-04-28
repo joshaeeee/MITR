@@ -14,6 +14,7 @@ import {
 } from '../../db/schema.js';
 import { getRequiredLivekitConfig } from '../../config/livekit-config.js';
 import { getFamilyRepository } from '../family/family-repository.js';
+import { logger } from '../../lib/logger.js';
 import { publishDeviceSessionEvent } from './device-session-events.js';
 import { detachDeviceParticipant, notifyAndDetachSupersededSession, type DeviceRoomSessionTarget } from './livekit-device-room-control.js';
 
@@ -157,6 +158,15 @@ const readMetadataString = (metadata: Record<string, unknown>, key: string): str
 
 const pickMetadataValue = (metadata: Record<string, unknown>, key: string): unknown =>
   Object.prototype.hasOwnProperty.call(metadata, key) ? metadata[key] : undefined;
+
+const runSessionOpenCleanup = (description: string, task: () => Promise<void>, context: Record<string, unknown>): void => {
+  void task().catch((error) => {
+    logger.warn(`Device session open cleanup failed: ${description}`, {
+      ...context,
+      error: (error as Error).message
+    });
+  });
+};
 
 export class DeviceControlService {
   private readonly familyRepo = getFamilyRepository();
@@ -841,6 +851,7 @@ export class DeviceControlService {
     dispatchMetadata: Record<string, unknown>;
     participantTokenExpiresAtMs: number;
   }> {
+    const startedAt = Date.now();
     const livekit = getRequiredLivekitConfig();
     if (!livekit) {
       throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
@@ -873,6 +884,7 @@ export class DeviceControlService {
     let identity = '';
     let sessionRow: typeof deviceSessions.$inferSelect | null = null;
     let supersededSession: DeviceRoomSessionTarget | null = null;
+    let reusedCurrentSession = false;
 
     await db.transaction(async (tx) => {
       const locked = await tx.execute(sql`
@@ -891,6 +903,7 @@ export class DeviceControlService {
         : null;
 
       if (currentSession && currentSession.bootId === bootId && currentSession.status !== 'ended') {
+        reusedCurrentSession = true;
         sessionId = currentSession.id;
         roomName = currentSession.roomName;
         identity = currentSession.participantIdentity;
@@ -996,14 +1009,30 @@ export class DeviceControlService {
         })
         .where(eq(devices.id, input.device.id));
     });
+    const transactionDoneAt = Date.now();
 
     if (!sessionRow) {
       throw new Error('Failed to open device session');
     }
 
-    await this.publishSessionState(sessionRow, 'session_upserted');
-    if (supersededSession) {
-      await notifyAndDetachSupersededSession(supersededSession);
+    runSessionOpenCleanup(
+      'publish_session_state',
+      () => this.publishSessionState(sessionRow!, 'session_upserted'),
+      { deviceId: input.device.deviceId, sessionId, roomName }
+    );
+    const supersededSessionTarget = supersededSession as DeviceRoomSessionTarget | null;
+    if (supersededSessionTarget) {
+      const target = supersededSessionTarget;
+      runSessionOpenCleanup(
+        'detach_superseded_session',
+        () => notifyAndDetachSupersededSession(target),
+        {
+          deviceId: input.device.deviceId,
+          sessionId,
+          supersededSessionId: target.sessionId,
+          supersededRoomName: target.roomName
+        }
+      );
     }
 
     const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
@@ -1020,12 +1049,24 @@ export class DeviceControlService {
     };
     at.addGrant(videoGrant);
     const participantToken = await at.toJwt();
+    const tokenDoneAt = Date.now();
 
     const dispatchMetadata = {
       ...metadataBase,
       session_id: sessionId,
       boot_id: bootId
     };
+
+    logger.info('Device session open timing', {
+      deviceId: input.device.deviceId,
+      sessionId,
+      roomName,
+      reusedCurrentSession,
+      supersededSession: Boolean(supersededSession),
+      transactionMs: transactionDoneAt - startedAt,
+      tokenMs: tokenDoneAt - transactionDoneAt,
+      responseReadyMs: tokenDoneAt - startedAt
+    });
 
     return {
       sessionId,
