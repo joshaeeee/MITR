@@ -16,6 +16,7 @@ import { getRequiredLivekitConfig } from '../../config/livekit-config.js';
 import { getFamilyRepository } from '../family/family-repository.js';
 import { publishDeviceSessionEvent } from './device-session-events.js';
 import { detachDeviceParticipant, notifyAndDetachSupersededSession, type DeviceRoomSessionTarget } from './livekit-device-room-control.js';
+import { logger } from '../../lib/logger.js';
 
 type DevicePairingStatus = 'pending_device' | 'bootstrapping' | 'completed' | 'expired' | 'revoked';
 export type DeviceConversationState = 'idle' | 'starting' | 'active' | 'ending';
@@ -841,6 +842,16 @@ export class DeviceControlService {
     dispatchMetadata: Record<string, unknown>;
     participantTokenExpiresAtMs: number;
   }> {
+    const t_method_start = performance.now();
+    const stages: Record<string, number> = {};
+    let last_mark = t_method_start;
+    const mark = (name: string) => {
+      const now = performance.now();
+      stages[name] = Math.round((now - last_mark) * 100) / 100;
+      last_mark = now;
+    };
+    let path: 'reuse' | 'supersede' | 'fresh' = 'fresh';
+
     const livekit = getRequiredLivekitConfig();
     if (!livekit) {
       throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
@@ -873,14 +884,17 @@ export class DeviceControlService {
     let identity = '';
     let sessionRow: typeof deviceSessions.$inferSelect | null = null;
     let supersededSession: DeviceRoomSessionTarget | null = null;
+    mark('setup');
 
     await db.transaction(async (tx) => {
+      last_mark = performance.now();
       const locked = await tx.execute(sql`
         SELECT id, current_device_session_id
         FROM ${devices}
         WHERE id = ${input.device.id}
         FOR UPDATE
       `);
+      mark('tx_lock');
       if (!locked.rows?.length) {
         throw new Error('Device not found');
       }
@@ -889,8 +903,10 @@ export class DeviceControlService {
       const currentSession = currentSessionId
         ? await tx.select().from(deviceSessions).where(eq(deviceSessions.id, currentSessionId)).limit(1).then((rows) => rows[0] ?? null)
         : null;
+      mark('tx_session_lookup');
 
       if (currentSession && currentSession.bootId === bootId && currentSession.status !== 'ended') {
+        path = 'reuse';
         sessionId = currentSession.id;
         roomName = currentSession.roomName;
         identity = currentSession.participantIdentity;
@@ -899,7 +915,7 @@ export class DeviceControlService {
           session_id: sessionId,
           boot_id: bootId
         };
-        await tx
+        const reuseUpdated = await tx
           .update(deviceSessions)
           .set({
             language,
@@ -908,9 +924,25 @@ export class DeviceControlService {
             metadataJson: dispatchMetadata,
             lastHeartbeatAt: new Date()
           })
-          .where(eq(deviceSessions.id, sessionId));
+          .where(eq(deviceSessions.id, sessionId))
+          .returning();
+        sessionRow = reuseUpdated[0] ?? null;
+        mark('tx_reuse_update');
+
+        // The reuse path doesn't otherwise touch `devices`, so refresh lastSeenAt + firmware metadata here.
+        await tx
+          .update(devices)
+          .set({
+            firmwareVersion,
+            hardwareRev,
+            lastSeenAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(devices.id, input.device.id));
+        mark('tx_devices_update_reuse');
       } else {
         if (currentSession && currentSession.status !== 'ended') {
+          path = 'supersede';
           supersededSession = {
             sessionId: currentSession.id,
             roomName: currentSession.roomName,
@@ -942,6 +974,7 @@ export class DeviceControlService {
                 inArray(deviceConversations.state, ['opening', 'active'])
               )
             );
+          mark('tx_supersede');
         }
 
         sessionId = randomUUID();
@@ -952,7 +985,7 @@ export class DeviceControlService {
           session_id: sessionId,
           boot_id: bootId
         };
-        await tx.insert(deviceSessions).values({
+        const inserted = await tx.insert(deviceSessions).values({
           id: sessionId,
           deviceId: input.device.deviceId,
           userId: input.device.userId,
@@ -968,7 +1001,9 @@ export class DeviceControlService {
           status: 'issued',
           conversationState: 'idle',
           metadataJson: dispatchMetadata
-        });
+        }).returning();
+        sessionRow = inserted[0] ?? null;
+        mark('tx_session_insert');
 
         await tx
           .update(devices)
@@ -980,30 +1015,34 @@ export class DeviceControlService {
             updatedAt: new Date()
           })
           .where(eq(devices.id, input.device.id));
+        mark('tx_devices_update_inner');
       }
 
-      sessionRow = await tx.select().from(deviceSessions).where(eq(deviceSessions.id, sessionId)).limit(1).then((rows) => rows[0] ?? null);
       if (!sessionRow) {
         throw new Error('Failed to load device session');
       }
-      await tx
-        .update(devices)
-        .set({
-          firmwareVersion,
-          hardwareRev,
-          lastSeenAt: new Date(),
-          updatedAt: new Date()
-        })
-        .where(eq(devices.id, input.device.id));
     });
+    mark('tx_commit');
 
     if (!sessionRow) {
       throw new Error('Failed to open device session');
     }
 
     await this.publishSessionState(sessionRow, 'session_upserted');
+    mark('publish_session_state');
+
     if (supersededSession) {
-      await notifyAndDetachSupersededSession(supersededSession);
+      // Fire-and-forget: the device doesn't need the old participant kicked out before getting
+      // its new session token. notifyAndDetachSupersededSession can take 200ms-3s depending on
+      // LiveKit Cloud RTT and whether the prior room still exists; do it async with a logged catch.
+      const detachTarget: DeviceRoomSessionTarget = supersededSession;
+      void notifyAndDetachSupersededSession(detachTarget).catch((error) => {
+        logger.warn('Async notifyAndDetachSupersededSession failed', {
+          sessionId: detachTarget.sessionId,
+          error: (error as Error).message
+        });
+      });
+      mark('notify_detach_dispatched');
     }
 
     const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
@@ -1020,6 +1059,18 @@ export class DeviceControlService {
     };
     at.addGrant(videoGrant);
     const participantToken = await at.toJwt();
+    mark('token_mint');
+
+    const totalMs = Math.round((performance.now() - t_method_start) * 100) / 100;
+    console.log(JSON.stringify({
+      event: 'session_open_perf',
+      deviceId: input.device.deviceId,
+      bootId,
+      path,
+      totalMs,
+      slow: totalMs > 500,
+      stages
+    }));
 
     const dispatchMetadata = {
       ...metadataBase,
