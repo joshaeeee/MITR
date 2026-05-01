@@ -93,4 +93,74 @@ menu "Mitr ESP32 Device"
             The selected substring must match a model that actually exists in the
             esp-sr model assets packed into the "model" partition.
             Must also enable the matching CONFIG_SR_WN_* option in sdkconfig.
+
+    config MITR_MIC_INPUT_CHANNEL
+        int "Primary microphone I2S channel: 0=left, 1=right"
+        default 0
+        range 0 1
+        help
+            INMP441 selects its active I2S slot with the L/R pin. L/R tied to
+            GND uses left/channel 0; L/R tied to VDD uses right/channel 1.
+
+    config MITR_MIC_INPUT_BITS
+        int "Primary microphone I2S bits per sample"
+        default 32
+        range 16 32
+        help
+            INMP441 outputs 24-bit audio in a 32-bit I2S slot, so production
+            capture should request 32-bit input and down-convert to 16-bit PCM.
+
+    config MITR_MIC_INPUT_SHIFT
+        int "Primary microphone 32-bit to 16-bit right shift"
+        default 16
+        range 8 24
+        help
+            Right shift used when converting 32-bit I2S microphone samples to
+            signed 16-bit PCM for WakeNet and LiveKit.
+
+    config MITR_MIC_LOOPBACK_PROBE
+        bool "Run mic loopback probe instead of normal app"
+        default n
+        help
+            Debug-only mode. On boot, routes the selected microphone channel
+            directly to the speaker so raw I2S channel selection can be tested
+            by ear without LiveKit or WakeNet in the path.
+
+    config MITR_MIC_LOOPBACK_CHANNEL
+        int "Mic loopback channel: 0=left, 1=right, 2=stereo"
+        default 0
+        range 0 2
+        depends on MITR_MIC_LOOPBACK_PROBE
+        help
+            Selects which I2S RX channel to play back in loopback probe mode.
+            Left/right are selected by the codec driver channel mask and are
+            duplicated to both speaker channels.
+
+    config MITR_MIC_LOOPBACK_VOLUME
+        int "Mic loopback speaker volume"
+        default 55
+        range 0 100
+        depends on MITR_MIC_LOOPBACK_PROBE
+        help
+            Speaker volume for loopback probe mode. Keep this moderate to
+            reduce acoustic feedback while testing.
+
+    config MITR_MIC_LOOPBACK_BITS
+        int "Mic loopback input bits per sample"
+        default 16
+        range 16 32
+        depends on MITR_MIC_LOOPBACK_PROBE
+        help
+            I2S RX data width to request from the codec driver. Use 32 for
+            common I2S MEMS microphones that output 24-bit samples in 32-bit
+            slots.
+
+    config MITR_MIC_LOOPBACK_SHIFT
+        int "Mic loopback 32-bit to 16-bit right shift"
+        default 16
+        range 8 24
+        depends on MITR_MIC_LOOPBACK_PROBE
+        help
+            Right shift applied when loopback input bits are 32. Try 16 first;
+            lower values are louder and may clip.
 endmenu
