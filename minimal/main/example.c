@@ -352,7 +352,10 @@ void on_wake_detected(void)
         ESP_LOGW(TAG, "Wake notification rejected or failed: %s", esp_err_to_name(err));
         set_conversation_active(false, "wake_rejected", false);
         wake_word_rearm();
+        return;
     }
+    ESP_LOGI(TAG, "Wake notification accepted; conversation_id=%s",
+             session.current_conversation_id[0] != '\0' ? session.current_conversation_id : "(pending)");
 }
 
 static void on_state_changed(livekit_connection_state_t state, void *ctx)
@@ -488,6 +491,9 @@ static void handle_device_control_message(const cJSON *root)
         if (conversation_id_str) {
             copy_string(session.current_conversation_id, sizeof(session.current_conversation_id), conversation_id_str);
         }
+        ESP_LOGI(TAG, "Control: conversation_started conversation_id=%s reason=%s",
+                 session.current_conversation_id[0] != '\0' ? session.current_conversation_id : "(none)",
+                 reason);
         session.wake_pending = false;
         if (!session.conversation_active) {
             set_conversation_active(true, reason, false);
@@ -498,6 +504,9 @@ static void handle_device_control_message(const cJSON *root)
     if (strcmp(message_type, "conversation_ended") == 0) {
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
         const char *reason_str = (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "conversation_ended";
+        ESP_LOGI(TAG, "Control: conversation_ended conversation_id=%s reason=%s",
+                 session.current_conversation_id[0] != '\0' ? session.current_conversation_id : "(none)",
+                 reason_str);
         set_conversation_active(false, reason_str, false);
         wake_word_rearm();
         return;
@@ -506,6 +515,9 @@ static void handle_device_control_message(const cJSON *root)
     if (strcmp(message_type, "conversation_error") == 0) {
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
         const char *reason_str = (cJSON_IsString(reason) && reason->valuestring) ? reason->valuestring : "conversation_error";
+        ESP_LOGW(TAG, "Control: conversation_error conversation_id=%s reason=%s",
+                 session.current_conversation_id[0] != '\0' ? session.current_conversation_id : "(none)",
+                 reason_str);
         set_conversation_active(false, reason_str, false);
         publish_device_event("conversation_error", reason_str);
         report_telemetry("conversation_error", "warn", reason_str);
@@ -534,8 +546,8 @@ static void on_data_received(const livekit_data_received_t *data, void *ctx)
         return;
     }
 
-    const size_t preview_bytes = data->payload.size < 96 ? data->payload.size : 96;
-    char preview[97];
+    const size_t preview_bytes = data->payload.size < 255 ? data->payload.size : 255;
+    char preview[256];
     memcpy(preview, data->payload.bytes, preview_bytes);
     preview[preview_bytes] = '\0';
 

@@ -63,6 +63,10 @@ void media_play_pcm_chunked(const int16_t *stereo_pcm,
                             int chunk_stereo_samples,
                             int16_t *scratch_buf);
 
+/// Debug helper: routes the selected microphone channel directly to speaker.
+/// Intended for bench testing only; this function does not return.
+void media_run_mic_loopback_probe(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,5 +1,6 @@
 #include "preconnect_audio_src.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,9 +16,11 @@ static const char *TAG = "preconnect_audio";
 #define PREBUFFER_SAMPLE_RATE         16000
 #define PREBUFFER_CHANNELS_MONO       1
 #define PREBUFFER_BITS_PER_SAMPLE     16
+#define PREBUFFER_INPUT_BITS_PER_SAMPLE CONFIG_MITR_MIC_INPUT_BITS
 #define PREBUFFER_RING_CAPACITY_BYTES (PREBUFFER_SAMPLE_RATE * 2 * 8)
 #define PREBUFFER_CAPTURE_SAMPLES     160
 #define MITR_PRECONNECT_MAX_TAPS      4
+#define MIC_DIAG_LOG_INTERVAL_FRAMES  100
 
 typedef struct {
     mitr_preconnect_tap_cb_t cb;
@@ -50,6 +53,64 @@ typedef struct {
 } mitr_preconnect_audio_src_t;
 
 static mitr_preconnect_audio_src_t *s_src = NULL;
+
+static uint32_t isqrt_u64(uint64_t value)
+{
+    uint64_t bit = (uint64_t)1 << 62;
+    uint64_t root = 0;
+
+    while (bit > value) {
+        bit >>= 2;
+    }
+    while (bit != 0) {
+        if (value >= root + bit) {
+            value -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+
+    return (uint32_t)root;
+}
+
+static int16_t convert_input_sample_to_pcm16(int32_t sample)
+{
+#if CONFIG_MITR_MIC_INPUT_BITS == 32
+    return (int16_t)(sample >> CONFIG_MITR_MIC_INPUT_SHIFT);
+#else
+    return (int16_t)sample;
+#endif
+}
+
+static void log_mic_diag(const int16_t *mono, size_t sample_count)
+{
+    int16_t min_sample = INT16_MAX;
+    int16_t max_sample = INT16_MIN;
+    int64_t sum = 0;
+    uint64_t square_sum = 0;
+
+    for (size_t i = 0; i < sample_count; ++i) {
+        const int32_t sample = mono[i];
+
+        if (sample < min_sample) min_sample = (int16_t)sample;
+        if (sample > max_sample) max_sample = (int16_t)sample;
+        sum += sample;
+        square_sum += (uint64_t)(sample * sample);
+    }
+
+    const uint32_t rms = isqrt_u64(square_sum / sample_count);
+    ESP_LOGI(TAG,
+             "[MIC_DIAG] channel=%d input_bits=%d shift=%d rms=%u dc=%d min=%d max=%d",
+             CONFIG_MITR_MIC_INPUT_CHANNEL,
+             CONFIG_MITR_MIC_INPUT_BITS,
+             CONFIG_MITR_MIC_INPUT_SHIFT,
+             (unsigned)rms,
+             (int)(sum / sample_count),
+             (int)min_sample,
+             (int)max_sample);
+}
 
 static void reset_ring_locked(mitr_preconnect_audio_src_t *src)
 {
@@ -110,12 +171,12 @@ static size_t ring_read_locked(mitr_preconnect_audio_src_t *src, uint8_t *data, 
 static void preconnect_capture_task(void *arg)
 {
     mitr_preconnect_audio_src_t *src = (mitr_preconnect_audio_src_t *)arg;
-    const size_t stereo_samples = PREBUFFER_CAPTURE_SAMPLES * 2;
-    int16_t *stereo = heap_caps_malloc(stereo_samples * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t input_sample_bytes = PREBUFFER_INPUT_BITS_PER_SAMPLE == 32 ? sizeof(int32_t) : sizeof(int16_t);
+    void *input = heap_caps_malloc(PREBUFFER_CAPTURE_SAMPLES * input_sample_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     int16_t *mono = heap_caps_malloc(PREBUFFER_CAPTURE_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (stereo == NULL || mono == NULL) {
+    if (input == NULL || mono == NULL) {
         ESP_LOGE(TAG, "Failed to allocate capture buffers");
-        free(stereo);
+        free(input);
         free(mono);
         xSemaphoreTake(src->lock, portMAX_DELAY);
         src->capture_running = false;
@@ -125,6 +186,8 @@ static void preconnect_capture_task(void *arg)
         return;
     }
 
+    uint32_t diag_frame_count = 0;
+
     while (true) {
         xSemaphoreTake(src->lock, portMAX_DELAY);
         const bool should_stop = src->stop_requested;
@@ -133,14 +196,24 @@ static void preconnect_capture_task(void *arg)
             break;
         }
 
-        int ret = esp_codec_dev_read(src->record_handle, stereo, stereo_samples * (int)sizeof(int16_t));
+        int ret = esp_codec_dev_read(src->record_handle, input, PREBUFFER_CAPTURE_SAMPLES * (int)input_sample_bytes);
         if (ret != 0) {
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
 
         for (int i = 0; i < PREBUFFER_CAPTURE_SAMPLES; ++i) {
-            mono[i] = stereo[i * 2];
+            if (PREBUFFER_INPUT_BITS_PER_SAMPLE == 32) {
+                mono[i] = convert_input_sample_to_pcm16(((const int32_t *)input)[i]);
+            } else {
+                mono[i] = convert_input_sample_to_pcm16(((const int16_t *)input)[i]);
+            }
+        }
+
+        diag_frame_count++;
+        if (diag_frame_count >= MIC_DIAG_LOG_INTERVAL_FRAMES) {
+            diag_frame_count = 0;
+            log_mic_diag(mono, PREBUFFER_CAPTURE_SAMPLES);
         }
 
         xSemaphoreTake(src->lock, portMAX_DELAY);
@@ -161,7 +234,7 @@ static void preconnect_capture_task(void *arg)
     }
 
     esp_codec_dev_close(src->record_handle);
-    free(stereo);
+    free(input);
     free(mono);
 
     xSemaphoreTake(src->lock, portMAX_DELAY);
@@ -182,8 +255,9 @@ static esp_err_t ensure_capture_running_locked(mitr_preconnect_audio_src_t *src,
 
     esp_codec_dev_sample_info_t cfg = {
         .sample_rate = PREBUFFER_SAMPLE_RATE,
-        .bits_per_sample = PREBUFFER_BITS_PER_SAMPLE,
+        .bits_per_sample = PREBUFFER_INPUT_BITS_PER_SAMPLE,
         .channel = 2,
+        .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(CONFIG_MITR_MIC_INPUT_CHANNEL),
     };
     int ret = esp_codec_dev_open(src->record_handle, &cfg);
     if (ret != 0) {

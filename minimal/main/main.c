@@ -150,6 +150,9 @@ static void mitr_device_task(void *arg)
     ESP_ERROR_CHECK(livekit_system_init());
     board_init();
     ESP_ERROR_CHECK(media_init());
+#if CONFIG_MITR_MIC_LOOPBACK_PROBE
+    media_run_mic_loopback_probe();
+#endif
     esp_log_level_set("wake_word", ESP_LOG_INFO);
     esp_log_level_set("media", ESP_LOG_INFO);
     esp_log_level_set("preconnect_audio", ESP_LOG_INFO);

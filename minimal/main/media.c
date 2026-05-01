@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "codec_init.h"
@@ -21,6 +22,24 @@ static const char *TAG = "media";
 #define NULL_CHECK(pointer, message) \
     ESP_RETURN_ON_FALSE(pointer != NULL, -1, TAG, message)
 
+#define MIC_LOOPBACK_FRAME_SAMPLES 160
+
+#ifndef CONFIG_MITR_MIC_LOOPBACK_CHANNEL
+#define CONFIG_MITR_MIC_LOOPBACK_CHANNEL 0
+#endif
+
+#ifndef CONFIG_MITR_MIC_LOOPBACK_VOLUME
+#define CONFIG_MITR_MIC_LOOPBACK_VOLUME 55
+#endif
+
+#ifndef CONFIG_MITR_MIC_LOOPBACK_BITS
+#define CONFIG_MITR_MIC_LOOPBACK_BITS 16
+#endif
+
+#ifndef CONFIG_MITR_MIC_LOOPBACK_SHIFT
+#define CONFIG_MITR_MIC_LOOPBACK_SHIFT 16
+#endif
+
 typedef struct {
     esp_capture_sink_handle_t capturer_handle;
     esp_capture_audio_src_if_t *audio_source;
@@ -38,6 +57,27 @@ typedef struct {
 static capture_system_t capturer_system;
 static renderer_system_t renderer_system;
 static volatile int64_t s_last_mic_activity_ms = 0;
+
+static uint32_t isqrt_u64(uint64_t value)
+{
+    uint64_t bit = (uint64_t)1 << 62;
+    uint64_t root = 0;
+
+    while (bit > value) {
+        bit >>= 2;
+    }
+    while (bit != 0) {
+        if (value >= root + bit) {
+            value -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+
+    return (uint32_t)root;
+}
 
 static int build_capturer_system(void)
 {
@@ -243,6 +283,132 @@ void media_play_pcm_chunked(const int16_t *stereo_pcm,
 
     vTaskDelay(pdMS_TO_TICKS((n_stereo_samples * 1000) / 16000 + 50));
     esp_codec_dev_close(renderer_system.render_device);
+}
+
+void media_run_mic_loopback_probe(void)
+{
+    if (capturer_system.record_device == NULL || renderer_system.render_device == NULL) {
+        ESP_LOGE(TAG, "[MIC_PROBE] media_init() has not completed");
+        vTaskDelay(portMAX_DELAY);
+    }
+
+    const int channel = CONFIG_MITR_MIC_LOOPBACK_CHANNEL;
+    const int input_bits = CONFIG_MITR_MIC_LOOPBACK_BITS;
+    const int input_shift = CONFIG_MITR_MIC_LOOPBACK_SHIFT;
+    const bool stereo_mode = channel == 2;
+    const size_t input_channels = stereo_mode ? 2 : 1;
+    const size_t input_samples = MIC_LOOPBACK_FRAME_SAMPLES * input_channels;
+    const size_t input_sample_bytes = input_bits == 32 ? sizeof(int32_t) : sizeof(int16_t);
+    const size_t input_bytes = input_samples * input_sample_bytes;
+    void *input = heap_caps_malloc(input_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    int16_t *output = heap_caps_malloc(MIC_LOOPBACK_FRAME_SAMPLES * 2 * sizeof(int16_t),
+                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (input == NULL || output == NULL) {
+        ESP_LOGE(TAG, "[MIC_PROBE] Failed to allocate loopback buffers");
+        free(input);
+        free(output);
+        vTaskDelay(portMAX_DELAY);
+    }
+
+    esp_codec_dev_sample_info_t in_cfg = {
+        .sample_rate = 16000,
+        .bits_per_sample = input_bits,
+        .channel = 2,
+        .channel_mask = stereo_mode ? 0x3 : ESP_CODEC_DEV_MAKE_CHANNEL_MASK(channel),
+    };
+    esp_codec_dev_sample_info_t out_cfg = {
+        .sample_rate = 16000,
+        .bits_per_sample = 16,
+        .channel = 2,
+    };
+
+    ESP_LOGW(TAG,
+             "[MIC_PROBE] Starting loopback: channel=%d (%s), volume=%d. "
+             "input_bits=%d shift=%d. Keep speaker away from mic to avoid feedback.",
+             channel,
+             channel == 0 ? "left" : (channel == 1 ? "right" : "stereo"),
+             CONFIG_MITR_MIC_LOOPBACK_VOLUME,
+             input_bits,
+             input_shift);
+
+    int ret = esp_codec_dev_open(capturer_system.record_device, &in_cfg);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "[MIC_PROBE] Failed to open record device: %d", ret);
+        vTaskDelay(portMAX_DELAY);
+    }
+    ret = esp_codec_dev_open(renderer_system.render_device, &out_cfg);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "[MIC_PROBE] Failed to open playback device: %d", ret);
+        esp_codec_dev_close(capturer_system.record_device);
+        vTaskDelay(portMAX_DELAY);
+    }
+    esp_codec_dev_set_out_vol(renderer_system.render_device, CONFIG_MITR_MIC_LOOPBACK_VOLUME);
+
+    uint32_t frames = 0;
+    while (true) {
+        ret = esp_codec_dev_read(capturer_system.record_device, input, (int)input_bytes);
+        if (ret != 0) {
+            ESP_LOGW(TAG, "[MIC_PROBE] read returned %d", ret);
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        int16_t min_sample = INT16_MAX;
+        int16_t max_sample = INT16_MIN;
+        int64_t sum = 0;
+        uint64_t square_sum = 0;
+        for (int i = 0; i < MIC_LOOPBACK_FRAME_SAMPLES; ++i) {
+            int16_t sample;
+            if (stereo_mode) {
+                int16_t left;
+                int16_t right;
+                if (input_bits == 32) {
+                    const int32_t *samples = (const int32_t *)input;
+                    left = (int16_t)(samples[i * 2] >> input_shift);
+                    right = (int16_t)(samples[i * 2 + 1] >> input_shift);
+                } else {
+                    const int16_t *samples = (const int16_t *)input;
+                    left = samples[i * 2];
+                    right = samples[i * 2 + 1];
+                }
+                output[i * 2] = left;
+                output[i * 2 + 1] = right;
+                sample = left;
+            } else {
+                if (input_bits == 32) {
+                    const int32_t *samples = (const int32_t *)input;
+                    sample = (int16_t)(samples[i] >> input_shift);
+                } else {
+                    const int16_t *samples = (const int16_t *)input;
+                    sample = samples[i];
+                }
+                output[i * 2] = sample;
+                output[i * 2 + 1] = sample;
+            }
+            if (sample < min_sample) min_sample = sample;
+            if (sample > max_sample) max_sample = sample;
+            sum += sample;
+            square_sum += (uint64_t)((int32_t)sample * (int32_t)sample);
+        }
+
+        ret = esp_codec_dev_write(renderer_system.render_device,
+                                  output,
+                                  MIC_LOOPBACK_FRAME_SAMPLES * 2 * (int)sizeof(int16_t));
+        if (ret != 0) {
+            ESP_LOGW(TAG, "[MIC_PROBE] write returned %d", ret);
+        }
+
+        frames++;
+        if ((frames % 100) == 0) {
+            ESP_LOGI(TAG,
+                     "[MIC_PROBE] channel=%d rms=%u dc=%d min=%d max=%d",
+                     channel,
+                     (unsigned)isqrt_u64(square_sum / MIC_LOOPBACK_FRAME_SAMPLES),
+                     (int)(sum / MIC_LOOPBACK_FRAME_SAMPLES),
+                     (int)min_sample,
+                     (int)max_sample);
+        }
+    }
 }
 
 void media_notify_mic_activity(void)
