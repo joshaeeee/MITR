@@ -20,7 +20,6 @@ static const char *TAG = "preconnect_audio";
 #define PREBUFFER_RING_CAPACITY_BYTES (PREBUFFER_SAMPLE_RATE * 2 * 8)
 #define PREBUFFER_CAPTURE_SAMPLES     160
 #define MITR_PRECONNECT_MAX_TAPS      4
-#define MIC_DIAG_LOG_INTERVAL_FRAMES  100
 
 typedef struct {
     mitr_preconnect_tap_cb_t cb;
@@ -54,27 +53,6 @@ typedef struct {
 
 static mitr_preconnect_audio_src_t *s_src = NULL;
 
-static uint32_t isqrt_u64(uint64_t value)
-{
-    uint64_t bit = (uint64_t)1 << 62;
-    uint64_t root = 0;
-
-    while (bit > value) {
-        bit >>= 2;
-    }
-    while (bit != 0) {
-        if (value >= root + bit) {
-            value -= root + bit;
-            root = (root >> 1) + bit;
-        } else {
-            root >>= 1;
-        }
-        bit >>= 2;
-    }
-
-    return (uint32_t)root;
-}
-
 static int16_t convert_input_sample_to_pcm16(int32_t sample)
 {
 #if CONFIG_MITR_MIC_INPUT_BITS == 32
@@ -82,34 +60,6 @@ static int16_t convert_input_sample_to_pcm16(int32_t sample)
 #else
     return (int16_t)sample;
 #endif
-}
-
-static void log_mic_diag(const int16_t *mono, size_t sample_count)
-{
-    int16_t min_sample = INT16_MAX;
-    int16_t max_sample = INT16_MIN;
-    int64_t sum = 0;
-    uint64_t square_sum = 0;
-
-    for (size_t i = 0; i < sample_count; ++i) {
-        const int32_t sample = mono[i];
-
-        if (sample < min_sample) min_sample = (int16_t)sample;
-        if (sample > max_sample) max_sample = (int16_t)sample;
-        sum += sample;
-        square_sum += (uint64_t)(sample * sample);
-    }
-
-    const uint32_t rms = isqrt_u64(square_sum / sample_count);
-    ESP_LOGI(TAG,
-             "[MIC_DIAG] channel=%d input_bits=%d shift=%d rms=%u dc=%d min=%d max=%d",
-             CONFIG_MITR_MIC_INPUT_CHANNEL,
-             CONFIG_MITR_MIC_INPUT_BITS,
-             CONFIG_MITR_MIC_INPUT_SHIFT,
-             (unsigned)rms,
-             (int)(sum / sample_count),
-             (int)min_sample,
-             (int)max_sample);
 }
 
 static void reset_ring_locked(mitr_preconnect_audio_src_t *src)
@@ -186,8 +136,6 @@ static void preconnect_capture_task(void *arg)
         return;
     }
 
-    uint32_t diag_frame_count = 0;
-
     while (true) {
         xSemaphoreTake(src->lock, portMAX_DELAY);
         const bool should_stop = src->stop_requested;
@@ -208,12 +156,6 @@ static void preconnect_capture_task(void *arg)
             } else {
                 mono[i] = convert_input_sample_to_pcm16(((const int16_t *)input)[i]);
             }
-        }
-
-        diag_frame_count++;
-        if (diag_frame_count >= MIC_DIAG_LOG_INTERVAL_FRAMES) {
-            diag_frame_count = 0;
-            log_mic_diag(mono, PREBUFFER_CAPTURE_SAMPLES);
         }
 
         xSemaphoreTake(src->lock, portMAX_DELAY);
