@@ -92,6 +92,13 @@
       "when": 1776692370042,
       "tag": "0012_marvelous_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1777622700000,
+      "tag": "0013_persistent_device_agent",
+      "breakpoints": true
     }
   ]
 }

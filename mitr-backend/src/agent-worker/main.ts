@@ -685,7 +685,8 @@ export default defineAgent({
   entry: async (ctx: JobContext) => {
     const metadata = parseDispatchMetadata((ctx.job as { metadata?: string }).metadata);
     const participantIdentity = (ctx.job as { participant?: { identity?: string } }).participant?.identity;
-    const userId = metadata.user_id ?? participantIdentity ?? 'anonymous-user';
+    const targetParticipantIdentity = asNonEmptyString(metadata.participant_identity) ?? participantIdentity;
+    const userId = metadata.user_id ?? targetParticipantIdentity ?? 'anonymous-user';
     const language = metadata.language ?? 'hi-IN';
     const familyRepo = getFamilyRepository();
     const sessionStartedAt = Date.now();
@@ -709,7 +710,7 @@ export default defineAgent({
     const roomName = roomNameFromJob ?? (ctx.room as { name?: string } | undefined)?.name ?? 'unknown-room';
     const sessionId = metadata.session_id ?? `${roomName}:${userId}`;
     const bootId = asNonEmptyString(metadata.boot_id);
-    const conversationId = asNonEmptyString(metadata.conversation_id);
+    const initialConversationId = asNonEmptyString(metadata.conversation_id);
     const isManagedDeviceSession = isEsp32Session && !!metadata.session_id;
     let lastFinalTranscript: string | null = null;
     const MAX_AUTO_ADVANCE_TURNS = 6;
@@ -731,6 +732,7 @@ export default defineAgent({
     let latestAgentState: voice.AgentState = 'initializing';
     let latestUserState: voice.UserState = 'listening';
     let sessionRef: voice.AgentSession | null = null;
+    let agentReadyHeartbeatTimer: NodeJS.Timeout | null = null;
     let satsangAmbiencePublisher: SatsangAmbiencePublisher | null = null;
     let nudgePlaybackStatusTimer: NodeJS.Timeout | null = null;
     let activeNudgePlayback: QueuedNudgePlayback | null = null;
@@ -745,6 +747,7 @@ export default defineAgent({
     const turnLatencyById = new Map<number, TurnLatencyTrace>();
     const speechToTurnId = new Map<string, number>();
     let lifecycleCompletionSent = false;
+    let activeConversationId: string | null = initialConversationId ?? null;
 
     if (isEsp32Session) {
       logger.info('ESP32 session detected; disabling server-side background voice cancellation', {
@@ -759,7 +762,7 @@ export default defineAgent({
     }
 
     const publishDeviceControl = (
-      type: 'conversation_started' | 'conversation_ended' | 'conversation_error' | 'session_superseded',
+      type: 'agent_ready' | 'conversation_started' | 'conversation_ended' | 'conversation_error' | 'session_superseded',
       payload: Record<string, unknown>
     ) => {
       const localParticipant = ctx.room.localParticipant;
@@ -770,7 +773,7 @@ export default defineAgent({
         deviceSessionId: sessionId,
         sessionId,
         bootId,
-        conversationId,
+        ...(activeConversationId ? { conversationId: activeConversationId } : {}),
         ts: Date.now(),
         ...payload
       };
@@ -794,10 +797,17 @@ export default defineAgent({
       managedConversationIdleTimer = null;
     };
 
+    const clearAgentReadyHeartbeatTimer = (): void => {
+      if (!agentReadyHeartbeatTimer) return;
+      clearInterval(agentReadyHeartbeatTimer);
+      agentReadyHeartbeatTimer = null;
+    };
+
     const postDeviceSessionUpdate = async (
       path: 'conversation-active' | 'conversation-ended' | 'conversation-error' | 'user-activity',
       payload?: Record<string, unknown>
     ): Promise<void> => {
+      const conversationId = activeConversationId;
       if (!isManagedDeviceSession || !conversationId) return;
       const response = await fetch(`${getInternalApiBaseUrl()}/internal/device-conversations/${conversationId}/${path}`, {
         method: 'POST',
@@ -809,7 +819,55 @@ export default defineAgent({
       }
     };
 
+    const postDeviceAgentReady = async (payload?: Record<string, unknown>): Promise<void> => {
+      if (!isManagedDeviceSession || !bootId) return;
+      const response = await fetch(`${getInternalApiBaseUrl()}/internal/device-sessions/${sessionId}/agent-ready`, {
+        method: 'POST',
+        headers: buildInternalHeaders(),
+        body: JSON.stringify({
+          bootId,
+          readyAtMs: Date.now(),
+          participantIdentity: targetParticipantIdentity,
+          ...payload
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Internal device-session update failed (agent-ready): ${response.status}`);
+      }
+    };
+
+    const postDeviceAgentFailed = async (reason: string): Promise<void> => {
+      if (!isManagedDeviceSession || !bootId) return;
+      const response = await fetch(`${getInternalApiBaseUrl()}/internal/device-sessions/${sessionId}/agent-error`, {
+        method: 'POST',
+        headers: buildInternalHeaders(),
+        body: JSON.stringify({
+          bootId,
+          reason
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Internal device-session update failed (agent-error): ${response.status}`);
+      }
+    };
+
+    const startAgentReadyHeartbeat = (): void => {
+      clearAgentReadyHeartbeatTimer();
+      if (!isManagedDeviceSession) return;
+      const intervalMs = Math.max(5_000, env.DEVICE_AGENT_HEARTBEAT_MS);
+      agentReadyHeartbeatTimer = setInterval(() => {
+        void postDeviceAgentReady({ heartbeat: true }).catch((error) => {
+          logger.warn('Failed to heartbeat persistent device agent readiness', {
+            sessionId,
+            error: (error as Error).message
+          });
+        });
+      }, intervalMs);
+      agentReadyHeartbeatTimer.unref?.();
+    };
+
     const touchManagedConversationUserActivity = (activityAt: number): void => {
+      const conversationId = activeConversationId;
       if (!isManagedDeviceSession || !conversationId) return;
       void postDeviceSessionUpdate('user-activity', { activityAtMs: activityAt }).catch((error) => {
         logger.warn('Failed to update managed device conversation activity', {
@@ -822,6 +880,7 @@ export default defineAgent({
 
     const completeManagedDeviceConversation = (type: 'conversation_ended' | 'conversation_error', reason: string) => {
       clearManagedConversationIdleTimer();
+      const conversationId = activeConversationId;
       if (!isManagedDeviceSession || !conversationId || lifecycleCompletionSent) return;
       lifecycleCompletionSent = true;
       publishDeviceControl(type, { reason });
@@ -834,6 +893,7 @@ export default defineAgent({
           error: (error as Error).message
         });
       });
+      activeConversationId = null;
     };
 
     const managedConversationIdleTimeoutMs = isManagedDeviceSession
@@ -844,16 +904,15 @@ export default defineAgent({
       if (!isManagedDeviceSession || !sessionRef || lifecycleCompletionSent) return;
       logger.info('Managed device conversation idle timeout reached', {
         sessionId,
-        conversationId,
+        conversationId: activeConversationId,
         idleTimeoutMs: managedConversationIdleTimeoutMs
       });
       completeManagedDeviceConversation('conversation_ended', 'user_idle_timeout');
-      void sessionRef.close();
     };
 
     const scheduleManagedConversationIdleTimeout = (source: string): void => {
       clearManagedConversationIdleTimer();
-      if (!isManagedDeviceSession || !sessionRef || lifecycleCompletionSent || managedConversationIdleTimeoutMs <= 0) {
+      if (!isManagedDeviceSession || !sessionRef || !activeConversationId || lifecycleCompletionSent || managedConversationIdleTimeoutMs <= 0) {
         return;
       }
       if (latestUserState === 'speaking') return;
@@ -871,7 +930,7 @@ export default defineAgent({
       managedConversationIdleTimer.unref?.();
       logger.debug('Managed device conversation idle timeout armed', {
         sessionId,
-        conversationId,
+        conversationId: activeConversationId,
         source,
         idleTimeoutMs: managedConversationIdleTimeoutMs
       });
@@ -1688,7 +1747,7 @@ export default defineAgent({
     const toolDefs = createToolDefinitions(deps);
     const toolMap = buildToolMap(toolDefs, toolContext);
 
-    const agent = new voice.Agent({
+    const createAgent = () => new voice.Agent({
       instructions: buildSystemPrompt({
         userId,
         language,
@@ -1697,6 +1756,7 @@ export default defineAgent({
       }),
       tools: toolMap as Record<string, any>
     });
+    let agent = createAgent();
 
     const session = createVoiceSession({
       env,
@@ -1779,9 +1839,19 @@ export default defineAgent({
       }
       logger.info('User transcribed', {
         sessionId,
+        conversationId: activeConversationId,
         language: event.language,
         transcript: sanitizeForLog(transcript)
       });
+      if (isManagedDeviceSession && transcript.length === 0) {
+        logger.warn('stt_empty', {
+          sessionId,
+          conversationId: activeConversationId,
+          language: event.language,
+          userState: latestUserState,
+          agentState: latestAgentState
+        });
+      }
 
       if (transcript.length > 0) {
         const turnId = ++turnSeq;
@@ -2019,7 +2089,7 @@ export default defineAgent({
       clearManagedConversationIdleTimer();
       logger.error('Agent session error', {
         sessionId,
-        conversationId,
+        conversationId: activeConversationId,
         source: String((event.source as { constructor?: { name?: string } })?.constructor?.name ?? 'unknown'),
         error: (event.error as Error)?.message ?? String(event.error)
       });
@@ -2027,11 +2097,20 @@ export default defineAgent({
         'conversation_error',
         (event.error as Error)?.message ?? 'agent_session_error'
       );
-      void sessionRef?.close();
+      void postDeviceAgentFailed((event.error as Error)?.message ?? 'agent_session_error').catch((error) => {
+        logger.warn('Failed to mark persistent device agent failed', {
+          sessionId,
+          error: (error as Error).message
+        });
+      });
+      if (!isManagedDeviceSession) {
+        void sessionRef?.close();
+      }
     });
 
     session.on(voice.AgentSessionEventTypes.Close, (event) => {
       clearManagedConversationIdleTimer();
+      clearAgentReadyHeartbeatTimer();
       clearSpeechStuckTimer();
       clearNudgePlaybackStatusTimer();
       activeNudgePlayback = null;
@@ -2086,8 +2165,69 @@ export default defineAgent({
     await ctx.connect();
 
     ctx.room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+      if (topic === DEVICE_CONTROL_TOPIC) {
+        try {
+          const decoded = new TextDecoder().decode(payload);
+          const packet = JSON.parse(decoded) as {
+            type?: string;
+            action?: string;
+            sessionId?: string;
+            deviceSessionId?: string;
+            bootId?: string;
+            conversationId?: string;
+            reason?: string;
+          };
+          const messageType = packet.action ?? packet.type;
+          const packetSessionId = packet.deviceSessionId ?? packet.sessionId;
+          if (packetSessionId && packetSessionId !== sessionId) return;
+          if (packet.bootId && bootId && packet.bootId !== bootId) return;
+
+          if (messageType === 'conversation_started') {
+            const nextConversationId = asNonEmptyString(packet.conversationId);
+            if (!nextConversationId) {
+              logger.warn('Ignoring persistent conversation start without conversationId', { sessionId });
+              return;
+            }
+            activeConversationId = nextConversationId;
+            lifecycleCompletionSent = false;
+            lastFinalTranscript = null;
+            lastUserSpeechStoppedAt = null;
+            agent = createAgent();
+            sessionRef?.updateAgent(agent);
+            logger.info('Managed device logical conversation started', {
+              sessionId,
+              conversationId: activeConversationId
+            });
+            void postDeviceSessionUpdate('conversation-active').catch((error) => {
+              logger.warn('Failed to mark managed device conversation active', {
+                sessionId,
+                conversationId: activeConversationId,
+                error: (error as Error).message
+              });
+            });
+            scheduleManagedConversationIdleTimeout('conversation_started');
+            return;
+          }
+
+          if (messageType === 'conversation_ended' || messageType === 'conversation_error') {
+            const packetConversationId = asNonEmptyString(packet.conversationId);
+            if (packetConversationId && activeConversationId && packetConversationId !== activeConversationId) return;
+            completeManagedDeviceConversation(
+              messageType === 'conversation_ended' ? 'conversation_ended' : 'conversation_error',
+              asNonEmptyString(packet.reason) ?? messageType
+            );
+          }
+        } catch (error) {
+          logger.debug('Failed to parse device-control data packet', {
+            sessionId,
+            error: (error as Error).message
+          });
+        }
+        return;
+      }
+
       if (topic !== TOOL_EVENT_TOPIC) return;
-      if (participantIdentity && participant?.identity && participant.identity !== participantIdentity) return;
+      if (targetParticipantIdentity && participant?.identity && participant.identity !== targetParticipantIdentity) return;
       try {
         const decoded = new TextDecoder().decode(payload);
         const packet = JSON.parse(decoded) as NudgePlaybackStatusPacket;
@@ -2114,6 +2254,8 @@ export default defineAgent({
         inputOptions: {
           audioEnabled: true,
           textEnabled: true,
+          closeOnDisconnect: true,
+          ...(targetParticipantIdentity ? { participantIdentity: targetParticipantIdentity } : {}),
           ...(isEsp32Session ? {} : { noiseCancellation: BackgroundVoiceCancellation() })
         },
         outputOptions: {
@@ -2123,12 +2265,26 @@ export default defineAgent({
       });
 
       if (isManagedDeviceSession) {
-        publishDeviceControl('conversation_started', {});
-        await postDeviceSessionUpdate('conversation-active');
-        scheduleManagedConversationIdleTimeout('session_started');
+        publishDeviceControl('agent_ready', {
+          agentJobId: (ctx.job as { id?: string }).id,
+          participantIdentity: targetParticipantIdentity
+        });
+        await postDeviceAgentReady({ agentJobId: (ctx.job as { id?: string }).id });
+        startAgentReadyHeartbeat();
+        if (activeConversationId) {
+          publishDeviceControl('conversation_started', {});
+          await postDeviceSessionUpdate('conversation-active');
+          scheduleManagedConversationIdleTimeout('session_started');
+        }
       }
     } catch (error) {
       completeManagedDeviceConversation('conversation_error', (error as Error).message || 'session_start_failed');
+      void postDeviceAgentFailed((error as Error).message || 'session_start_failed').catch((postError) => {
+        logger.warn('Failed to mark persistent device agent failed after startup error', {
+          sessionId,
+          error: (postError as Error).message
+        });
+      });
       throw error;
     }
 

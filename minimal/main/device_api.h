@@ -90,6 +90,7 @@ esp_err_t mitr_device_send_telemetry(
 esp_err_t mitr_device_notify_wake_detected(
     const char *session_id,
     const char *boot_id,
+    const char *wake_id,
     const char *model_name,
     const char *phrase,
     float score,

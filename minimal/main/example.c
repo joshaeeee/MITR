@@ -35,6 +35,7 @@ typedef struct {
     mitr_device_token_response_t token;
     livekit_connection_state_t connection_state;
     bool agent_joined;
+    bool agent_ready;
     bool session_end_sent;
     bool restart_requested;
     bool last_boot_ok;
@@ -72,6 +73,16 @@ static void generate_boot_id(char *dest, size_t capacity)
     uint32_t hi = esp_random();
     uint32_t lo = esp_random();
     snprintf(dest, capacity, "%08" PRIx32 "%08" PRIx32, hi, lo);
+}
+
+static void generate_wake_id(char *dest, size_t capacity)
+{
+    if (!dest || capacity == 0) {
+        return;
+    }
+    uint32_t hi = esp_random();
+    uint32_t lo = esp_random();
+    snprintf(dest, capacity, "wake-%08" PRIx32 "%08" PRIx32, hi, lo);
 }
 
 static uint32_t callback_room_generation(void *ctx)
@@ -293,11 +304,13 @@ static void set_conversation_active(bool active, const char *reason, bool play_c
     if (!active) {
         clear_current_conversation();
     }
-    media_set_mic_muted(!active);
-    mitr_boot_feedback_set_state(active ? MITR_BOOT_STATE_ACTIVE_SESSION : MITR_BOOT_STATE_READY_CONNECTED);
     if (active && play_chime) {
+        report_telemetry("chime_started", "info", reason ? reason : "wake_detected");
         sounds_play_chime();
     }
+    media_set_mic_muted(!active);
+    report_telemetry(active ? "mic_unmuted" : "mic_muted", "info", reason ? reason : "");
+    mitr_boot_feedback_set_state(active ? MITR_BOOT_STATE_ACTIVE_SESSION : MITR_BOOT_STATE_READY_CONNECTED);
     publish_device_event(active ? "conversation_started" : "conversation_ended", reason);
     report_telemetry(active ? "conversation_started" : "conversation_ended", "info", reason ? reason : "");
 }
@@ -326,16 +339,28 @@ void on_wake_detected(void)
         return;
     }
 
+    if (!session.agent_ready) {
+        ESP_LOGW(TAG, "Ignoring wake because the persistent agent is not ready yet");
+        report_telemetry("wake_ignored", "warn", "agent_not_ready");
+        wake_word_rearm();
+        return;
+    }
+
     ESP_LOGI(TAG, "Wake word detected locally; opening conversation (model=%s, phrase=%s)",
              model_name ? model_name : "unknown",
              phrase ? phrase : "unknown");
+    report_telemetry("wake_detected", "info", phrase ? phrase : "wake_detected");
     session.wake_pending = true;
     set_conversation_active(true, phrase, true);
 
+    char wake_id[48] = {0};
+    generate_wake_id(wake_id, sizeof(wake_id));
     char conversation_id[64] = {0};
+    report_telemetry("wake_http_start", "info", "wake_detected");
     esp_err_t err = mitr_device_notify_wake_detected(
         session.token.session_id,
         session.boot_id,
+        wake_id,
         model_name ? model_name : "unknown",
         phrase,
         WAKEWORD_DETECTION_SCORE,
@@ -354,6 +379,7 @@ void on_wake_detected(void)
         wake_word_rearm();
         return;
     }
+    report_telemetry("wake_http_done", "info", "accepted");
     ESP_LOGI(TAG, "Wake notification accepted; conversation_id=%s",
              session.current_conversation_id[0] != '\0' ? session.current_conversation_id : "(pending)");
 }
@@ -395,6 +421,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             break;
         case LIVEKIT_CONNECTION_STATE_FAILED:
             session.conversation_active = false;
+            session.agent_ready = false;
             clear_current_conversation();
             media_set_mic_muted(true);
             if (session.last_failure_reason[0] == '\0') {
@@ -407,6 +434,7 @@ static void on_state_changed(livekit_connection_state_t state, void *ctx)
             break;
         case LIVEKIT_CONNECTION_STATE_DISCONNECTED:
             session.conversation_active = false;
+            session.agent_ready = false;
             clear_current_conversation();
             media_set_mic_muted(true);
             if (session.last_failure_reason[0] == '\0') {
@@ -449,6 +477,12 @@ static void on_participant_info(const livekit_participant_info_t *info, void *ct
     }
 
     session.agent_joined = joined;
+    if (!joined) {
+        session.agent_ready = false;
+        if (!session.restart_requested) {
+            request_session_restart("agent_left");
+        }
+    }
     ESP_LOGI(TAG, "Agent participant %s the room", joined ? "joined" : "left");
     publish_device_event(joined ? "agent_joined" : "agent_left", joined ? "agent_joined" : "agent_left");
     report_telemetry(joined ? "agent_joined" : "agent_left", "info", joined ? "Agent participant active" : "Agent participant left");
@@ -482,6 +516,14 @@ static void handle_device_control_message(const cJSON *root)
     if (conversation_id_str && session.current_conversation_id[0] != '\0' &&
         strcmp(session.current_conversation_id, conversation_id_str) != 0) {
         ESP_LOGW(TAG, "Ignoring control message for stale conversation %s", conversation_id_str);
+        return;
+    }
+
+    if (strcmp(message_type, "agent_ready") == 0) {
+        session.agent_ready = true;
+        ESP_LOGI(TAG, "Control: agent_ready session_id=%s", session.token.session_id ? session.token.session_id : "(none)");
+        publish_device_event("agent_ready", "agent_ready");
+        report_telemetry("agent_ready", "info", "Persistent agent is ready");
         return;
     }
 
@@ -583,7 +625,7 @@ static void rpc_get_device_status(const livekit_rpc_invocation_t *invocation, vo
     snprintf(
         payload,
         sizeof(payload),
-        "{\"deviceId\":\"%s\",\"userId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"language\":\"%s\",\"roomName\":\"%s\",\"connectionState\":\"%s\",\"conversationActive\":%s,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\"}",
+        "{\"deviceId\":\"%s\",\"userId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"language\":\"%s\",\"roomName\":\"%s\",\"connectionState\":\"%s\",\"agentReady\":%s,\"conversationActive\":%s,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\"}",
         session.token.device_id ? session.token.device_id : "",
         session.token.user_id ? session.token.user_id : "",
         mitr_device_firmware_version(),
@@ -591,6 +633,7 @@ static void rpc_get_device_status(const livekit_rpc_invocation_t *invocation, vo
         mitr_device_language(),
         session.token.room_name ? session.token.room_name : "",
         livekit_connection_state_str(session.connection_state),
+        session.agent_ready ? "true" : "false",
         session.conversation_active ? "true" : "false",
         session.reconnect_attempt_count,
         session.last_failure_reason,
@@ -605,12 +648,13 @@ static void rpc_get_diagnostics(const livekit_rpc_invocation_t *invocation, void
     snprintf(
         payload,
         sizeof(payload),
-        "{\"deviceId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"connectionState\":\"%s\",\"agentJoined\":%s,\"conversationActive\":%s,\"speakerMuted\":%s,\"speakerVolume\":%d,\"wifiRssiDbm\":%d,\"freeHeapBytes\":%u,\"freePsramBytes\":%u,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"lastEndReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\",\"otaLastError\":\"%s\",\"otaPendingVerify\":%s,\"otaValidationHeartbeats\":%d}",
+        "{\"deviceId\":\"%s\",\"firmwareVersion\":\"%s\",\"hardwareRev\":\"%s\",\"connectionState\":\"%s\",\"agentJoined\":%s,\"agentReady\":%s,\"conversationActive\":%s,\"speakerMuted\":%s,\"speakerVolume\":%d,\"wifiRssiDbm\":%d,\"freeHeapBytes\":%u,\"freePsramBytes\":%u,\"reconnectAttemptCount\":%d,\"lastFailureReason\":\"%s\",\"lastEndReason\":\"%s\",\"otaState\":\"%s\",\"otaTargetVersion\":\"%s\",\"otaLastError\":\"%s\",\"otaPendingVerify\":%s,\"otaValidationHeartbeats\":%d}",
         session.token.device_id ? session.token.device_id : mitr_device_device_id(),
         mitr_device_firmware_version(),
         mitr_device_hardware_rev(),
         livekit_connection_state_str(session.connection_state),
         session.agent_joined ? "true" : "false",
+        session.agent_ready ? "true" : "false",
         session.conversation_active ? "true" : "false",
         media_is_output_muted() ? "true" : "false",
         media_get_output_volume(),
@@ -651,6 +695,7 @@ static void cleanup_room(void)
 
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
     session.agent_joined = false;
+    session.agent_ready = false;
     session.conversation_active = false;
     clear_current_conversation();
     session.session_end_sent = false;
@@ -752,6 +797,7 @@ bool join_room(void)
     session.last_failure_reason[0] = '\0';
     session.last_end_reason[0] = '\0';
     session.connection_state = LIVEKIT_CONNECTION_STATE_DISCONNECTED;
+    session.agent_ready = false;
     session.conversation_active = false;
     clear_current_conversation();
     if (session.boot_id[0] == '\0') {
@@ -791,6 +837,29 @@ bool session_is_active(void)
            !session.restart_requested &&
            session.connection_state != LIVEKIT_CONNECTION_STATE_FAILED &&
            session.connection_state != LIVEKIT_CONNECTION_STATE_DISCONNECTED;
+}
+
+bool session_is_agent_ready(void)
+{
+    return session_is_active() && session.agent_ready;
+}
+
+bool session_wait_for_agent_ready(int timeout_ms)
+{
+    const int64_t deadline_ms = now_ms() + timeout_ms;
+    while (now_ms() < deadline_ms) {
+        if (session_is_agent_ready()) {
+            return true;
+        }
+        if (!session_is_active()) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    copy_string(session.last_failure_reason, sizeof(session.last_failure_reason), "agent_ready_timeout");
+    ESP_LOGW(TAG, "Timed out waiting for persistent agent readiness");
+    return false;
 }
 
 bool session_is_conversation_active(void)

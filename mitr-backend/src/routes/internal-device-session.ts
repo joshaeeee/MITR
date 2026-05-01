@@ -14,6 +14,7 @@ const conversationParamsSchema = z.object({
 
 const wakeDetectedSchema = z.object({
   bootId: z.string().min(8),
+  wakeId: z.string().min(1).optional(),
   modelName: z.string().min(1),
   phrase: z.string().min(1),
   score: z.number(),
@@ -30,6 +31,18 @@ const conversationErrorSchema = z.object({
 
 const conversationUserActivitySchema = z.object({
   activityAtMs: z.number().int().optional()
+});
+
+const agentReadySchema = z.object({
+  bootId: z.string().min(8),
+  agentJobId: z.string().optional(),
+  participantIdentity: z.string().optional(),
+  readyAtMs: z.number().int().optional()
+}).passthrough();
+
+const agentErrorSchema = z.object({
+  bootId: z.string().min(8),
+  reason: z.string().min(1)
 });
 
 export const registerInternalDeviceSessionRoutes = (app: FastifyInstance): void => {
@@ -81,6 +94,28 @@ export const registerInternalDeviceSessionRoutes = (app: FastifyInstance): void 
     } catch (error) {
       return reply.status(500).send({ error: (error as Error).message });
     }
+  });
+
+  app.post('/internal/device-sessions/:sessionId/agent-ready', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params ?? {});
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    const body = agentReadySchema.safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
+
+    const session = await control.markAgentReady(params.data.sessionId, body.data.bootId, body.data);
+    if (!session) return reply.status(404).send({ error: 'Device session not found' });
+    return reply.send({ ok: true, session });
+  });
+
+  app.post('/internal/device-sessions/:sessionId/agent-error', { preHandler: requireInternalServiceAuth }, async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params ?? {});
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    const body = agentErrorSchema.safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
+
+    const session = await control.markAgentFailed(params.data.sessionId, body.data.bootId, body.data.reason);
+    if (!session) return reply.status(404).send({ error: 'Device session not found' });
+    return reply.send({ ok: true, session });
   });
 
   app.post('/internal/device-conversations/:conversationId/conversation-active', { preHandler: requireInternalServiceAuth }, async (request, reply) => {

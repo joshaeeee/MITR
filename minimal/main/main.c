@@ -28,6 +28,7 @@ static const int BOOTSTRAP_RETRY_SEC = 10;
 static const int NETWORK_RETRY_SEC = 30;
 static const int CONFIG_RETRY_SEC = 60;
 static const int ROOM_RECONNECT_GRACE_MS = 1000;
+static const int AGENT_READY_TIMEOUT_MS = 30000;
 
 static int64_t now_ms(void)
 {
@@ -104,6 +105,22 @@ static void connect_room_blocking(void)
         ESP_LOGW(TAG, "[ROOM] join_room() failed; retry #%d in %d s", attempt + 1, delay);
         attempt++;
         sleep_seconds(delay);
+    }
+}
+
+static void connect_room_and_agent_blocking(void)
+{
+    while (true) {
+        connect_room_blocking();
+        if (session_wait_for_agent_ready(AGENT_READY_TIMEOUT_MS)) {
+            return;
+        }
+
+        ESP_LOGW(TAG, "[ROOM] Persistent agent was not ready; rebuilding room");
+        leave_room();
+        vTaskDelay(pdMS_TO_TICKS(ROOM_RECONNECT_GRACE_MS));
+        mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
+        sleep_seconds(ROOM_RETRY_BACKOFFS_SEC[0]);
     }
 }
 
@@ -221,11 +238,12 @@ static void mitr_device_task(void *arg)
         ESP_LOGW(TAG, "Preconnect capture failed to start; wake detector may not receive audio until room capture starts");
     }
 
-    start_wake_detection(wake_event_group, wake_word_ready);
-    connect_room_blocking();
+    connect_room_and_agent_blocking();
     mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
+    log_boot_state("agent_ready_muted");
     log_boot_state("ready_connected");
     esp_log_level_set("*", ESP_LOG_INFO);
+    start_wake_detection(wake_event_group, wake_word_ready);
 
     while (true) {
         EventBits_t wake_bits = xEventGroupWaitBits(
@@ -240,7 +258,7 @@ static void mitr_device_task(void *arg)
                 leave_room();
                 vTaskDelay(pdMS_TO_TICKS(ROOM_RECONNECT_GRACE_MS));
                 mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
-                connect_room_blocking();
+                connect_room_and_agent_blocking();
                 if (!session_is_conversation_active()) {
                     mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
                 }
@@ -255,7 +273,7 @@ static void mitr_device_task(void *arg)
             leave_room();
             vTaskDelay(pdMS_TO_TICKS(ROOM_RECONNECT_GRACE_MS));
             mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
-            connect_room_blocking();
+            connect_room_and_agent_blocking();
             start_wake_detection(wake_event_group, wake_word_ready);
             if (!session_is_conversation_active()) {
                 mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);

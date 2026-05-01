@@ -13,14 +13,22 @@ import {
   firmwareReleases
 } from '../../db/schema.js';
 import { getRequiredLivekitConfig } from '../../config/livekit-config.js';
+import { env } from '../../config/env.js';
 import { getFamilyRepository } from '../family/family-repository.js';
 import { publishDeviceSessionEvent } from './device-session-events.js';
-import { detachDeviceParticipant, notifyAndDetachSupersededSession, type DeviceRoomSessionTarget } from './livekit-device-room-control.js';
+import {
+  detachDeviceParticipant,
+  notifyAndDetachSupersededSession,
+  sendDeviceControlPacket,
+  type DeviceRoomSessionTarget
+} from './livekit-device-room-control.js';
 import { logger } from '../../lib/logger.js';
+import { decidePersistentAgentDispatch, normalizeWakeId } from './device-agent-lifecycle.js';
 
 type DevicePairingStatus = 'pending_device' | 'bootstrapping' | 'completed' | 'expired' | 'revoked';
 export type DeviceConversationState = 'idle' | 'starting' | 'active' | 'ending';
 export type DeviceConversationStatus = 'opening' | 'active' | 'ended' | 'errored' | 'abandoned';
+export type DeviceAgentState = 'not_dispatched' | 'dispatching' | 'ready' | 'failed' | 'ended';
 
 export interface DeviceAuthRecord {
   id: string;
@@ -50,6 +58,12 @@ export interface DeviceSessionRecord {
   hardwareRev: string | null;
   status: 'issued' | 'active' | 'ended';
   conversationState: DeviceConversationState;
+  agentState: DeviceAgentState;
+  agentDispatchId: string | null;
+  agentReadyAt: number | null;
+  agentLastSeenAt: number | null;
+  agentRestartCount: number;
+  agentLastError: string | null;
   metadata: Record<string, unknown>;
   startedAt: number;
   lastHeartbeatAt: number;
@@ -83,6 +97,9 @@ export interface ClaimedDeviceSummary {
     bootId: string;
     status: 'issued' | 'active' | 'ended';
     conversationState: DeviceConversationState;
+    agentState: DeviceAgentState;
+    agentReadyAt: number | null;
+    agentLastSeenAt: number | null;
     startedAt: number;
     lastHeartbeatAt: number;
     lastWakeDetectedAt: number | null;
@@ -109,6 +126,7 @@ export interface DeviceConversationRecord {
   wakewordModel: string | null;
   wakewordPhrase: string | null;
   wakewordScore: string | null;
+  wakeId: string | null;
 }
 
 export interface DevicePairingSummary {
@@ -236,6 +254,12 @@ export class DeviceControlService {
       hardwareRev: row.hardwareRev,
       status: row.status,
       conversationState: row.conversationState,
+      agentState: row.agentState,
+      agentDispatchId: row.agentDispatchId ?? null,
+      agentReadyAt: toMillis(row.agentReadyAt),
+      agentLastSeenAt: toMillis(row.agentLastSeenAt),
+      agentRestartCount: row.agentRestartCount,
+      agentLastError: row.agentLastError ?? null,
       metadata: normalizeMetadata(row.metadataJson),
       startedAt: row.startedAt.getTime(),
       lastHeartbeatAt: row.lastHeartbeatAt.getTime(),
@@ -263,8 +287,18 @@ export class DeviceControlService {
       lastUserActivityAt: toMillis(row.lastUserActivityAt),
       wakewordModel: row.wakewordModel ?? null,
       wakewordPhrase: row.wakewordPhrase ?? null,
-      wakewordScore: row.wakewordScore ?? null
+      wakewordScore: row.wakewordScore ?? null,
+      wakeId: row.wakeId ?? null
     };
+  }
+
+  private async getConversationByWakeId(sessionId: string, wakeId: string): Promise<typeof deviceConversations.$inferSelect | null> {
+    const [conversation] = await db
+      .select()
+      .from(deviceConversations)
+      .where(and(eq(deviceConversations.deviceSessionId, sessionId), eq(deviceConversations.wakeId, wakeId)))
+      .limit(1);
+    return conversation ?? null;
   }
 
   private async publishSessionState(row: typeof deviceSessions.$inferSelect, type: 'session_upserted' | 'session_ended' | 'conversation_state_changed'): Promise<void> {
@@ -412,6 +446,9 @@ export class DeviceControlService {
               bootId: lastSession.bootId,
               status: lastSession.status,
               conversationState: lastSession.conversationState,
+              agentState: lastSession.agentState,
+              agentReadyAt: toMillis(lastSession.agentReadyAt),
+              agentLastSeenAt: toMillis(lastSession.agentLastSeenAt),
               startedAt: lastSession.startedAt.getTime(),
               lastHeartbeatAt: lastSession.lastHeartbeatAt.getTime(),
               lastWakeDetectedAt: toMillis(lastSession.lastWakeDetectedAt),
@@ -455,6 +492,7 @@ export class DeviceControlService {
       .update(deviceSessions)
       .set({
         status: 'ended',
+        agentState: 'ended',
         endedAt: now,
         endReason: 'device_revoked'
       })
@@ -954,6 +992,7 @@ export class DeviceControlService {
             .set({
               status: 'ended',
               conversationState: 'idle',
+              agentState: 'ended',
               endedAt: new Date(),
               endReason: 'session_superseded',
               lastConversationEndReason: 'session_superseded',
@@ -1045,6 +1084,18 @@ export class DeviceControlService {
       mark('notify_detach_dispatched');
     }
 
+    const dispatchMetadata = {
+      ...metadataBase,
+      session_id: sessionId,
+      boot_id: bootId,
+      participant_identity: identity
+    };
+
+    if (env.DEVICE_PERSISTENT_AGENT_SESSION) {
+      await this.ensurePersistentAgentDispatched(sessionId, dispatchMetadata);
+      mark('agent_dispatch');
+    }
+
     const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
       identity,
       ttl: livekit.tokenTtlSec
@@ -1071,12 +1122,6 @@ export class DeviceControlService {
       slow: totalMs > 500,
       stages
     }));
-
-    const dispatchMetadata = {
-      ...metadataBase,
-      session_id: sessionId,
-      boot_id: bootId
-    };
 
     return {
       sessionId,
@@ -1196,7 +1241,7 @@ export class DeviceControlService {
     return row ? this.sessionRecord(row) : null;
   }
 
-  async dispatchAgentToPersistentRoom(sessionId: string, metadata: Record<string, unknown>): Promise<void> {
+  async dispatchAgentToPersistentRoom(sessionId: string, metadata: Record<string, unknown>): Promise<string | null> {
     const session = await this.getSessionRowById(sessionId);
     if (!session) {
       throw new Error('Device session not found');
@@ -1208,9 +1253,111 @@ export class DeviceControlService {
     }
 
     const dispatchClient = new AgentDispatchClient(livekit.url, livekit.apiKey, livekit.apiSecret);
-    await dispatchClient.createDispatch(session.roomName, livekit.agentName, {
+    const dispatch = await dispatchClient.createDispatch(session.roomName, livekit.agentName, {
       metadata: JSON.stringify(metadata)
+    }) as { id?: string; dispatchId?: string } | undefined;
+    return dispatch?.id ?? dispatch?.dispatchId ?? null;
+  }
+
+  async ensurePersistentAgentDispatched(sessionId: string, metadata: Record<string, unknown>): Promise<void> {
+    const session = await this.getSessionRowById(sessionId);
+    if (!session) {
+      throw new Error('Device session not found');
+    }
+    const decision = decidePersistentAgentDispatch({
+      agentState: session.agentState,
+      agentLastSeenAtMs: toMillis(session.agentLastSeenAt),
+      nowMs: Date.now(),
+      readyTimeoutMs: env.DEVICE_AGENT_READY_TIMEOUT_MS,
+      staleMs: env.DEVICE_AGENT_STALE_MS
     });
+    if (!decision.shouldDispatch) {
+      return;
+    }
+
+    await db
+      .update(deviceSessions)
+      .set({
+        agentState: 'dispatching',
+        agentLastError: null,
+        agentLastSeenAt: new Date(),
+        agentRestartCount:
+          decision.reason === 'not_dispatched'
+            ? session.agentRestartCount
+            : sql`${deviceSessions.agentRestartCount} + 1`
+      })
+      .where(eq(deviceSessions.id, sessionId));
+
+    try {
+      const dispatchId = await this.dispatchAgentToPersistentRoom(sessionId, metadata);
+      await db
+        .update(deviceSessions)
+        .set({
+          agentState: 'dispatching',
+          agentDispatchId: dispatchId,
+          agentLastSeenAt: new Date(),
+          agentLastError: null,
+          metadataJson: {
+            ...normalizeMetadata(session.metadataJson),
+            last_agent_dispatch_reason: decision.reason
+          }
+        })
+        .where(eq(deviceSessions.id, sessionId));
+    } catch (error) {
+      await db
+        .update(deviceSessions)
+        .set({
+          agentState: 'failed',
+          agentLastError: (error as Error).message,
+          agentLastSeenAt: new Date(),
+          agentRestartCount: sql`${deviceSessions.agentRestartCount} + 1`
+        })
+        .where(eq(deviceSessions.id, sessionId));
+      throw error;
+    }
+  }
+
+  async markAgentReady(sessionId: string, bootId: string, payload: Record<string, unknown> = {}): Promise<DeviceSessionRecord | null> {
+    const session = await this.getSessionRowById(sessionId);
+    if (!session || session.bootId !== bootId) return null;
+    const now = new Date();
+    const [updated] = await db
+      .update(deviceSessions)
+      .set({
+        agentState: 'ready',
+        agentReadyAt: session.agentReadyAt ?? now,
+        agentLastSeenAt: now,
+        agentLastError: null,
+        metadataJson: {
+          ...normalizeMetadata(session.metadataJson),
+          last_agent_ready_payload: payload
+        }
+      })
+      .where(eq(deviceSessions.id, sessionId))
+      .returning();
+    if (updated) {
+      await this.publishSessionState(updated, 'session_upserted');
+    }
+    return updated ? this.sessionRecord(updated) : null;
+  }
+
+  async markAgentFailed(sessionId: string, bootId: string, reason: string): Promise<DeviceSessionRecord | null> {
+    const session = await this.getSessionRowById(sessionId);
+    if (!session || session.bootId !== bootId) return null;
+    const [updated] = await db
+      .update(deviceSessions)
+      .set({
+        agentState: 'failed',
+        agentLastSeenAt: new Date(),
+        agentLastError: reason,
+        agentRestartCount: sql`${deviceSessions.agentRestartCount} + 1`
+      })
+      .where(eq(deviceSessions.id, sessionId))
+      .returning();
+    if (updated) {
+      await this.publishSessionState(updated, 'session_upserted');
+    }
+    return updated ? this.sessionRecord(updated) : null;
   }
 
   async handleWakeDetected(input: {
@@ -1220,6 +1367,7 @@ export class DeviceControlService {
     phrase: string;
     score: number;
     detectedAtMs: number;
+    wakeId?: string;
   }): Promise<{
     accepted: boolean;
     reason?: string;
@@ -1240,6 +1388,16 @@ export class DeviceControlService {
     if (!['issued', 'active'].includes(session.status)) {
       return { accepted: false, reason: 'session_not_live', session: this.sessionRecord(session) };
     }
+    const wakeId = normalizeWakeId(input.wakeId) ?? randomUUID();
+    const duplicateConversation = await this.getConversationByWakeId(input.sessionId, wakeId);
+    if (duplicateConversation) {
+      return {
+        accepted: true,
+        session: this.sessionRecord(session),
+        conversationId: duplicateConversation.id
+      };
+    }
+
     const openConversation = await this.getOpenConversationForSession(input.sessionId);
     if (openConversation) {
       return {
@@ -1274,41 +1432,70 @@ export class DeviceControlService {
       state: 'opening',
       requestedAt: wakeDetectedAt,
       lastUserActivityAt: wakeDetectedAt,
+      wakeId,
       wakewordModel: input.modelName,
       wakewordPhrase: input.phrase,
       wakewordScore: String(input.score)
     });
 
-    try {
-      await this.dispatchAgentToPersistentRoom(input.sessionId, {
-        ...normalizeMetadata(session.metadataJson),
-        session_id: input.sessionId,
-        boot_id: session.bootId,
-        conversation_id: conversationId,
-        last_wakeword_phrase: input.phrase
+    if (env.DEVICE_PERSISTENT_AGENT_SESSION) {
+      await sendDeviceControlPacket(
+        {
+          sessionId: session.id,
+          roomName: session.roomName,
+          participantIdentity: session.participantIdentity,
+          bootId: session.bootId
+        },
+        'conversation_started',
+        {
+          conversationId,
+          wakeId,
+          wakeword: input.phrase,
+          modelName: input.modelName,
+          score: input.score,
+          detectedAtMs: input.detectedAtMs
+        },
+        { destinationIdentities: null }
+      ).catch((error) => {
+        logger.warn('Failed to broadcast persistent conversation start packet', {
+          sessionId: input.sessionId,
+          conversationId,
+          error: (error as Error).message
+        });
       });
-    } catch (error) {
-      await db
-        .update(deviceSessions)
-        .set({
-          conversationState: 'idle',
-          lastConversationEndReason: 'dispatch_failed',
-          conversationEndedAt: new Date()
-        })
-        .where(eq(deviceSessions.id, input.sessionId));
-      await db
-        .update(deviceConversations)
-        .set({
-          state: 'errored',
-          endedAt: new Date(),
-          endReason: 'dispatch_failed'
-        })
-        .where(eq(deviceConversations.id, conversationId));
-      const failedSession = await this.getSessionRowById(input.sessionId);
-      if (failedSession) {
-        await this.publishSessionState(failedSession, 'conversation_state_changed');
+    } else {
+      try {
+        await this.dispatchAgentToPersistentRoom(input.sessionId, {
+          ...normalizeMetadata(session.metadataJson),
+          session_id: input.sessionId,
+          boot_id: session.bootId,
+          conversation_id: conversationId,
+          participant_identity: session.participantIdentity,
+          last_wakeword_phrase: input.phrase
+        });
+      } catch (error) {
+        await db
+          .update(deviceSessions)
+          .set({
+            conversationState: 'idle',
+            lastConversationEndReason: 'dispatch_failed',
+            conversationEndedAt: new Date()
+          })
+          .where(eq(deviceSessions.id, input.sessionId));
+        await db
+          .update(deviceConversations)
+          .set({
+            state: 'errored',
+            endedAt: new Date(),
+            endReason: 'dispatch_failed'
+          })
+          .where(eq(deviceConversations.id, conversationId));
+        const failedSession = await this.getSessionRowById(input.sessionId);
+        if (failedSession) {
+          await this.publishSessionState(failedSession, 'conversation_state_changed');
+        }
+        throw error;
       }
-      throw error;
     }
 
     const updated = await this.getSessionRowById(input.sessionId);
@@ -1615,6 +1802,7 @@ export class DeviceControlService {
       .set({
         status: 'ended',
         conversationState: 'idle',
+        agentState: 'ended',
         conversationEndedAt: new Date(),
         lastConversationEndReason: input.reason?.trim() || 'device_end',
         endedAt: new Date(),

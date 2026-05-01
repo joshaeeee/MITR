@@ -462,6 +462,15 @@ export const deviceSessions = pgTable('device_sessions', {
     .$type<'idle' | 'starting' | 'active' | 'ending'>()
     .default('idle')
     .notNull(),
+  agentState: text('agent_state')
+    .$type<'not_dispatched' | 'dispatching' | 'ready' | 'failed' | 'ended'>()
+    .default('not_dispatched')
+    .notNull(),
+  agentDispatchId: text('agent_dispatch_id'),
+  agentReadyAt: timestamp('agent_ready_at', { withTimezone: true }),
+  agentLastSeenAt: timestamp('agent_last_seen_at', { withTimezone: true }),
+  agentRestartCount: integer('agent_restart_count').default(0).notNull(),
+  agentLastError: text('agent_last_error'),
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
@@ -496,11 +505,13 @@ export const deviceConversations = pgTable('device_conversations', {
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
   lastUserActivityAt: timestamp('last_user_activity_at', { withTimezone: true }),
+  wakeId: text('wake_id'),
   wakewordModel: text('wakeword_model'),
   wakewordPhrase: text('wakeword_phrase'),
   wakewordScore: text('wakeword_score')
 }, (table) => ({
   sessionRequestedIdx: index('device_conversations_session_requested_idx').on(table.deviceSessionId, table.requestedAt),
+  sessionWakeIdUnique: uniqueIndex('device_conversations_session_wake_id_uq').on(table.deviceSessionId, table.wakeId),
   deviceStateRequestedIdx: index('device_conversations_device_state_requested_idx').on(table.deviceId, table.state, table.requestedAt)
 }));
 
