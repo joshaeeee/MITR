@@ -5,6 +5,7 @@ import { logger } from '../../lib/logger.js';
 const DEVICE_CONTROL_TOPIC = 'mitr.device_control';
 
 type DeviceControlPacketType =
+  | 'agent_ready'
   | 'conversation_started'
   | 'conversation_ended'
   | 'conversation_error'
@@ -30,7 +31,8 @@ const buildRoomServiceClient = (): RoomServiceClient | null => {
 export const sendDeviceControlPacket = async (
   target: DeviceRoomSessionTarget,
   type: DeviceControlPacketType,
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  options: { destinationIdentities?: string[] | null } = {}
 ): Promise<void> => {
   const client = buildRoomServiceClient();
   if (!client) return;
@@ -51,7 +53,9 @@ export const sendDeviceControlPacket = async (
     DataPacket_Kind.RELIABLE,
     {
       topic: DEVICE_CONTROL_TOPIC,
-      destinationIdentities: [target.participantIdentity]
+      ...(options.destinationIdentities === null
+        ? {}
+        : { destinationIdentities: options.destinationIdentities ?? [target.participantIdentity] })
     }
   );
 };

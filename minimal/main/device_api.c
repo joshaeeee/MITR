@@ -613,6 +613,7 @@ esp_err_t mitr_device_send_telemetry(
 esp_err_t mitr_device_notify_wake_detected(
     const char *session_id,
     const char *boot_id,
+    const char *wake_id,
     const char *model_name,
     const char *phrase,
     float score,
@@ -621,6 +622,7 @@ esp_err_t mitr_device_notify_wake_detected(
 {
     ESP_RETURN_ON_FALSE(session_id != NULL && strlen(session_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing session id");
     ESP_RETURN_ON_FALSE(boot_id != NULL && strlen(boot_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing boot id");
+    ESP_RETURN_ON_FALSE(wake_id != NULL && strlen(wake_id) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing wake id");
     ESP_RETURN_ON_FALSE(model_name != NULL && strlen(model_name) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing model name");
     ESP_RETURN_ON_FALSE(phrase != NULL && strlen(phrase) > 0, ESP_ERR_INVALID_ARG, TAG, "Missing wake phrase");
     if (conversation_id && conversation_id_capacity > 0) {
@@ -640,6 +642,7 @@ esp_err_t mitr_device_notify_wake_detected(
         return ESP_ERR_NO_MEM;
     }
     cJSON_AddStringToObject(body, "bootId", boot_id);
+    cJSON_AddStringToObject(body, "wakeId", wake_id);
     cJSON_AddStringToObject(body, "modelName", model_name);
     cJSON_AddStringToObject(body, "phrase", phrase);
     cJSON_AddNumberToObject(body, "score", score);
