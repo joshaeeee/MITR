@@ -28,7 +28,7 @@ static const int BOOTSTRAP_RETRY_SEC = 10;
 static const int NETWORK_RETRY_SEC = 30;
 static const int CONFIG_RETRY_SEC = 60;
 static const int ROOM_RECONNECT_GRACE_MS = 1000;
-static const int AGENT_READY_TIMEOUT_MS = 30000;
+static const int AGENT_READY_TIMEOUT_MS = 5000;
 
 static int64_t now_ms(void)
 {
@@ -116,7 +116,12 @@ static void connect_room_and_agent_blocking(void)
             return;
         }
 
-        ESP_LOGW(TAG, "[ROOM] Persistent agent was not ready; rebuilding room");
+        if (session_is_active()) {
+            ESP_LOGW(TAG, "[ROOM] Persistent agent was not ready; keeping room connected for wake fallback");
+            return;
+        }
+
+        ESP_LOGW(TAG, "[ROOM] Persistent agent was not ready and room is inactive; rebuilding room");
         leave_room();
         vTaskDelay(pdMS_TO_TICKS(ROOM_RECONNECT_GRACE_MS));
         mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
@@ -240,7 +245,7 @@ static void mitr_device_task(void *arg)
 
     connect_room_and_agent_blocking();
     mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
-    log_boot_state("agent_ready_muted");
+    log_boot_state(session_is_agent_ready() ? "agent_ready_muted" : "room_ready_agent_pending");
     log_boot_state("ready_connected");
     esp_log_level_set("*", ESP_LOG_INFO);
     start_wake_detection(wake_event_group, wake_word_ready);
