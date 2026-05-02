@@ -340,10 +340,8 @@ void on_wake_detected(void)
     }
 
     if (!session.agent_ready) {
-        ESP_LOGW(TAG, "Ignoring wake because the persistent agent is not ready yet");
-        report_telemetry("wake_ignored", "warn", "agent_not_ready");
-        wake_word_rearm();
-        return;
+        ESP_LOGW(TAG, "Opening wake before persistent agent_ready; relying on backend wake handling");
+        report_telemetry("wake_agent_not_ready", "warn", "opening_without_agent_ready");
     }
 
     ESP_LOGI(TAG, "Wake word detected locally; opening conversation (model=%s, phrase=%s)",
