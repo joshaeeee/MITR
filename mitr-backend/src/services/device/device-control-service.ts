@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
-import { AccessToken, AgentDispatchClient, VideoGrant } from 'livekit-server-sdk';
+import { AccessToken, AgentDispatchClient, RoomServiceClient, VideoGrant } from 'livekit-server-sdk';
 import { db } from '../../db/client.js';
 import {
   deviceClaims,
@@ -1259,6 +1259,28 @@ export class DeviceControlService {
     return dispatch?.id ?? dispatch?.dispatchId ?? null;
   }
 
+  async ensureLiveKitRoomExists(roomName: string, metadata?: Record<string, unknown>): Promise<void> {
+    const livekit = getRequiredLivekitConfig();
+    if (!livekit) {
+      throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
+    }
+
+    const roomClient = new RoomServiceClient(livekit.url, livekit.apiKey, livekit.apiSecret);
+    const existingRooms = await roomClient.listRooms([roomName]);
+    if (existingRooms.some((room) => room.name === roomName)) {
+      return;
+    }
+
+    await roomClient.createRoom({
+      name: roomName,
+      emptyTimeout: 300,
+      departureTimeout: 60,
+      maxParticipants: 4,
+      metadata: metadata ? JSON.stringify(metadata) : undefined
+    });
+    logger.info('Created LiveKit room before persistent agent dispatch', { roomName });
+  }
+
   async ensurePersistentAgentDispatched(sessionId: string, metadata: Record<string, unknown>): Promise<void> {
     const session = await this.getSessionRowById(sessionId);
     if (!session) {
@@ -1275,6 +1297,12 @@ export class DeviceControlService {
       return;
     }
 
+    await this.ensureLiveKitRoomExists(session.roomName, {
+      sessionId,
+      deviceId: session.deviceId,
+      bootId: session.bootId
+    });
+
     await db
       .update(deviceSessions)
       .set({
@@ -1289,6 +1317,11 @@ export class DeviceControlService {
       .where(eq(deviceSessions.id, sessionId));
 
     try {
+      logger.info('Dispatching persistent LiveKit agent', {
+        sessionId,
+        roomName: session.roomName,
+        reason: decision.reason
+      });
       const dispatchId = await this.dispatchAgentToPersistentRoom(sessionId, metadata);
       await db
         .update(deviceSessions)
@@ -1303,6 +1336,12 @@ export class DeviceControlService {
           }
         })
         .where(eq(deviceSessions.id, sessionId));
+      logger.info('Persistent LiveKit agent dispatch accepted', {
+        sessionId,
+        roomName: session.roomName,
+        dispatchId,
+        reason: decision.reason
+      });
     } catch (error) {
       await db
         .update(deviceSessions)
@@ -1702,6 +1741,15 @@ export class DeviceControlService {
 
       const updatedSession = await this.getSessionRowById(input.sessionId);
       if (updatedSession) {
+        if (env.DEVICE_PERSISTENT_AGENT_SESSION && updatedSession.agentState !== 'ready') {
+          await this.ensurePersistentAgentDispatched(updatedSession.id, {
+            ...normalizeMetadata(updatedSession.metadataJson),
+            session_id: updatedSession.id,
+            boot_id: updatedSession.bootId,
+            participant_identity: updatedSession.participantIdentity,
+            last_agent_dispatch_source: 'device_heartbeat'
+          });
+        }
         await this.publishSessionState(updatedSession, 'session_upserted');
       }
     }
