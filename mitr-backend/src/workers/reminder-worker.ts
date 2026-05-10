@@ -2,6 +2,9 @@ import { createReminderWorker, closeReminderQueue } from '../services/reminders/
 import { logger } from '../lib/logger.js';
 import { SessionStore } from '../services/session-store.js';
 import { closeRedisConnections } from '../lib/redis.js';
+import { validateEnv } from '../config/env.js';
+
+validateEnv();
 
 const store = new SessionStore();
 

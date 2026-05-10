@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 export type GuidedSessionStep =
   | { type: 'speak'; text: string }
   | { type: 'count'; label?: string; from?: number; to: number; intervalMs?: number }
@@ -39,7 +41,7 @@ export class GuidedSessionExecutor {
 
   start(plan: GuidedSessionPlan): string {
     this.stop('replaced_by_new_session');
-    const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const sessionId = randomUUID();
     this.current = {
       sessionId,
       plan,

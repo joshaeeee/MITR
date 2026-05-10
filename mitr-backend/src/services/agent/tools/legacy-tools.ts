@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ReligiousRetriever } from '../../retrieval/religious-retriever.js';
 import { Mem0Service } from '../../memory/mem0-service.js';
@@ -270,7 +271,7 @@ export const createLegacyToolDefinitions = (
     }
   >();
   const nextRequestId = (prefix: string): string =>
-    `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    `${prefix}_${Date.now().toString(36)}_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
   const isContinueIntent = (text?: string): boolean => {
     if (!text) return false;

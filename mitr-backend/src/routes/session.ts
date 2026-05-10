@@ -1,8 +1,7 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
+import { randomInt } from 'node:crypto';
 import { z } from 'zod';
-import { AccessToken, VideoGrant } from 'livekit-server-sdk';
-import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
-import { getRequiredLivekitConfig } from '../config/livekit-config.js';
+import { env } from '../config/env.js';
 import { SessionStore } from '../services/session-store.js';
 import { ProfileService } from '../services/profile/profile-service.js';
 import { latencyTracker } from '../services/latency-tracker.js';
@@ -13,6 +12,7 @@ import { requireAuth } from '../services/auth/auth-middleware.js';
 import type { AuthService } from '../services/auth/auth-service.js';
 import { logger } from '../lib/logger.js';
 import { getApiHealthStatus } from '../services/health/health-status.js';
+import { DeviceControlService } from '../services/device/device-control-service.js';
 
 const sessionStartSchema = z.object({
   userId: z.string().min(1).optional()
@@ -31,12 +31,16 @@ const onboardingSubmitSchema = z.object({
   answers: z.record(z.string())
 });
 
-const livekitTokenSchema = z.object({
+const pipecatConnectSchema = z.object({
   userId: z.string().min(1).optional(),
-  roomName: z.string().min(1).optional(),
   language: z.string().optional(),
   participantName: z.string().optional(),
   metadata: z.record(z.unknown()).optional()
+});
+
+const pipecatGatewayAuthSchema = z.object({
+  language: z.string().optional(),
+  transport: z.string().optional()
 });
 
 const longSessionStartSchema = z.object({
@@ -57,11 +61,6 @@ const longSessionStopSchema = z.object({
 
 const slug = (input: string): string => input.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'user';
 
-const buildRoomName = (userId: string, roomName?: string): string => {
-  if (roomName?.trim()) return roomName.trim();
-  return `mitr-${slug(userId)}-${Date.now()}`;
-};
-
 export const registerSessionRoutes = (
   app: FastifyInstance,
   store: SessionStore,
@@ -69,7 +68,16 @@ export const registerSessionRoutes = (
   auth: AuthService
 ): void => {
   const director = new SessionDirectorService();
+  const deviceControl = new DeviceControlService();
   const authGuard = requireAuth(auth);
+  const requireOwnedLongSession = async (reply: FastifyReply, userId: string, longSessionId: string) => {
+    const session = await director.get(longSessionId);
+    if (!session || session.userId !== userId) {
+      void reply.status(404).send({ error: 'Long session not found' });
+      return null;
+    }
+    return session;
+  };
 
   app.post('/session/start', { preHandler: authGuard }, async (request, reply) => {
     const parsed = sessionStartSchema.safeParse(request.body ?? {});
@@ -85,7 +93,7 @@ export const registerSessionRoutes = (
 
     return reply.send({
       sessionId,
-      transport: 'livekit',
+      transport: 'pipecat',
       pendingEvents,
       onboarding: {
         required: onboardingRequired,
@@ -99,6 +107,11 @@ export const registerSessionRoutes = (
     const parsed = sessionEndSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const session = await store.get(parsed.data.sessionId);
+    if (!session || session.userId !== request.auth!.user.id) {
+      return reply.status(404).send({ error: 'Session not found' });
     }
 
     await store.terminate(parsed.data.sessionId, 'client_end');
@@ -139,60 +152,54 @@ export const registerSessionRoutes = (
     });
   });
 
-  app.post('/livekit/token', { preHandler: authGuard }, async (request, reply) => {
-    const parsed = livekitTokenSchema.safeParse(request.body ?? {});
+  app.post('/pipecat/connect', { preHandler: authGuard }, async (request, reply) => {
+    const parsed = pipecatConnectSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
-    }
-    const livekit = getRequiredLivekitConfig();
-    if (!livekit) {
-      return reply.status(500).send({
-        error: 'LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.'
-      });
     }
 
     const userId = request.auth!.user.id;
     const profile = await profiles.getProfile(userId);
-    const roomName = buildRoomName(userId, parsed.data.roomName);
-    const identity = parsed.data.participantName?.trim() || `user-${slug(userId)}-${Math.floor(Math.random() * 10_000)}`;
-
-    const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
-      identity,
-      ttl: livekit.tokenTtlSec
-    });
-
-    const videoGrant: VideoGrant = {
-      room: roomName,
-      roomJoin: true,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true
-    };
-    at.addGrant(videoGrant);
+    const familyContext = await deviceControl.getCurrentFamilyContextForUser(userId);
+    const identity = parsed.data.participantName?.trim() || `user-${slug(userId)}-${randomInt(10_000)}`;
 
     const dispatchMetadata = {
       user_id: userId,
+      family_id: familyContext?.familyId ?? null,
+      elder_id: familyContext?.elderId ?? null,
+      device_id: `web-${slug(userId)}`,
       language: parsed.data.language ?? profile?.answers?.language ?? 'hi-IN',
       profile_answers: profile?.answers ?? null,
       ...(parsed.data.metadata ?? {})
     };
 
-    at.roomConfig = new RoomConfiguration({
-      agents: [
-        new RoomAgentDispatch({
-          agentName: livekit.agentName,
-          metadata: JSON.stringify(dispatchMetadata)
-        })
-      ]
-    });
-
-    const participantToken = await at.toJwt();
     return reply.send({
-      serverUrl: livekit.url,
-      participantToken,
-      roomName,
+      transport: 'pipecat',
+      wsUrl: env.PIPECAT_GATEWAY_PUBLIC_WS_URL,
+      serverUrl: env.PIPECAT_GATEWAY_PUBLIC_WS_URL,
       identity,
-      agentName: livekit.agentName
+      agentName: 'pipecat-gateway',
+      dispatchMetadata
+    });
+  });
+
+  app.post('/pipecat/gateway/auth', { preHandler: authGuard }, async (request, reply) => {
+    const parsed = pipecatGatewayAuthSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const userId = request.auth!.user.id;
+    const profile = await profiles.getProfile(userId);
+    const familyContext = await deviceControl.getCurrentFamilyContextForUser(userId);
+    return reply.send({
+      ok: true,
+      deviceId: `web-${slug(userId)}`,
+      userId,
+      familyId: familyContext?.familyId ?? null,
+      elderId: familyContext?.elderId ?? null,
+      language: parsed.data.language || profile?.answers?.language || 'hi-IN',
+      transport: parsed.data.transport || 'pipecat-gateway'
     });
   });
 
@@ -224,13 +231,19 @@ export const registerSessionRoutes = (
         dependencies: health.dependencies
       });
     }
+    if (env.NODE_ENV === 'production') {
+      return reply.status(health.ok ? 200 : 503).send({
+        requestId: request.id,
+        ok: health.ok
+      });
+    }
     return reply.status(health.ok ? 200 : 503).send({
       requestId: request.id,
       ...health
     });
   });
 
-  app.get('/health/latency', async (_request, reply) => {
+  app.get('/health/latency', { preHandler: authGuard }, async (_request, reply) => {
     const redisSnapshot = await redisLatencySnapshot();
     return reply.send({
       ok: true,
@@ -266,14 +279,20 @@ export const registerSessionRoutes = (
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
-    if (parsed.data.blockId) {
-      await director.completeBlock({
-        longSessionId: parsed.data.longSessionId,
-        blockId: parsed.data.blockId,
-        state: parsed.data.blockState ?? 'done',
-        result: parsed.data.result,
-        elapsedDeltaSec: parsed.data.elapsedDeltaSec
-      });
+    const owned = await requireOwnedLongSession(reply, request.auth!.user.id, parsed.data.longSessionId);
+    if (!owned) return;
+    try {
+      if (parsed.data.blockId) {
+        await director.completeBlock({
+          longSessionId: parsed.data.longSessionId,
+          blockId: parsed.data.blockId,
+          state: parsed.data.blockState ?? 'done',
+          result: parsed.data.result,
+          elapsedDeltaSec: parsed.data.elapsedDeltaSec
+        });
+      }
+    } catch (error) {
+      return reply.status(400).send({ error: (error as Error).message });
     }
     const nextBlock = await director.next(parsed.data.longSessionId);
     if (!nextBlock && parsed.data.autoRecover) {
@@ -289,6 +308,8 @@ export const registerSessionRoutes = (
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
+    const owned = await requireOwnedLongSession(reply, request.auth!.user.id, parsed.data.longSessionId);
+    if (!owned) return;
     const stopped = await director.stop(parsed.data.longSessionId, parsed.data.reason ?? 'http_stop');
     return reply.send({ session: stopped });
   });
@@ -298,6 +319,8 @@ export const registerSessionRoutes = (
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
+    const owned = await requireOwnedLongSession(reply, request.auth!.user.id, parsed.data.id);
+    if (!owned) return;
     const details = await director.getDetailed(parsed.data.id);
     if (!details) return reply.status(404).send({ error: 'Not found' });
     return reply.send(details);
@@ -308,6 +331,8 @@ export const registerSessionRoutes = (
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
+    const owned = await requireOwnedLongSession(reply, request.auth!.user.id, parsed.data.id);
+    if (!owned) return;
     const summaries = await director.listSummaries(parsed.data.id);
     return reply.send({ summaries });
   });

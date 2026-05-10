@@ -1,4 +1,5 @@
 import { getFamilyRepository } from '../family/family-repository.js';
+import { recordAuditEvent } from '../audit/audit-service.js';
 
 export class AlertsService {
   private readonly repo = getFamilyRepository();
@@ -22,12 +23,28 @@ export class AlertsService {
   }
 
   async acknowledge(userId: string, alertId: string) {
-    await this.repo.getOrCreateFamilyForOwner(userId);
-    return this.repo.updateAlertStatus(alertId, 'acknowledged');
+    const alert = await this.repo.updateAlertStatus(userId, alertId, 'acknowledged');
+    if (alert) {
+      await recordAuditEvent({
+        actorUserId: userId,
+        scope: `elder:${alert.elderId}`,
+        action: 'alert.acknowledged',
+        payload: { alertId }
+      });
+    }
+    return alert;
   }
 
   async resolve(userId: string, alertId: string) {
-    await this.repo.getOrCreateFamilyForOwner(userId);
-    return this.repo.updateAlertStatus(alertId, 'resolved');
+    const alert = await this.repo.updateAlertStatus(userId, alertId, 'resolved');
+    if (alert) {
+      await recordAuditEvent({
+        actorUserId: userId,
+        scope: `elder:${alert.elderId}`,
+        action: 'alert.resolved',
+        payload: { alertId }
+      });
+    }
+    return alert;
   }
 }

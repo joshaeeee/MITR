@@ -1,6 +1,5 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { and, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
-import { AccessToken, AgentDispatchClient, RoomServiceClient, VideoGrant } from 'livekit-server-sdk';
 import { db } from '../../db/client.js';
 import {
   deviceClaims,
@@ -12,18 +11,13 @@ import {
   elderProfiles,
   firmwareReleases
 } from '../../db/schema.js';
-import { getRequiredLivekitConfig } from '../../config/livekit-config.js';
 import { env } from '../../config/env.js';
 import { getFamilyRepository } from '../family/family-repository.js';
 import { publishDeviceSessionEvent } from './device-session-events.js';
-import {
-  detachDeviceParticipant,
-  notifyAndDetachSupersededSession,
-  sendDeviceControlPacket,
-  type DeviceRoomSessionTarget
-} from './livekit-device-room-control.js';
 import { logger } from '../../lib/logger.js';
-import { decidePersistentAgentDispatch, normalizeWakeId } from './device-agent-lifecycle.js';
+import { hashShortCode } from '../../lib/short-code-hash.js';
+import { normalizeWakeId } from './device-agent-lifecycle.js';
+import { recordAuditEvent } from '../audit/audit-service.js';
 
 type DevicePairingStatus = 'pending_device' | 'bootstrapping' | 'completed' | 'expired' | 'revoked';
 export type DeviceConversationState = 'idle' | 'starting' | 'active' | 'ending';
@@ -129,6 +123,22 @@ export interface DeviceConversationRecord {
   wakeId: string | null;
 }
 
+export interface PipecatSessionResponse {
+  sessionId: string;
+  bootId: string;
+  transport: 'pipecat';
+  wsUrl: string;
+  serverUrl: string;
+  roomName: string;
+  identity: string;
+  agentName: 'pipecat-gateway';
+  dispatchMetadata: Record<string, unknown>;
+  auth: {
+    type: 'device_bearer';
+    tokenSource: 'deviceAccessToken';
+  };
+}
+
 export interface DevicePairingSummary {
   pairingId: string;
   deviceId: string;
@@ -161,11 +171,12 @@ const DEFAULT_TELEMETRY_BACKOFF_SEC = 30;
 
 const hashOpaqueToken = (value: string): string => createHash('sha256').update(value).digest('hex');
 const createOpaqueToken = (bytes = 32): string => randomBytes(bytes).toString('hex');
-const createClaimCode = (): string => (Math.floor(Math.random() * 900000) + 100000).toString();
+const createClaimCode = (): string => randomInt(100000, 1000000).toString();
 const toDate = (value: number): Date => new Date(value);
 const slug = (input: string): string => input.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'device';
 
 const normalizeMetadata = (value: Record<string, unknown> | null | undefined): Record<string, unknown> => value ?? {};
+const pipecatGatewayWsUrl = (): string => env.PIPECAT_GATEWAY_PUBLIC_WS_URL;
 
 const toMillis = (value: Date | null | undefined): number | null => value?.getTime() ?? null;
 
@@ -373,6 +384,40 @@ export class DeviceControlService {
     };
   }
 
+  async verifyPipecatToolContext(input: {
+    userId: string;
+    deviceId?: string;
+    familyId?: string;
+    elderId?: string;
+  }): Promise<boolean> {
+    const family = await this.familyRepo.getFamilyByUser(input.userId);
+    if (!family) return false;
+
+    if (input.familyId && input.familyId !== family.id) return false;
+
+    const elder = await this.familyRepo.getElderByUser(input.userId);
+    if (input.elderId && input.elderId !== elder?.id) return false;
+
+    const deviceId = input.deviceId?.trim();
+    if (!deviceId || deviceId.startsWith('web-')) return true;
+
+    const [device] = await db
+      .select()
+      .from(devices)
+      .where(and(eq(devices.deviceId, deviceId), isNull(devices.revokedAt)))
+      .limit(1);
+    if (!device) return false;
+
+    const deviceFamilyMatches = device.familyId
+      ? device.familyId === family.id
+      : device.userId === family.ownerUserId || device.claimedByUserId === input.userId;
+    if (!deviceFamilyMatches) return false;
+    if (input.familyId && device.familyId && input.familyId !== device.familyId) return false;
+    if (input.elderId && device.elderId && input.elderId !== device.elderId) return false;
+
+    return true;
+  }
+
   async getLatestActivePairingForUser(userId: string): Promise<DevicePairingSummary | null> {
     const context = await this.resolveFamilyContextForUser(userId, undefined, { requireElder: false });
     const now = new Date();
@@ -498,6 +543,13 @@ export class DeviceControlService {
       })
       .where(and(eq(deviceSessions.deviceId, device.deviceId), or(eq(deviceSessions.status, 'issued'), eq(deviceSessions.status, 'active'))));
 
+    await recordAuditEvent({
+      actorUserId: userId,
+      scope: device.familyId ? `family:${device.familyId}` : `user:${userId}`,
+      action: 'device.revoked',
+      payload: { deviceId }
+    });
+
     return true;
   }
 
@@ -508,7 +560,7 @@ export class DeviceControlService {
       .insert(deviceClaims)
       .values({
         userId,
-        codeHash: hashOpaqueToken(claimCode),
+        codeHash: hashShortCode('device-claim', claimCode),
         expiresAt: toDate(expiresAt)
       })
       .returning({ id: deviceClaims.id });
@@ -548,6 +600,20 @@ export class DeviceControlService {
     }
 
     const now = new Date();
+    const activePairings = await db
+      .select()
+      .from(devicePairings)
+      .where(
+        and(
+          eq(devicePairings.deviceId, deviceId),
+          inArray(devicePairings.status, ['pending_device', 'bootstrapping']),
+          gt(devicePairings.expiresAt, now)
+        )
+      );
+    if (activePairings.some((pairing) => pairing.familyId !== familyContext.familyId)) {
+      throw new Error('Device is already in a pairing flow for another family');
+    }
+
     await db
       .update(devicePairings)
       .set({
@@ -557,6 +623,7 @@ export class DeviceControlService {
       .where(
         and(
           eq(devicePairings.deviceId, deviceId),
+          eq(devicePairings.familyId, familyContext.familyId),
           or(eq(devicePairings.status, 'pending_device'), eq(devicePairings.status, 'bootstrapping'))
         )
       );
@@ -635,7 +702,7 @@ export class DeviceControlService {
     hardwareRev: string | null;
     firmwareVersion: string | null;
   }> {
-    const codeHash = hashOpaqueToken(input.claimCode);
+    const codeHash = hashShortCode('device-claim', input.claimCode);
     const [claim] = await db
       .select()
       .from(deviceClaims)
@@ -643,6 +710,15 @@ export class DeviceControlService {
       .limit(1);
 
     if (!claim || claim.expiresAt.getTime() <= Date.now()) {
+      throw new Error('Invalid or expired claim code');
+    }
+
+    const [consumedClaim] = await db
+      .update(deviceClaims)
+      .set({ consumedAt: new Date() })
+      .where(and(eq(deviceClaims.id, claim.id), isNull(deviceClaims.consumedAt)))
+      .returning({ id: deviceClaims.id });
+    if (!consumedClaim) {
       throw new Error('Invalid or expired claim code');
     }
 
@@ -707,8 +783,6 @@ export class DeviceControlService {
         lastSeenAt: new Date()
       });
     }
-
-    await db.update(deviceClaims).set({ consumedAt: new Date() }).where(eq(deviceClaims.id, claim.id));
 
     return {
       deviceId,
@@ -869,17 +943,7 @@ export class DeviceControlService {
     firmwareVersion?: string;
     hardwareRev?: string;
     metadata?: Record<string, unknown>;
-  }): Promise<{
-    sessionId: string;
-    bootId: string;
-    serverUrl: string;
-    participantToken: string;
-    roomName: string;
-    identity: string;
-    agentName: string;
-    dispatchMetadata: Record<string, unknown>;
-    participantTokenExpiresAtMs: number;
-  }> {
+  }): Promise<PipecatSessionResponse> {
     const t_method_start = performance.now();
     const stages: Record<string, number> = {};
     let last_mark = t_method_start;
@@ -889,11 +953,6 @@ export class DeviceControlService {
       last_mark = now;
     };
     let path: 'reuse' | 'supersede' | 'fresh' = 'fresh';
-
-    const livekit = getRequiredLivekitConfig();
-    if (!livekit) {
-      throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
-    }
 
     const bootId = input.bootId.trim();
     if (!bootId) {
@@ -921,7 +980,7 @@ export class DeviceControlService {
     let roomName = '';
     let identity = '';
     let sessionRow: typeof deviceSessions.$inferSelect | null = null;
-    let supersededSession: DeviceRoomSessionTarget | null = null;
+    let supersededSessionId: string | null = null;
     mark('setup');
 
     await db.transaction(async (tx) => {
@@ -981,12 +1040,7 @@ export class DeviceControlService {
       } else {
         if (currentSession && currentSession.status !== 'ended') {
           path = 'supersede';
-          supersededSession = {
-            sessionId: currentSession.id,
-            roomName: currentSession.roomName,
-            participantIdentity: currentSession.participantIdentity,
-            bootId: currentSession.bootId
-          };
+          supersededSessionId = currentSession.id;
           await tx
             .update(deviceSessions)
             .set({
@@ -1070,18 +1124,13 @@ export class DeviceControlService {
     await this.publishSessionState(sessionRow, 'session_upserted');
     mark('publish_session_state');
 
-    if (supersededSession) {
-      // Fire-and-forget: the device doesn't need the old participant kicked out before getting
-      // its new session token. notifyAndDetachSupersededSession can take 200ms-3s depending on
-      // LiveKit Cloud RTT and whether the prior room still exists; do it async with a logged catch.
-      const detachTarget: DeviceRoomSessionTarget = supersededSession;
-      void notifyAndDetachSupersededSession(detachTarget).catch((error) => {
-        logger.warn('Async notifyAndDetachSupersededSession failed', {
-          sessionId: detachTarget.sessionId,
-          error: (error as Error).message
-        });
+    if (supersededSessionId) {
+      logger.info('Superseded previous Pipecat device session', {
+        deviceId: input.device.deviceId,
+        previousSessionId: supersededSessionId,
+        sessionId
       });
-      mark('notify_detach_dispatched');
+      mark('supersede_logged');
     }
 
     const dispatchMetadata = {
@@ -1091,68 +1140,42 @@ export class DeviceControlService {
       participant_identity: identity
     };
 
-    if (env.DEVICE_PERSISTENT_AGENT_SESSION) {
-      await this.ensurePersistentAgentDispatched(sessionId, dispatchMetadata);
-      mark('agent_dispatch');
-    }
-
-    const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
-      identity,
-      ttl: livekit.tokenTtlSec
-    });
-    const participantTokenExpiresAtMs = Date.now() + livekit.tokenTtlSec * 1000;
-    const videoGrant: VideoGrant = {
-      room: roomName,
-      roomJoin: true,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true
-    };
-    at.addGrant(videoGrant);
-    const participantToken = await at.toJwt();
-    mark('token_mint');
+    mark('connection_metadata');
 
     const totalMs = Math.round((performance.now() - t_method_start) * 100) / 100;
-    console.log(JSON.stringify({
-      event: 'session_open_perf',
+    logger.info('Device session open performance', {
       deviceId: input.device.deviceId,
       bootId,
       path,
       totalMs,
       slow: totalMs > 500,
       stages
-    }));
+    });
 
     return {
       sessionId,
       bootId,
-      serverUrl: livekit.url,
-      participantToken,
+      transport: 'pipecat',
+      wsUrl: pipecatGatewayWsUrl(),
+      serverUrl: pipecatGatewayWsUrl(),
       roomName,
       identity,
-      agentName: livekit.agentName,
+      agentName: 'pipecat-gateway',
       dispatchMetadata,
-      participantTokenExpiresAtMs
+      auth: {
+        type: 'device_bearer',
+        tokenSource: 'deviceAccessToken'
+      }
     };
   }
 
-  async mintLiveKitToken(input: {
+  async mintPipecatSession(input: {
     device: DeviceAuthRecord;
     language?: string;
     firmwareVersion?: string;
     hardwareRev?: string;
     metadata?: Record<string, unknown>;
-  }): Promise<{
-    sessionId: string;
-    bootId: string;
-    serverUrl: string;
-    participantToken: string;
-    roomName: string;
-    identity: string;
-    agentName: string;
-    dispatchMetadata: Record<string, unknown>;
-    participantTokenExpiresAtMs: number;
-  }> {
+  }): Promise<PipecatSessionResponse> {
     return this.openDeviceSession({
       ...input,
       bootId: randomUUID().replace(/-/g, '')
@@ -1160,28 +1183,15 @@ export class DeviceControlService {
   }
 
   /**
-   * Mint a fresh participant JWT for a device's persistent room without
-   * creating a new session row. Used by the firmware's background token
-   * refresh task to extend credentials before they expire.
+   * Return the current Pipecat session connection metadata without creating a
+   * new session row. The device access token itself remains the websocket
+   * bearer credential, so there is no separate media token to refresh.
    */
-  async refreshLiveKitToken(input: {
+  async refreshPipecatSession(input: {
     device: DeviceAuthRecord;
     sessionId: string;
     bootId: string;
-  }): Promise<{
-    sessionId: string;
-    bootId: string;
-    serverUrl: string;
-    participantToken: string;
-    roomName: string;
-    identity: string;
-    participantTokenExpiresAtMs: number;
-  }> {
-    const livekit = getRequiredLivekitConfig();
-    if (!livekit) {
-      throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
-    }
-
+  }): Promise<PipecatSessionResponse> {
     const currentSession = await this.getCurrentSessionRowForDevice(input.device.id);
     if (!currentSession || currentSession.status === 'ended') {
       throw new Error('No active session to refresh; call /devices/token instead');
@@ -1189,27 +1199,6 @@ export class DeviceControlService {
     if (currentSession.id !== input.sessionId || currentSession.bootId !== input.bootId) {
       throw new Error('session_superseded');
     }
-
-    const roomName = currentSession.roomName;
-    const identity = currentSession.participantIdentity;
-
-    const at = new AccessToken(livekit.apiKey, livekit.apiSecret, {
-      identity,
-      ttl: livekit.tokenTtlSec
-    });
-    const participantTokenExpiresAtMs = Date.now() + livekit.tokenTtlSec * 1000;
-    at.addGrant({
-      room: roomName,
-      roomJoin: true,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true
-    } as VideoGrant);
-
-    // Token refresh keeps the persistent device participant alive only.
-    // Agent dispatch is now explicit and wake-driven.
-
-    const participantToken = await at.toJwt();
 
     await db
       .update(deviceSessions)
@@ -1219,11 +1208,17 @@ export class DeviceControlService {
     return {
       sessionId: currentSession.id,
       bootId: currentSession.bootId,
-      serverUrl: livekit.url,
-      participantToken,
-      roomName,
-      identity,
-      participantTokenExpiresAtMs
+      transport: 'pipecat',
+      wsUrl: pipecatGatewayWsUrl(),
+      serverUrl: pipecatGatewayWsUrl(),
+      roomName: currentSession.roomName,
+      identity: currentSession.participantIdentity,
+      agentName: 'pipecat-gateway',
+      dispatchMetadata: normalizeMetadata(currentSession.metadataJson),
+      auth: {
+        type: 'device_bearer',
+        tokenSource: 'deviceAccessToken'
+      }
     };
   }
 
@@ -1239,121 +1234,6 @@ export class DeviceControlService {
   async getDeviceSession(sessionId: string): Promise<DeviceSessionRecord | null> {
     const row = await this.getSessionRowById(sessionId);
     return row ? this.sessionRecord(row) : null;
-  }
-
-  async dispatchAgentToPersistentRoom(sessionId: string, metadata: Record<string, unknown>): Promise<string | null> {
-    const session = await this.getSessionRowById(sessionId);
-    if (!session) {
-      throw new Error('Device session not found');
-    }
-
-    const livekit = getRequiredLivekitConfig();
-    if (!livekit) {
-      throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
-    }
-
-    const dispatchClient = new AgentDispatchClient(livekit.url, livekit.apiKey, livekit.apiSecret);
-    const dispatch = await dispatchClient.createDispatch(session.roomName, livekit.agentName, {
-      metadata: JSON.stringify(metadata)
-    }) as { id?: string; dispatchId?: string } | undefined;
-    return dispatch?.id ?? dispatch?.dispatchId ?? null;
-  }
-
-  async ensureLiveKitRoomExists(roomName: string, metadata?: Record<string, unknown>): Promise<void> {
-    const livekit = getRequiredLivekitConfig();
-    if (!livekit) {
-      throw new Error('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.');
-    }
-
-    const roomClient = new RoomServiceClient(livekit.url, livekit.apiKey, livekit.apiSecret);
-    const existingRooms = await roomClient.listRooms([roomName]);
-    if (existingRooms.some((room) => room.name === roomName)) {
-      return;
-    }
-
-    await roomClient.createRoom({
-      name: roomName,
-      emptyTimeout: 300,
-      departureTimeout: 60,
-      maxParticipants: 4,
-      metadata: metadata ? JSON.stringify(metadata) : undefined
-    });
-    logger.info('Created LiveKit room before persistent agent dispatch', { roomName });
-  }
-
-  async ensurePersistentAgentDispatched(sessionId: string, metadata: Record<string, unknown>): Promise<void> {
-    const session = await this.getSessionRowById(sessionId);
-    if (!session) {
-      throw new Error('Device session not found');
-    }
-    const decision = decidePersistentAgentDispatch({
-      agentState: session.agentState,
-      agentLastSeenAtMs: toMillis(session.agentLastSeenAt),
-      nowMs: Date.now(),
-      readyTimeoutMs: env.DEVICE_AGENT_READY_TIMEOUT_MS,
-      staleMs: env.DEVICE_AGENT_STALE_MS
-    });
-    if (!decision.shouldDispatch) {
-      return;
-    }
-
-    await this.ensureLiveKitRoomExists(session.roomName, {
-      sessionId,
-      deviceId: session.deviceId,
-      bootId: session.bootId
-    });
-
-    await db
-      .update(deviceSessions)
-      .set({
-        agentState: 'dispatching',
-        agentLastError: null,
-        agentLastSeenAt: new Date(),
-        agentRestartCount:
-          decision.reason === 'not_dispatched'
-            ? session.agentRestartCount
-            : sql`${deviceSessions.agentRestartCount} + 1`
-      })
-      .where(eq(deviceSessions.id, sessionId));
-
-    try {
-      logger.info('Dispatching persistent LiveKit agent', {
-        sessionId,
-        roomName: session.roomName,
-        reason: decision.reason
-      });
-      const dispatchId = await this.dispatchAgentToPersistentRoom(sessionId, metadata);
-      await db
-        .update(deviceSessions)
-        .set({
-          agentState: 'dispatching',
-          agentDispatchId: dispatchId,
-          agentLastSeenAt: new Date(),
-          agentLastError: null,
-          metadataJson: {
-            ...normalizeMetadata(session.metadataJson),
-            last_agent_dispatch_reason: decision.reason
-          }
-        })
-        .where(eq(deviceSessions.id, sessionId));
-      logger.info('Persistent LiveKit agent dispatch accepted', {
-        sessionId,
-        roomName: session.roomName,
-        dispatchId,
-        reason: decision.reason
-      });
-    } catch (error) {
-      await db
-        .update(deviceSessions)
-        .set({
-          agentState: 'failed',
-          agentLastError: (error as Error).message,
-          agentLastSeenAt: new Date(),
-          agentRestartCount: sql`${deviceSessions.agentRestartCount} + 1`
-        })
-        .where(eq(deviceSessions.id, sessionId));
-      throw error;
-    }
   }
 
   async markAgentReady(sessionId: string, bootId: string, payload: Record<string, unknown> = {}): Promise<DeviceSessionRecord | null> {
@@ -1477,65 +1357,12 @@ export class DeviceControlService {
       wakewordScore: String(input.score)
     });
 
-    if (env.DEVICE_PERSISTENT_AGENT_SESSION) {
-      await sendDeviceControlPacket(
-        {
-          sessionId: session.id,
-          roomName: session.roomName,
-          participantIdentity: session.participantIdentity,
-          bootId: session.bootId
-        },
-        'conversation_started',
-        {
-          conversationId,
-          wakeId,
-          wakeword: input.phrase,
-          modelName: input.modelName,
-          score: input.score,
-          detectedAtMs: input.detectedAtMs
-        },
-        { destinationIdentities: null }
-      ).catch((error) => {
-        logger.warn('Failed to broadcast persistent conversation start packet', {
-          sessionId: input.sessionId,
-          conversationId,
-          error: (error as Error).message
-        });
-      });
-    } else {
-      try {
-        await this.dispatchAgentToPersistentRoom(input.sessionId, {
-          ...normalizeMetadata(session.metadataJson),
-          session_id: input.sessionId,
-          boot_id: session.bootId,
-          conversation_id: conversationId,
-          participant_identity: session.participantIdentity,
-          last_wakeword_phrase: input.phrase
-        });
-      } catch (error) {
-        await db
-          .update(deviceSessions)
-          .set({
-            conversationState: 'idle',
-            lastConversationEndReason: 'dispatch_failed',
-            conversationEndedAt: new Date()
-          })
-          .where(eq(deviceSessions.id, input.sessionId));
-        await db
-          .update(deviceConversations)
-          .set({
-            state: 'errored',
-            endedAt: new Date(),
-            endReason: 'dispatch_failed'
-          })
-          .where(eq(deviceConversations.id, conversationId));
-        const failedSession = await this.getSessionRowById(input.sessionId);
-        if (failedSession) {
-          await this.publishSessionState(failedSession, 'conversation_state_changed');
-        }
-        throw error;
-      }
-    }
+    logger.info('Pipecat conversation wake accepted', {
+      sessionId: input.sessionId,
+      conversationId,
+      deviceId: session.deviceId,
+      wakeId
+    });
 
     const updated = await this.getSessionRowById(input.sessionId);
     if (updated) {
@@ -1741,15 +1568,6 @@ export class DeviceControlService {
 
       const updatedSession = await this.getSessionRowById(input.sessionId);
       if (updatedSession) {
-        if (env.DEVICE_PERSISTENT_AGENT_SESSION && updatedSession.agentState !== 'ready') {
-          await this.ensurePersistentAgentDispatched(updatedSession.id, {
-            ...normalizeMetadata(updatedSession.metadataJson),
-            session_id: updatedSession.id,
-            boot_id: updatedSession.bootId,
-            participant_identity: updatedSession.participantIdentity,
-            last_agent_dispatch_source: 'device_heartbeat'
-          });
-        }
         await this.publishSessionState(updatedSession, 'session_upserted');
       }
     }
@@ -1885,15 +1703,6 @@ export class DeviceControlService {
     if (updatedSession) {
       await this.publishSessionState(updatedSession, 'session_ended');
     }
-    await detachDeviceParticipant(
-      {
-        sessionId: session.id,
-        roomName: session.roomName,
-        participantIdentity: session.participantIdentity,
-        bootId: session.bootId
-      },
-      input.reason?.trim() || 'device_end'
-    );
 
     return { ok: true };
   }

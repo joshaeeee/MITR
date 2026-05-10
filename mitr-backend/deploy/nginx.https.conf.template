@@ -7,6 +7,15 @@ events {
 http {
   include /etc/nginx/mime.types;
   default_type application/octet-stream;
+  server_tokens off;
+  log_format mitr_safe '$remote_addr [$time_local] "$request_method $uri $server_protocol" '
+                       '$status $body_bytes_sent $request_time';
+  access_log /var/log/nginx/access.log mitr_safe;
+
+  add_header X-Content-Type-Options nosniff always;
+  add_header X-Frame-Options DENY always;
+  add_header Referrer-Policy no-referrer always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
 
   sendfile on;
   tcp_nopush on;
@@ -20,6 +29,7 @@ http {
   }
 
   resolver 127.0.0.11 valid=30s ipv6=off;
+  limit_req_zone $binary_remote_addr zone=mitr_api_per_ip:10m rate=10r/s;
 
   server {
     listen 80 default_server;
@@ -67,12 +77,33 @@ http {
     ssl_session_cache shared:SSL:10m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     location /.well-known/acme-challenge/ {
       root /var/www/certbot;
     }
 
+    location = /ws {
+      set $mitr_pipecat_gateway http://pipecat-gateway:7860;
+      proxy_pass $mitr_pipecat_gateway;
+      proxy_http_version 1.1;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+    }
+
+    location ^~ /internal {
+      return 404;
+    }
+
     location / {
+      limit_req zone=mitr_api_per_ip burst=60 nodelay;
       set $mitr_api http://api:8080;
       proxy_pass $mitr_api;
       proxy_http_version 1.1;

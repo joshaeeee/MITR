@@ -23,15 +23,21 @@ CERT_DIR="/etc/letsencrypt/live/${CERT_NAME}"
 
 cert_ready() {
   local cert_dir="$1"
-
-  if command -v sudo >/dev/null 2>&1; then
-    sudo test -f "${cert_dir}/fullchain.pem" && sudo test -f "${cert_dir}/privkey.pem"
-  else
-    test -f "${cert_dir}/fullchain.pem" && test -f "${cert_dir}/privkey.pem"
-  fi
+  test -f "${cert_dir}/fullchain.pem" && test -f "${cert_dir}/privkey.pem"
 }
 
-if [[ "${ENABLE_HTTPS}" == "true" && -n "${PUBLIC_HOSTNAME}" ]] && cert_ready "${CERT_DIR}"; then
+if [[ "${ENABLE_HTTPS}" == "true" && -z "${PUBLIC_HOSTNAME}" ]]; then
+  echo "[nginx] ENABLE_HTTPS=true but PUBLIC_HOSTNAME is empty" >&2
+  exit 1
+fi
+
+if [[ "${ENABLE_HTTPS}" == "true" ]] && ! cert_ready "${CERT_DIR}"; then
+  echo "[nginx] ENABLE_HTTPS=true but certificate files are missing under ${CERT_DIR}" >&2
+  echo "[nginx] provision certs before production deploy, or run the HTTP bootstrap config manually outside deploy.sh" >&2
+  exit 1
+fi
+
+if [[ "${ENABLE_HTTPS}" == "true" ]]; then
   SERVER_NAMES="${PUBLIC_HOSTNAME}"
   if [[ -n "${ROOT_HOSTNAME}" ]]; then
     SERVER_NAMES="${SERVER_NAMES} ${ROOT_HOSTNAME}"
@@ -50,6 +56,12 @@ events {
 http {
   include /etc/nginx/mime.types;
   default_type application/octet-stream;
+  server_tokens off;
+
+  add_header X-Content-Type-Options nosniff always;
+  add_header X-Frame-Options DENY always;
+  add_header Referrer-Policy no-referrer always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
 
   sendfile on;
   tcp_nopush on;
@@ -63,6 +75,7 @@ http {
   }
 
   resolver 127.0.0.11 valid=30s ipv6=off;
+  limit_req_zone \$binary_remote_addr zone=mitr_api_per_ip:10m rate=10r/s;
 
   server {
     listen 80 default_server;
@@ -110,12 +123,33 @@ http {
     ssl_session_cache shared:SSL:10m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     location /.well-known/acme-challenge/ {
       root /var/www/certbot;
     }
 
+    location = /ws {
+      set \$mitr_pipecat_gateway http://pipecat-gateway:7860;
+      proxy_pass \$mitr_pipecat_gateway;
+      proxy_http_version 1.1;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+
+      proxy_set_header Host \$host;
+      proxy_set_header X-Real-IP \$remote_addr;
+      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto \$scheme;
+      proxy_set_header Upgrade \$http_upgrade;
+      proxy_set_header Connection \$connection_upgrade;
+    }
+
+    location ^~ /internal {
+      return 404;
+    }
+
     location / {
+      limit_req zone=mitr_api_per_ip burst=60 nodelay;
       set \$mitr_api http://api:8080;
       proxy_pass \$mitr_api;
       proxy_http_version 1.1;

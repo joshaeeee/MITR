@@ -5,6 +5,8 @@ import type { AuthService } from '../services/auth/auth-service.js';
 import { NudgesService } from '../services/nudges/nudges-service.js';
 import { VoiceNotesService } from '../services/nudges/voice-notes-service.js';
 import { logger } from '../lib/logger.js';
+import { createRateLimit } from '../lib/rate-limit.js';
+import { env } from '../config/env.js';
 
 const httpUrlSchema = z
   .string()
@@ -25,7 +27,11 @@ const nudgeScheduleSchema = z.object({
 });
 
 const voiceUploadSchema = z.object({
-  mimeType: z.string().default('audio/aac')
+  mimeType: z
+    .string()
+    .max(80)
+    .regex(/^audio\/[a-z0-9.+-]+(?:;[a-z0-9=._+ -]+)*$/i)
+    .default('audio/aac')
 });
 
 const voiceSendSchema = z.object({
@@ -49,6 +55,18 @@ export const registerNudgesRoutes = (app: FastifyInstance, auth: AuthService): v
   const nudges = new NudgesService();
   const voiceNotes = new VoiceNotesService();
   const guard = requireAuth(auth);
+  const voiceUploadLimit = createRateLimit({
+    keyPrefix: 'voice-notes:upload',
+    windowMs: 10 * 60 * 1000,
+    max: 20,
+    key: (request) => {
+      const params = request.params && typeof request.params === 'object'
+        ? (request.params as Record<string, unknown>)
+        : {};
+      const voiceNoteId = typeof params.voiceNoteId === 'string' ? params.voiceNoteId : '';
+      return `${request.ip}:${voiceNoteId}`;
+    }
+  });
 
   app.addContentTypeParser(/^audio\/.*/i, { parseAs: 'buffer' }, (_request, payload, done) => {
     done(null, payload as Buffer);
@@ -88,7 +106,9 @@ export const registerNudgesRoutes = (app: FastifyInstance, auth: AuthService): v
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
     const protocol = request.headers['x-forwarded-proto'] ?? request.protocol;
     const host = request.headers['x-forwarded-host'] ?? request.headers.host;
-    const publicBaseUrl = host ? `${String(protocol)}://${String(host)}` : undefined;
+    const publicBaseUrl = env.NODE_ENV === 'production'
+      ? undefined
+      : host ? `${String(protocol)}://${String(host)}` : undefined;
     try {
       return reply.send(
         await voiceNotes.createUploadUrl(request.auth!.user.id, parsed.data.mimeType, publicBaseUrl)
@@ -98,7 +118,7 @@ export const registerNudgesRoutes = (app: FastifyInstance, auth: AuthService): v
     }
   });
 
-  app.put('/voice-notes/upload/:voiceNoteId', { bodyLimit: 12 * 1024 * 1024 }, async (request, reply) => {
+  app.put('/voice-notes/upload/:voiceNoteId', { bodyLimit: 12 * 1024 * 1024, preHandler: voiceUploadLimit }, async (request, reply) => {
     const parsedParams = voiceUploadParamSchema.safeParse(request.params);
     if (!parsedParams.success) return reply.status(400).send({ error: parsedParams.error.flatten() });
     const parsedQuery = voiceUploadQuerySchema.safeParse(request.query);
@@ -122,14 +142,14 @@ export const registerNudgesRoutes = (app: FastifyInstance, auth: AuthService): v
     }
   });
 
-  app.get('/voice-notes/files/:fileName', async (request, reply) => {
+  app.get('/voice-notes/files/:fileName', { preHandler: guard }, async (request, reply) => {
     const parsedParams = voiceFileParamSchema.safeParse(request.params);
     if (!parsedParams.success) return reply.status(400).send({ error: parsedParams.error.flatten() });
     try {
-      const file = await voiceNotes.resolveFileForStreaming(parsedParams.data.fileName);
+      const file = await voiceNotes.resolveFileForStreaming(request.auth!.user.id, parsedParams.data.fileName);
       reply.header('content-type', file.contentType);
       reply.header('content-length', String(file.contentLength));
-      reply.header('cache-control', 'public, max-age=86400');
+      reply.header('cache-control', 'private, no-store');
       return reply.send(file.stream);
     } catch (error) {
       return reply.status(404).send({ error: 'Voice note not found.' });

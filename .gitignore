@@ -20,6 +20,11 @@ pnpm-debug.log*
 **/.turbo/
 **/.next/
 
+# Python
+**/.venv/
+**/__pycache__/
+*.pyc
+
 # Env / secrets
 .env
 .env.*

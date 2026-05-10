@@ -1,17 +1,22 @@
-import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { eq } from 'drizzle-orm';
 import { env } from '../../config/env.js';
+import { db } from '../../db/client.js';
+import { voiceNotes } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
 import { getSharedRedisClient } from '../../lib/redis.js';
+import { getFamilyRepository } from '../family/family-repository.js';
 import { NudgesService } from './nudges-service.js';
+import { decryptVoiceNotePayload, encryptVoiceNotePayload, resolveVoiceNoteEncryptionKey } from './voice-note-encryption.js';
 
 type VoicePriority = 'gentle' | 'important' | 'urgent';
 
 interface PendingUpload {
   voiceNoteId: string;
-  token: string;
+  tokenHash: string;
   fileName: string;
   fileUrl: string;
   mimeType: string;
@@ -56,8 +61,25 @@ const resolveMimeTypeFromFile = (fileName: string): string => {
   }
 };
 
+const fileNameFromUrl = (value: string): string | null => {
+  try {
+    return path.basename(new URL(value).pathname);
+  } catch {
+    return null;
+  }
+};
+
+const hashUploadToken = (token: string): string => createHash('sha256').update(token.trim()).digest('hex');
+
+const safeTokenHashEquals = (presentedToken: string, expectedTokenHash: string): boolean => {
+  const presented = Buffer.from(hashUploadToken(presentedToken), 'hex');
+  const expected = Buffer.from(expectedTokenHash, 'hex');
+  return presented.length === expected.length && timingSafeEqual(presented, expected);
+};
+
 export class VoiceNotesService {
   private readonly nudges = new NudgesService();
+  private readonly familyRepo = getFamilyRepository();
   private readonly redis = getSharedRedisClient();
   private readonly pendingUploads = new Map<string, PendingUpload>();
 
@@ -125,7 +147,7 @@ export class VoiceNotesService {
     const safeMimeType = mimeType?.trim() || DEFAULT_MIME_TYPE;
     const extension = resolveExtension(safeMimeType);
     const voiceNoteId = randomUUID();
-    const token = randomUUID().replace(/-/g, '');
+    const token = randomBytes(32).toString('hex');
     const expiresAt = Date.now() + UPLOAD_TTL_MS;
     const fileName = `${voiceNoteId}.${extension}`;
     const uploadUrl = `${resolvedBaseUrl}/voice-notes/upload/${voiceNoteId}?token=${token}`;
@@ -133,7 +155,7 @@ export class VoiceNotesService {
 
     await this.savePendingUpload({
       voiceNoteId,
-      token,
+      tokenHash: hashUploadToken(token),
       fileName,
       fileUrl,
       mimeType: safeMimeType,
@@ -172,7 +194,7 @@ export class VoiceNotesService {
     if (!pending) {
       throw new Error('Upload session expired or not found');
     }
-    if (pending.token !== token) {
+    if (!safeTokenHashEquals(token, pending.tokenHash)) {
       throw new Error('Upload token mismatch');
     }
     if (pending.expiresAt < Date.now()) {
@@ -180,10 +202,23 @@ export class VoiceNotesService {
       throw new Error('Upload session expired');
     }
 
+    const elder = await this.familyRepo.getElderByUser(pending.userId);
+    if (!elder) {
+      throw new Error('Elder profile is required before uploading voice notes');
+    }
+
     const storageDir = this.getStorageDir();
     await mkdir(storageDir, { recursive: true });
     const outputPath = path.join(storageDir, pending.fileName);
-    await writeFile(outputPath, payload);
+    const encryptionKey = resolveVoiceNoteEncryptionKey(env.VOICE_NOTES_ENCRYPTION_KEY_B64);
+    await writeFile(outputPath, encryptVoiceNotePayload(payload, pending.fileName, encryptionKey));
+    await db.insert(voiceNotes).values({
+      id: voiceNoteId,
+      elderId: elder.id,
+      uploadedByUserId: pending.userId,
+      fileUrl: pending.fileUrl,
+      mimeType: pending.mimeType
+    });
     await this.clearPendingUpload(voiceNoteId);
 
     logger.info('Voice note upload stored', {
@@ -199,8 +234,8 @@ export class VoiceNotesService {
     };
   }
 
-  async resolveFileForStreaming(fileName: string): Promise<{
-    stream: ReturnType<typeof createReadStream>;
+  async resolveFileForStreaming(userId: string, fileName: string): Promise<{
+    stream: Readable;
     contentType: string;
     contentLength: number;
   }> {
@@ -213,12 +248,25 @@ export class VoiceNotesService {
       throw new Error('Invalid voice note file name');
     }
 
+    const elder = await this.familyRepo.getElderByUser(userId);
+    if (!elder) {
+      throw new Error('Voice note not found');
+    }
+
+    const rows = await db.select().from(voiceNotes).where(eq(voiceNotes.elderId, elder.id));
+    const note = rows.find((row) => fileNameFromUrl(row.fileUrl) === safeName);
+    if (!note) {
+      throw new Error('Voice note not found');
+    }
+
     const fullPath = path.join(this.getStorageDir(), safeName);
-    const fileStats = await stat(fullPath);
+    const stored = await readFile(fullPath);
+    const encryptionKey = resolveVoiceNoteEncryptionKey(env.VOICE_NOTES_ENCRYPTION_KEY_B64);
+    const payload = decryptVoiceNotePayload(stored, safeName, encryptionKey);
     return {
-      stream: createReadStream(fullPath),
+      stream: Readable.from(payload),
       contentType: resolveMimeTypeFromFile(safeName),
-      contentLength: fileStats.size
+      contentLength: payload.length
     };
   }
 
@@ -226,10 +274,12 @@ export class VoiceNotesService {
     userId: string,
     input: { fileUrl: string; priority?: VoicePriority }
   ) {
+    const fileName = fileNameFromUrl(input.fileUrl);
+    if (!fileName) throw new Error('Invalid voice note URL');
+    await this.resolveFileForStreaming(userId, fileName);
     return this.nudges.sendNow(userId, {
       voiceUrl: input.fileUrl,
       priority: input.priority
     });
   }
 }
-

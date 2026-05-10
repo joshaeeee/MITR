@@ -1,0 +1,19 @@
+[project]
+name = "mitr-pipecat-gateway"
+version = "0.1.0"
+description = "Prototype ESP32 PCM WebSocket gateway for Mitr using Pipecat and OpenAI Realtime"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "httpx>=0.27.0",
+  "loguru>=0.7.2",
+  "pipecat-ai[openai,websocket]>=1.1.0",
+  "python-dotenv>=1.0.1",
+  "uvicorn>=0.30.0"
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

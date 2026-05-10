@@ -329,6 +329,9 @@ export class SessionDirectorService {
   }): Promise<LongSessionSnapshot> {
     const block = await this.getBlock(input.blockId);
     if (!block) throw new Error('Long session block not found');
+    if (block.longSessionId !== input.longSessionId) {
+      throw new Error('Long session block does not belong to session');
+    }
 
     if (block.state !== 'running' && block.state !== 'queued') {
       const snapshot = await this.get(input.longSessionId);

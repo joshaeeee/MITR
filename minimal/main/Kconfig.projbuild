@@ -1,4 +1,32 @@
 menu "Mitr ESP32 Device"
+    config MITR_TRANSPORT_PIPECAT_GATEWAY
+        bool
+        default y
+
+    config MITR_GATEWAY_WS_URL
+        string "Pipecat gateway WebSocket URL"
+        default ""
+        help
+            WebSocket URL for the Pipecat gateway. Set this in local/prod
+            sdkconfig; do not ship production firmware with an empty value.
+
+    config MITR_GATEWAY_TALK_WINDOW_SEC
+        int "Pipecat gateway talk window after wake (seconds)"
+        default 60
+        range 3 120
+        help
+            Prototype simplification: after local wake detection, stream mic
+            audio to the gateway for this many seconds, then stop and re-arm
+            wake detection.
+
+    config MITR_GATEWAY_SERVER_WAKE_PHRASE
+        bool "Stream mic continuously and let Pipecat detect wake phrase"
+        default y
+        help
+            The ESP32 keeps the Pipecat gateway WebSocket open and streams mic
+            PCM continuously. Local WakeNet wake detection is skipped so the
+            backend can use Pipecat's wake phrase user turn start strategy.
+
     config LK_EXAMPLE_CODEC_BOARD_TYPE
         string "Codec board type"
         default "MITR_ESP32_S3_RAW_I2S"
@@ -12,29 +40,50 @@ menu "Mitr ESP32 Device"
         default 100
         range 0 100
         help
-            Initial output volume used by the LiveKit renderer path.
+            Initial output volume used by the local speaker renderer.
+
+    config LK_EXAMPLE_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            Optional static Wi-Fi SSID for local firmware testing. Leave empty
+            to use stored/provisioned Wi-Fi credentials.
+
+    config LK_EXAMPLE_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            Password for the static Wi-Fi SSID. Leave empty for open networks
+            or when using stored/provisioned credentials.
+
+    config LK_EXAMPLE_NETWORK_MAX_RETRIES
+        int "Wi-Fi max reconnect retries"
+        default -1
+        help
+            Maximum Wi-Fi reconnect attempts before surfacing connection
+            failure. Use -1 to keep retrying.
 
     config MITR_DEVICE_BACKEND_BASE_URL
         string "Mitr backend base URL"
-        default "http://192.168.1.100:8081"
+        default ""
         help
-            Backend API base URL. Use the backend's LAN IP for local testing or
-            the production HTTPS origin once device auth is deployed.
+            Backend API base URL. Use the backend's LAN IP for local testing;
+            production firmware must use an HTTPS origin.
 
     config MITR_DEVICE_DEVICE_ID
         string "Device ID"
-        default "mitr-esp32-002"
+        default ""
         help
-            Stable hardware identity printed in the device QR code. This is sent
-            to the backend during pairing/bootstrap and used for device sessions.
+            Stable hardware identity printed in the device QR code. Set this
+            per device; do not ship a shared default identifier.
 
     config MITR_DEVICE_ACCESS_TOKEN
         string "Device access token"
         default ""
         help
             Long-lived credential returned by POST /devices/claim/complete.
-            The device uses this bearer token to fetch short-lived LiveKit JWTs
-            from POST /devices/token and to send heartbeat/telemetry.
+            The device uses this bearer token for the Pipecat gateway websocket
+            and to send heartbeat/telemetry.
 
     config MITR_DEVICE_PAIRING_TOKEN
         string "One-time pairing token"
@@ -48,8 +97,8 @@ menu "Mitr ESP32 Device"
         string "Preferred language"
         default "hi-IN"
         help
-            Sent to POST /devices/token so backend dispatch metadata can select
-            the right voice pipeline and locale.
+            Sent to the Pipecat gateway so the backend can select the right
+            locale.
 
     config MITR_DEVICE_HARDWARE_REV
         string "Hardware revision"
@@ -116,7 +165,7 @@ menu "Mitr ESP32 Device"
         range 8 24
         help
             Right shift used when converting 32-bit I2S microphone samples to
-            signed 16-bit PCM for WakeNet and LiveKit.
+            signed 16-bit PCM for WakeNet and the Pipecat gateway.
 
     config MITR_MIC_LOOPBACK_PROBE
         bool "Run mic loopback probe instead of normal app"
@@ -124,7 +173,7 @@ menu "Mitr ESP32 Device"
         help
             Debug-only mode. On boot, routes the selected microphone channel
             directly to the speaker so raw I2S channel selection can be tested
-            by ear without LiveKit or WakeNet in the path.
+            by ear without the Pipecat gateway or WakeNet in the path.
 
     config MITR_MIC_LOOPBACK_CHANNEL
         int "Mic loopback channel: 0=left, 1=right, 2=stereo"

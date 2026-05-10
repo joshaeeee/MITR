@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import { env, validateEnv } from './config/env.js';
 import { logger } from './lib/logger.js';
+import { createRateLimit } from './lib/rate-limit.js';
+import { setSecurityHeaders } from './lib/security-headers.js';
 
 validateEnv();
 import { registerSessionRoutes } from './routes/session.js';
@@ -65,7 +67,7 @@ const shutdown = async (signal: string): Promise<void> => {
 };
 
 const bootstrap = async (): Promise<void> => {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, trustProxy: env.TRUST_PROXY });
   appRef = app;
   const store = new SessionStore();
   const profiles = new ProfileService();
@@ -74,8 +76,7 @@ const bootstrap = async (): Promise<void> => {
 
   await app.register(cors, {
     origin: (origin, callback) => {
-      // Native mobile requests often have no Origin header.
-      if (!origin) return callback(null, true);
+      if (!origin) return callback(null, env.CORS_ALLOW_MISSING_ORIGIN);
       if (corsOrigins.length === 0) return callback(null, true);
       if (corsOrigins.includes('*')) return callback(null, true);
       if (corsOrigins.includes(origin)) return callback(null, true);
@@ -85,6 +86,22 @@ const bootstrap = async (): Promise<void> => {
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   });
+
+  app.addHook('onRequest', async (request, reply) => {
+    setSecurityHeaders(reply);
+    if (env.NODE_ENV === 'production' && request.protocol === 'https') {
+      reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+    }
+  });
+
+  app.addHook(
+    'onRequest',
+    createRateLimit({
+      keyPrefix: 'global',
+      windowMs: 60_000,
+      max: env.NODE_ENV === 'production' ? 300 : 1_000
+    })
+  );
 
   registerAuthRoutes(app, auth);
   registerFamilyRoutes(app, auth);

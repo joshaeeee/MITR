@@ -16,10 +16,19 @@ export const authConfig = Object.freeze({
   get consumedOtpRetentionSec() {
     return env.AUTH_OTP_CONSUMED_RETENTION_SEC;
   },
+  get otpDeliveryMode() {
+    return env.AUTH_OTP_DELIVERY_MODE;
+  },
   get devOtpBypassEnabled() {
     return env.AUTH_DEV_OTP_BYPASS;
   },
   get devOtpCode() {
     return env.AUTH_DEV_OTP_CODE;
+  },
+  get lockoutMaxFailures() {
+    return env.AUTH_LOCKOUT_MAX_FAILURES;
+  },
+  get lockoutWindowSec() {
+    return env.AUTH_LOCKOUT_WINDOW_SEC;
   }
 });

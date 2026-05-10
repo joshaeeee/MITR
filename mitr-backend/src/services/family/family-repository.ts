@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   alerts,
@@ -14,7 +14,8 @@ import {
   familyAccounts,
   familyMembers,
   insightDailyScores,
-  nudges
+  nudges,
+  users
 } from '../../db/schema.js';
 import type {
   AlertStatus,
@@ -131,6 +132,8 @@ const inferTypeFromSection = (section: CarePlanSection): CarePlanType => {
 };
 
 const toMillis = (value: Date | null | undefined): number | undefined => (value ? value.getTime() : undefined);
+const normalizeEmail = (value: string | null | undefined): string | undefined => value?.trim().toLowerCase() || undefined;
+const normalizePhone = (value: string | null | undefined): string | undefined => value?.trim() || undefined;
 
 const toFamilyAccount = (row: typeof familyAccounts.$inferSelect): FamilyAccountRecord => ({
   id: row.id,
@@ -346,14 +349,22 @@ export class FamilyRepository {
   }
 
   async getFamilyByUser(userId: string): Promise<FamilyAccountRecord | null> {
-    const [member] = await db.select().from(familyMembers).where(eq(familyMembers.userId, userId)).limit(1);
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(and(eq(familyMembers.userId, userId), isNotNull(familyMembers.acceptedAt)))
+      .limit(1);
     if (!member) return null;
     const [family] = await db.select().from(familyAccounts).where(eq(familyAccounts.id, member.familyId)).limit(1);
     return family ? toFamilyAccount(family) : null;
   }
 
   async getMemberByUser(userId: string): Promise<FamilyMember | null> {
-    const [member] = await db.select().from(familyMembers).where(eq(familyMembers.userId, userId)).limit(1);
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(and(eq(familyMembers.userId, userId), isNotNull(familyMembers.acceptedAt)))
+      .limit(1);
     return member ? toFamilyMember(member) : null;
   }
 
@@ -382,27 +393,124 @@ export class FamilyRepository {
         userId: member.userId ?? randomUUID(),
         role: member.role ?? 'member',
         displayName: member.displayName,
-        email: member.email,
-        phone: member.phone,
-        acceptedAt: new Date()
+        email: normalizeEmail(member.email),
+        phone: normalizePhone(member.phone),
+        acceptedAt: member.userId ? new Date() : null
       })
       .returning();
 
     return toFamilyMember(created);
   }
 
-  async setMemberRole(memberId: string, role: FamilyRole): Promise<FamilyMember | null> {
+  async acceptPendingInviteForUser(user: {
+    id: string;
+    email?: string;
+    phone?: string;
+  }): Promise<FamilyMember | null> {
+    const existing = await this.getMemberByUser(user.id);
+    if (existing?.acceptedAt) {
+      return existing;
+    }
+
+    const email = normalizeEmail(user.email);
+    const phone = normalizePhone(user.phone);
+    if (!email && !phone) {
+      throw new Error('No verified email or phone available for invite acceptance');
+    }
+
+    const match = or(
+      ...(email ? [eq(familyMembers.email, email)] : []),
+      ...(phone ? [eq(familyMembers.phone, phone)] : [])
+    );
+    if (!match) return null;
+
+    const [pending] = await db
+      .select()
+      .from(familyMembers)
+      .where(and(isNull(familyMembers.acceptedAt), match))
+      .orderBy(asc(familyMembers.invitedAt))
+      .limit(1);
+    if (!pending) return null;
+
     const [updated] = await db
       .update(familyMembers)
-      .set({ role })
-      .where(eq(familyMembers.id, memberId))
+      .set({
+        userId: user.id,
+        email: email ?? pending.email,
+        phone: phone ?? pending.phone,
+        acceptedAt: new Date()
+      })
+      .where(eq(familyMembers.id, pending.id))
       .returning();
 
     return updated ? toFamilyMember(updated) : null;
   }
 
-  async removeMember(memberId: string): Promise<boolean> {
-    const [removed] = await db.delete(familyMembers).where(eq(familyMembers.id, memberId)).returning({ id: familyMembers.id });
+  private async isExistingUser(userId: string): Promise<boolean> {
+    const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+    return Boolean(user);
+  }
+
+  private async countAcceptedRealOwners(familyId: string): Promise<number> {
+    const owners = await db
+      .select({ userId: familyMembers.userId, acceptedAt: familyMembers.acceptedAt })
+      .from(familyMembers)
+      .where(and(eq(familyMembers.familyId, familyId), eq(familyMembers.role, 'owner')));
+
+    let count = 0;
+    for (const owner of owners) {
+      if (owner.acceptedAt && (await this.isExistingUser(owner.userId))) count += 1;
+    }
+    return count;
+  }
+
+  async setMemberRole(familyId: string, memberId: string, role: FamilyRole): Promise<FamilyMember | null> {
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(and(eq(familyMembers.id, memberId), eq(familyMembers.familyId, familyId)))
+      .limit(1);
+    if (!member) return null;
+
+    if (role === 'owner' && (!member.acceptedAt || !(await this.isExistingUser(member.userId)))) {
+      throw new Error('Only accepted app users can be promoted to owner');
+    }
+
+    if (member.role === 'owner' && role !== 'owner') {
+      const owners = await this.countAcceptedRealOwners(familyId);
+      if (owners <= 1) {
+        throw new Error('Family must have at least one owner');
+      }
+    }
+
+    const [updated] = await db
+      .update(familyMembers)
+      .set({ role })
+      .where(and(eq(familyMembers.id, memberId), eq(familyMembers.familyId, familyId)))
+      .returning();
+
+    return updated ? toFamilyMember(updated) : null;
+  }
+
+  async removeMember(familyId: string, memberId: string): Promise<boolean> {
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(and(eq(familyMembers.id, memberId), eq(familyMembers.familyId, familyId)))
+      .limit(1);
+    if (!member) return false;
+
+    if (member.role === 'owner') {
+      const owners = await this.countAcceptedRealOwners(familyId);
+      if (owners <= 1) {
+        throw new Error('Family must have at least one owner');
+      }
+    }
+
+    const [removed] = await db
+      .delete(familyMembers)
+      .where(and(eq(familyMembers.id, memberId), eq(familyMembers.familyId, familyId)))
+      .returning({ id: familyMembers.id });
     return Boolean(removed);
   }
 
@@ -424,11 +532,7 @@ export class FamilyRepository {
 
   async isOwner(userId: string): Promise<boolean> {
     const member = await this.getMemberByUser(userId);
-    if (!member) {
-      await this.getOrCreateFamilyForOwner(userId);
-      return true;
-    }
-    return member.role === 'owner';
+    return member?.role === 'owner';
   }
 
   async upsertElder(ownerUserId: string, elder: {
@@ -862,7 +966,10 @@ export class FamilyRepository {
     return toAlertRecord(created);
   }
 
-  async updateAlertStatus(alertId: string, status: AlertStatus): Promise<AlertRecord | null> {
+  async updateAlertStatus(ownerUserId: string, alertId: string, status: AlertStatus): Promise<AlertRecord | null> {
+    const elder = await this.getElderByUser(ownerUserId);
+    if (!elder) return null;
+
     const patch: Partial<typeof alerts.$inferInsert> = {
       status,
       updatedAt: new Date()
@@ -874,7 +981,7 @@ export class FamilyRepository {
     const [updated] = await db
       .update(alerts)
       .set(patch)
-      .where(eq(alerts.id, alertId))
+      .where(and(eq(alerts.id, alertId), eq(alerts.elderId, elder.id)))
       .returning();
 
     return updated ? toAlertRecord(updated) : null;

@@ -3,7 +3,6 @@ import { env } from '../../config/env.js';
 import { db } from '../../db/client.js';
 import { authSessions, deviceConversations, devices, deviceSessions, otpChallenges, refreshTokens, userEventStream } from '../../db/schema.js';
 import { logger } from '../../lib/logger.js';
-import { detachDeviceParticipant } from '../device/livekit-device-room-control.js';
 
 export class DataRetentionService {
   private timer: NodeJS.Timeout | null = null;
@@ -87,15 +86,6 @@ export class DataRetentionService {
             .update(devices)
             .set({ currentDeviceSessionId: null })
             .where(and(eq(devices.deviceId, row.deviceId), eq(devices.currentDeviceSessionId, row.id)));
-          await detachDeviceParticipant(
-            {
-              sessionId: row.id,
-              roomName: row.roomName,
-              participantIdentity: row.participantIdentity,
-              bootId: row.bootId
-            },
-            'heartbeat_timeout'
-          );
         }
       }
 

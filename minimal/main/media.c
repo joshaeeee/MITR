@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -58,6 +59,15 @@ static capture_system_t capturer_system;
 static renderer_system_t renderer_system;
 static volatile int64_t s_last_mic_activity_ms = 0;
 
+typedef struct {
+    bool opened;
+    int sample_rate;
+    int16_t *stereo_scratch;
+    int scratch_capacity_samples;
+} stream_playback_state_t;
+
+static stream_playback_state_t stream_playback;
+
 static uint32_t isqrt_u64(uint64_t value)
 {
     uint64_t bit = (uint64_t)1 << 62;
@@ -105,6 +115,13 @@ static int build_renderer_system(void)
     NULL_CHECK(render_device, "Failed to get render device handle");
     renderer_system.render_device = render_device;
 
+#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY
+    esp_codec_dev_set_out_vol(render_device, CONFIG_LK_EXAMPLE_SPEAKER_VOLUME);
+    renderer_system.output_volume = CONFIG_LK_EXAMPLE_SPEAKER_VOLUME;
+    renderer_system.output_muted = false;
+    ESP_LOGI(TAG, "Gateway playback: using codec device directly");
+    return 0;
+#else
     i2s_render_cfg_t i2s_cfg = {
         .play_handle = render_device,
     };
@@ -132,6 +149,7 @@ static int build_renderer_system(void)
     av_render_set_fixed_frame_info(renderer_system.av_renderer_handle, &frame_info);
 
     return 0;
+#endif
 }
 
 int media_init(void)
@@ -283,6 +301,74 @@ void media_play_pcm_chunked(const int16_t *stereo_pcm,
 
     vTaskDelay(pdMS_TO_TICKS((n_stereo_samples * 1000) / 16000 + 50));
     esp_codec_dev_close(renderer_system.render_device);
+}
+
+esp_err_t media_stream_playback_start(int sample_rate)
+{
+    if (renderer_system.render_device == NULL) {
+        ESP_LOGE(TAG, "render_device not initialised");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (sample_rate <= 0) {
+        sample_rate = 16000;
+    }
+    if (stream_playback.opened && stream_playback.sample_rate == sample_rate) {
+        return ESP_OK;
+    }
+    if (stream_playback.opened) {
+        esp_codec_dev_close(renderer_system.render_device);
+        stream_playback.opened = false;
+    }
+
+    esp_codec_dev_sample_info_t cfg = {
+        .sample_rate = sample_rate,
+        .bits_per_sample = 16,
+        .channel = 2,
+    };
+    int ret = esp_codec_dev_open(renderer_system.render_device, &cfg);
+    ESP_RETURN_ON_FALSE(ret == 0, ESP_FAIL, TAG, "Failed to open stream playback device");
+    stream_playback.opened = true;
+    stream_playback.sample_rate = sample_rate;
+    return ESP_OK;
+}
+
+esp_err_t media_stream_write_mono_pcm16(const int16_t *mono_pcm, int n_samples)
+{
+    if (mono_pcm == NULL || n_samples <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_RETURN_ON_ERROR(media_stream_playback_start(16000), TAG, "Stream playback unavailable");
+
+    const int stereo_samples = n_samples * 2;
+    if (stream_playback.scratch_capacity_samples < stereo_samples) {
+        int16_t *next = heap_caps_realloc(
+            stream_playback.stereo_scratch,
+            (size_t)stereo_samples * sizeof(int16_t),
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        ESP_RETURN_ON_FALSE(next != NULL, ESP_ERR_NO_MEM, TAG, "Failed to grow stream playback scratch");
+        stream_playback.stereo_scratch = next;
+        stream_playback.scratch_capacity_samples = stereo_samples;
+    }
+
+    for (int i = 0; i < n_samples; ++i) {
+        stream_playback.stereo_scratch[i * 2] = mono_pcm[i];
+        stream_playback.stereo_scratch[i * 2 + 1] = mono_pcm[i];
+    }
+
+    int ret = esp_codec_dev_write(
+        renderer_system.render_device,
+        stream_playback.stereo_scratch,
+        stereo_samples * (int)sizeof(int16_t));
+    return ret == 0 ? ESP_OK : ESP_FAIL;
+}
+
+void media_stream_playback_stop(void)
+{
+    if (renderer_system.render_device != NULL && stream_playback.opened) {
+        esp_codec_dev_close(renderer_system.render_device);
+    }
+    stream_playback.opened = false;
+    stream_playback.sample_rate = 0;
 }
 
 void media_run_mic_loopback_probe(void)
