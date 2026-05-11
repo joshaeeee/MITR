@@ -45,8 +45,8 @@ const internalToolInvokeSchema = z.object({
   context: z.object({
     userId: z.string().min(1),
     deviceId: z.string().min(1).optional(),
-    familyId: z.string().uuid().nullish(),
-    elderId: z.string().uuid().nullish(),
+    familyId: z.preprocess((value) => value ?? undefined, z.string().uuid().optional()),
+    elderId: z.preprocess((value) => value ?? undefined, z.string().uuid().optional()),
     language: z.string().optional(),
     sessionId: z.string().optional(),
     lastUserTranscript: z.string().optional()
@@ -253,13 +253,7 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
     const parsed = internalToolInvokeSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-    const context = {
-      ...parsed.data.context,
-      familyId: parsed.data.context.familyId ?? undefined,
-      elderId: parsed.data.context.elderId ?? undefined
-    };
-
-    const verifiedContext = await deviceControl.verifyPipecatToolContext(context);
+    const verifiedContext = await deviceControl.verifyPipecatToolContext(parsed.data.context);
     if (!verifiedContext) {
       return reply.status(403).send({ error: 'Pipecat tool context is not authorized for this user' });
     }
@@ -332,8 +326,8 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
       const result = await tool.execute(input.data, {
         userId: parsed.data.context.userId,
         deviceId: parsed.data.context.deviceId,
-        familyId: context.familyId,
-        elderId: context.elderId,
+        familyId: parsed.data.context.familyId,
+        elderId: parsed.data.context.elderId,
         language: parsed.data.context.language ?? 'hi-IN',
         sessionId: parsed.data.context.sessionId ?? `pipecat-${parsed.data.context.userId}`,
         getLastUserTranscript: () => parsed.data.context.lastUserTranscript ?? null,
