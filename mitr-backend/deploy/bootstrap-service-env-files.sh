@@ -173,6 +173,16 @@ normalize_postgres_url() {
   printf '%s?sslmode=verify-full' "${value}"
 }
 
+is_base64_32() {
+  local value="$1"
+  [[ -n "${value}" ]] || return 1
+  KEY_VALUE="${value}" node -e "const v=process.env.KEY_VALUE||''; process.exit(Buffer.from(v,'base64').length===32 ? 0 : 1)" >/dev/null 2>&1
+}
+
+generate_base64_32() {
+  node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))"
+}
+
 derive_https_base_url() {
   local explicit="${DEPLOY_PUBLIC_API_BASE_URL:-}"
   local existing_api
@@ -227,9 +237,9 @@ ensure_core_env() {
   fi
 
   voice_key="$(env_value VOICE_NOTES_ENCRYPTION_KEY_B64)"
-  if is_placeholder "${voice_key}"; then
-    set_env_value "${ENV_FILE}" VOICE_NOTES_ENCRYPTION_KEY_B64 "$(openssl rand -base64 32)"
-    echo "[deploy] generated missing VOICE_NOTES_ENCRYPTION_KEY_B64 in ${ENV_FILE}"
+  if ! is_base64_32 "${voice_key}"; then
+    set_env_value "${ENV_FILE}" VOICE_NOTES_ENCRYPTION_KEY_B64 "$(generate_base64_32)"
+    echo "[deploy] generated missing or invalid VOICE_NOTES_ENCRYPTION_KEY_B64 in ${ENV_FILE}"
   fi
 
   set_env_value "${ENV_FILE}" ENABLE_HTTPS "true"
