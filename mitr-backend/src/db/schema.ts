@@ -307,6 +307,75 @@ export const carePlanItems = pgTable('care_plan_items', {
   elderCreatedIdx: index('care_plan_items_elder_created_idx').on(table.elderId, table.createdAt)
 }));
 
+export const elderJourneyProfiles = pgTable('elder_journey_profiles', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  preferredAddress: text('preferred_address'),
+  communicationStyle: text('communication_style')
+    .$type<'respectful' | 'direct' | 'warm' | 'chatty'>()
+    .default('respectful')
+    .notNull(),
+  proactiveLevel: text('proactive_level').$type<'low' | 'medium' | 'high'>().default('medium').notNull(),
+  privacyLevel: text('privacy_level')
+    .$type<'minimal' | 'routine_updates' | 'family_visible'>()
+    .default('routine_updates')
+    .notNull(),
+  relationshipStageOverride: text('relationship_stage_override').$type<
+    'setup' | 'first_use' | 'ritual_trust' | 'preference_learning' | 'relationship_building' | 'mature'
+  >(),
+  firstSuccessfulInteractionAt: timestamp('first_successful_interaction_at', { withTimezone: true }),
+  routineAnchors: jsonb('routine_anchors').$type<Array<Record<string, unknown>>>().default([]).notNull(),
+  interests: jsonb('interests').$type<Array<Record<string, unknown>>>().default([]).notNull(),
+  boundaries: jsonb('boundaries').$type<Record<string, unknown>>().default({}).notNull(),
+  onboardingUseCases: jsonb('onboarding_use_cases').$type<string[]>().default([]).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderUnique: uniqueIndex('elder_journey_profiles_elder_uq').on(table.elderId)
+}));
+
+export const elderPromptHistory = pgTable('elder_prompt_history', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  sessionId: text('session_id'),
+  triggerType: text('trigger_type').notNull(),
+  promptType: text('prompt_type').notNull(),
+  promptKey: text('prompt_key').notNull(),
+  topic: text('topic'),
+  responseState: text('response_state')
+    .$type<'planned' | 'accepted' | 'refused' | 'ignored' | 'unclear' | 'completed'>()
+    .default('planned')
+    .notNull(),
+  sentiment: text('sentiment').$type<'positive' | 'neutral' | 'negative'>(),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderCreatedIdx: index('elder_prompt_history_elder_created_idx').on(table.elderId, table.createdAt),
+  elderPromptKeyCreatedIdx: index('elder_prompt_history_elder_prompt_key_created_idx').on(
+    table.elderId,
+    table.promptKey,
+    table.createdAt
+  )
+}));
+
+export const elderMedicationEvents = pgTable('elder_medication_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  reminderId: uuid('reminder_id'),
+  medicine: text('medicine'),
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+  status: text('status').$type<'taken' | 'delayed' | 'refused' | 'no_response' | 'unclear'>().notNull(),
+  responseText: text('response_text'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderCreatedIdx: index('elder_medication_events_elder_created_idx').on(table.elderId, table.createdAt),
+  reminderCreatedIdx: index('elder_medication_events_reminder_created_idx').on(table.reminderId, table.createdAt)
+}));
+
 export const auditEvents = pgTable('audit_events', {
   id: uuid('id').defaultRandom().primaryKey(),
   actorUserId: text('actor_user_id'),

@@ -12,6 +12,22 @@ const elderProfilePatchSchema = z.object({
   timezone: z.string().optional()
 });
 
+const journeyProfilePatchSchema = z.object({
+  preferredAddress: z.string().nullable().optional(),
+  communicationStyle: z.enum(['respectful', 'direct', 'warm', 'chatty']).optional(),
+  proactiveLevel: z.enum(['low', 'medium', 'high']).optional(),
+  privacyLevel: z.enum(['minimal', 'routine_updates', 'family_visible']).optional(),
+  relationshipStageOverride: z
+    .enum(['setup', 'first_use', 'ritual_trust', 'preference_learning', 'relationship_building', 'mature'])
+    .nullable()
+    .optional(),
+  firstSuccessfulInteractionAt: z.number().int().nullable().optional(),
+  routineAnchors: z.array(z.record(z.unknown())).optional(),
+  interests: z.array(z.record(z.unknown())).optional(),
+  boundaries: z.record(z.unknown()).optional(),
+  onboardingUseCases: z.array(z.string()).optional()
+});
+
 const linkDeviceSchema = z.object({
   serialNumber: z.string().min(1),
   firmwareVersion: z.string().optional()
@@ -31,6 +47,22 @@ export const registerElderRoutes = (app: FastifyInstance, auth: AuthService): vo
     try {
       const profile = await elder.upsertProfile(request.auth!.user.id, parsed.data);
       return reply.send({ profile });
+    } catch (error) {
+      return reply.status(403).send({ error: (error as Error).message });
+    }
+  });
+
+  app.get('/elder/journey', { preHandler: guard }, async (request, reply) => {
+    return reply.send({ journey: await elder.getJourneyProfile(request.auth!.user.id) });
+  });
+
+  app.patch('/elder/journey', { preHandler: guard }, async (request, reply) => {
+    const parsed = journeyProfilePatchSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      const journey = await elder.upsertJourneyProfile(request.auth!.user.id, parsed.data);
+      if (!journey) return reply.status(404).send({ error: 'Elder profile not found' });
+      return reply.send({ journey });
     } catch (error) {
       return reply.status(403).send({ error: (error as Error).message });
     }

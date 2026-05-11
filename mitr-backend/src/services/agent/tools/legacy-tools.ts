@@ -13,6 +13,8 @@ import { WebSearchService } from '../../web/web-search-service.js';
 import { logger } from '../../../lib/logger.js';
 import { env } from '../../../config/env.js';
 import { NudgesService } from '../../nudges/nudges-service.js';
+import { ElderJourneyService } from '../../elder-journey/elder-journey-service.js';
+import type { ConversationTriggerType, PromptResponseState, PromptSentiment } from '../../elder-journey/elder-journey-types.js';
 
 export interface ToolDeps {
   religiousRetriever: ReligiousRetriever;
@@ -26,10 +28,14 @@ export interface ToolDeps {
   panchangService: PanchangService;
   webSearchService: WebSearchService;
   nudgesService: NudgesService;
+  elderJourneyService: ElderJourneyService;
 }
 
 export interface AgentToolContext {
   userId: string;
+  deviceId?: string;
+  familyId?: string;
+  elderId?: string;
   language: string;
   sessionId: string;
   getLastUserTranscript?: () => string | null;
@@ -1847,6 +1853,105 @@ export const createLegacyToolDefinitions = (
     execute: async () => deps.companionService.getFestivalCompanion()
   };
 
+  const conversationTriggerSchema = z.enum([
+    'session_start',
+    'first_use',
+    'reminder_fired',
+    'reminder_acknowledged',
+    'medication_taken',
+    'medication_delayed',
+    'routine_time',
+    'morning',
+    'evening',
+    'caregiver_nudge',
+    'user_quiet',
+    'user_requested',
+    'manual'
+  ]);
+
+  const conversationPlannerGet: AgentToolDefinition = {
+    name: 'conversation_planner_get',
+    description:
+      'Get the next elder-aware conversation move based on account/device age, routines, recent prompt history, and trigger context. Use before proactive greetings, reminder follow-ups, routine prompts, or any assistant-initiated question.',
+    parameters: z.object({
+      triggerType: conversationTriggerSchema.nullish(),
+      reminderId: optionalStringArg(),
+      reminderTitle: optionalStringArg(),
+      routineKey: optionalStringArg(),
+      routineTitle: optionalStringArg(),
+      recordPrompt: z.boolean().nullish()
+    }),
+    timeoutMs: 2500,
+    execute: async (input, context) =>
+      deps.elderJourneyService.getConversationPlan({
+        userId: context.userId,
+        elderId: context.elderId,
+        sessionId: context.sessionId,
+        triggerType: (input.triggerType ?? 'session_start') as ConversationTriggerType,
+        reminderId: input.reminderId,
+        reminderTitle: input.reminderTitle,
+        routineKey: input.routineKey,
+        routineTitle: input.routineTitle,
+        recordPrompt: input.recordPrompt
+      })
+  };
+
+  const promptOutcomeRecord: AgentToolDefinition = {
+    name: 'prompt_outcome_record',
+    description:
+      'Record how the elder responded to a planned prompt so future questions stay fresh and respectful. Use when the elder accepts, refuses, ignores, completes, or gives an unclear response to a proactive prompt.',
+    parameters: z.object({
+      promptHistoryId: optionalStringArg(),
+      triggerType: conversationTriggerSchema.nullish(),
+      promptType: optionalStringArg(),
+      promptKey: optionalStringArg(),
+      topic: optionalStringArg(),
+      responseState: z.enum(['accepted', 'refused', 'ignored', 'unclear', 'completed']),
+      sentiment: z.enum(['positive', 'neutral', 'negative']).nullish(),
+      metadata: z.record(z.unknown()).optional()
+    }),
+    timeoutMs: 1200,
+    execute: async (input, context) =>
+      deps.elderJourneyService.recordPromptOutcome({
+        userId: context.userId,
+        elderId: context.elderId,
+        promptHistoryId: input.promptHistoryId,
+        triggerType: input.triggerType as ConversationTriggerType | null | undefined,
+        promptType: input.promptType,
+        promptKey: input.promptKey,
+        topic: input.topic,
+        responseState: input.responseState as PromptResponseState,
+        sentiment: input.sentiment as PromptSentiment | null | undefined,
+        metadata: input.metadata
+      })
+  };
+
+  const medicationResponseRecord: AgentToolDefinition = {
+    name: 'medication_response_record',
+    description:
+      'Record the elder response to a medication reminder and acknowledge the reminder when medicine was taken. Use after medication confirmation turns: taken, delayed, refused, no_response, or unclear.',
+    parameters: z.object({
+      reminderId: optionalStringArg(),
+      medicine: optionalStringArg(),
+      scheduledAt: optionalStringArg(),
+      status: z.enum(['taken', 'delayed', 'refused', 'no_response', 'unclear']),
+      responseText: optionalStringArg(),
+      metadata: z.record(z.unknown()).optional()
+    }),
+    timeoutMs: 1800,
+    execute: async (input, context) =>
+      deps.elderJourneyService.recordMedicationResponse({
+        userId: context.userId,
+        elderId: context.elderId,
+        reminderId: input.reminderId,
+        medicine: input.medicine,
+        scheduledAt: input.scheduledAt,
+        status: input.status,
+        responseText: input.responseText,
+        metadata: input.metadata
+      })
+  };
+
   const medicationAdherenceSetup: AgentToolDefinition = {
     name: 'medication_adherence_setup',
     description:
@@ -1915,6 +2020,9 @@ export const createLegacyToolDefinitions = (
     pranayamaGuideGet,
     brainGameGet,
     festivalContextGet,
+    conversationPlannerGet,
+    promptOutcomeRecord,
+    medicationResponseRecord,
     medicationAdherenceSetup
   ];
 

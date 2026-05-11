@@ -21,6 +21,7 @@ import { GeocodingService } from '../services/location/geocoding-service.js';
 import { WebSearchService } from '../services/web/web-search-service.js';
 import { createToolDefinitions } from '../services/agent/tools.js';
 import { DeviceControlService } from '../services/device/device-control-service.js';
+import { ElderJourneyService } from '../services/elder-journey/elder-journey-service.js';
 
 const cursorQuerySchema = z.object({
   cursor: z.string().optional(),
@@ -44,8 +45,8 @@ const internalToolInvokeSchema = z.object({
   context: z.object({
     userId: z.string().min(1),
     deviceId: z.string().min(1).optional(),
-    familyId: z.string().uuid().optional(),
-    elderId: z.string().uuid().optional(),
+    familyId: z.string().uuid().nullish(),
+    elderId: z.string().uuid().nullish(),
     language: z.string().optional(),
     sessionId: z.string().optional(),
     lastUserTranscript: z.string().optional()
@@ -85,6 +86,7 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
   const companion = new CompanionService(reminders);
   const newsService = new NewsService();
   const webSearchService = new WebSearchService();
+  const elderJourneyService = new ElderJourneyService(reminders);
   const toolDefinitions = createToolDefinitions({
     religiousRetriever: new ReligiousRetriever(),
     mem0,
@@ -96,7 +98,8 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
     youtubeStreamService: new YoutubeStreamService(),
     panchangService: new PanchangService(new GeocodingService()),
     webSearchService,
-    nudgesService: nudges
+    nudgesService: nudges,
+    elderJourneyService
   });
   const toolByName = new Map(toolDefinitions.map((tool) => [tool.name, tool]));
 
@@ -250,7 +253,13 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
     const parsed = internalToolInvokeSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-    const verifiedContext = await deviceControl.verifyPipecatToolContext(parsed.data.context);
+    const context = {
+      ...parsed.data.context,
+      familyId: parsed.data.context.familyId ?? undefined,
+      elderId: parsed.data.context.elderId ?? undefined
+    };
+
+    const verifiedContext = await deviceControl.verifyPipecatToolContext(context);
     if (!verifiedContext) {
       return reply.status(403).send({ error: 'Pipecat tool context is not authorized for this user' });
     }
@@ -322,6 +331,9 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
     try {
       const result = await tool.execute(input.data, {
         userId: parsed.data.context.userId,
+        deviceId: parsed.data.context.deviceId,
+        familyId: context.familyId,
+        elderId: context.elderId,
         language: parsed.data.context.language ?? 'hi-IN',
         sessionId: parsed.data.context.sessionId ?? `pipecat-${parsed.data.context.userId}`,
         getLastUserTranscript: () => parsed.data.context.lastUserTranscript ?? null,
