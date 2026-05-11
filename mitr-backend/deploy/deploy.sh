@@ -65,6 +65,22 @@ running_image() {
   docker inspect --format='{{.Config.Image}}' "${container}" 2>/dev/null || true
 }
 
+dump_deploy_diagnostics() {
+  echo "[deploy] docker compose status"
+  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" ps || true
+
+  for container in mitr-api mitr-pipecat-gateway mitr-reminder-worker mitr-insights-worker mitr-digest-worker mitr-nginx; do
+    echo "[deploy] diagnostics for ${container}"
+    docker inspect --format='state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}} exit={{.State.ExitCode}} error={{.State.Error}}' "${container}" 2>/dev/null || true
+    docker logs --tail=80 "${container}" 2>&1 || true
+  done
+
+  if docker inspect mitr-api >/dev/null 2>&1; then
+    echo "[deploy] internal API readiness snapshot"
+    docker exec mitr-api node -e "import('./dist/src/services/health/health-status.js').then(async (m) => { console.log(JSON.stringify(await m.getApiHealthStatus(), null, 2)); }).catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); })" 2>&1 || true
+  fi
+}
+
 PREV_API_IMAGE="$(running_image mitr-api)"
 PREV_PIPECAT_GATEWAY_IMAGE="$(running_image mitr-pipecat-gateway)"
 PREV_REMINDER_IMAGE="$(running_image mitr-reminder-worker)"
@@ -88,7 +104,11 @@ else
 fi
 
 echo "[deploy] starting updated stack"
-docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans
+if ! docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans; then
+  echo "[deploy] docker compose startup failed"
+  dump_deploy_diagnostics
+  exit 1
+fi
 
 chmod +x "${HEALTHCHECK_SCRIPT}"
 if BASE_URL="${HEALTH_BASE_URL:-http://127.0.0.1}" "${HEALTHCHECK_SCRIPT}"; then
@@ -100,6 +120,7 @@ fi
 echo "[deploy] healthcheck failed, attempting rollback"
 if [[ "${RUN_DB_MIGRATIONS}" == "true" && "${ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS}" != "true" ]]; then
   echo "[deploy] automatic image rollback is disabled after migrations because schema changes may be incompatible"
+  dump_deploy_diagnostics
   exit 1
 fi
 
@@ -113,9 +134,11 @@ if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_PIPECAT_GATEWAY_IMAGE}" && -n "${PREV
     echo "[deploy] rollback successful"
   else
     echo "[deploy] rollback failed"
+    dump_deploy_diagnostics
     exit 1
   fi
 else
   echo "[deploy] rollback unavailable (previous image refs missing)"
+  dump_deploy_diagnostics
   exit 1
 fi

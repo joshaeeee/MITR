@@ -13,7 +13,11 @@ type HealthPayload = {
 };
 
 const readJson = async (path: string) => {
-  const response = await fetch(`${baseUrl}${path}`);
+  const headers: Record<string, string> = {};
+  if (path === '/health/latency' && process.env.SMOKE_LATENCY_TOKEN) {
+    headers.authorization = `Bearer ${process.env.SMOKE_LATENCY_TOKEN}`;
+  }
+  const response = await fetch(`${baseUrl}${path}`, { headers });
   const text = await response.text();
 
   let body: unknown;
@@ -46,12 +50,16 @@ const main = async (): Promise<void> => {
   }
   assertHealthPayload(healthBody as HealthPayload);
 
-  const { response: latencyResponse, body: latencyBody } = await readJson('/health/latency');
-  if (!latencyResponse.ok) {
-    throw new Error(`/health/latency returned ${latencyResponse.status}`);
-  }
-  if (!(latencyBody as { ok?: boolean }).ok) {
-    throw new Error('/health/latency reported ok=false');
+  const checked = ['/healthz'];
+  if (process.env.SMOKE_LATENCY_TOKEN) {
+    const { response: latencyResponse, body: latencyBody } = await readJson('/health/latency');
+    if (!latencyResponse.ok) {
+      throw new Error(`/health/latency returned ${latencyResponse.status}`);
+    }
+    if (!(latencyBody as { ok?: boolean }).ok) {
+      throw new Error('/health/latency reported ok=false');
+    }
+    checked.push('/health/latency');
   }
 
   console.log(
@@ -59,7 +67,7 @@ const main = async (): Promise<void> => {
       {
         ok: true,
         baseUrl,
-        checked: ['/healthz', '/health/latency'],
+        checked,
         dependencies: (healthBody as HealthPayload).dependencies ?? {}
       },
       null,
