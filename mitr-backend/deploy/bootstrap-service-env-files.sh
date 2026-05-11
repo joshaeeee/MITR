@@ -248,6 +248,7 @@ ensure_core_env() {
   set_env_value "${ENV_FILE}" AUTH_DEV_OTP_BYPASS "false"
   set_env_value "${ENV_FILE}" SECURITY_KEYS_ROTATED_ACK "true"
   set_env_value "${ENV_FILE}" PROD_SECRETS_OUT_OF_REPO_ACK "true"
+  set_env_value "${ENV_FILE}" VOICE_NOTES_LOCAL_STORAGE_ACK_RISK "true"
   set_env_value "${ENV_FILE}" POSTGRES_STORAGE_ENCRYPTION_ACK "true"
   set_env_value "${ENV_FILE}" POSTGRES_BACKUPS_ENCRYPTION_ACK "true"
 }
