@@ -1047,12 +1047,14 @@ export class InsightsReadService {
     const elder = await this.repo.getElderByUser(userId);
 
     const [runs, transcriptStats, latestScore, latestDigest] = await Promise.all([
-      db
-        .select()
-        .from(insightPipelineRuns)
-        .where(elder ? eq(insightPipelineRuns.elderId, elder.id) : sql`true`)
-        .orderBy(desc(insightPipelineRuns.startedAt))
-        .limit(20),
+      elder
+        ? db
+            .select()
+            .from(insightPipelineRuns)
+            .where(eq(insightPipelineRuns.elderId, elder.id))
+            .orderBy(desc(insightPipelineRuns.startedAt))
+            .limit(20)
+        : Promise.resolve([]),
       db
         .select({
           transcriptCount: sql<number>`count(*)`,

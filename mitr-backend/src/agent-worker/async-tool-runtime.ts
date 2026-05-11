@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentToolContext } from '../services/agent/tools.js';
 
 export type AsyncToolName =
@@ -68,7 +69,7 @@ export class AsyncToolRuntime {
   }
 
   private nextRequestId(prefix: string): string {
-    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return `${prefix}_${Date.now().toString(36)}_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
   }
 
   private jobMapKey(tool: AsyncToolName, key: string): string {

@@ -86,7 +86,7 @@ const main = async (): Promise<void> => {
     throw new Error('Failed to load newly claimed device');
   }
 
-  const token = await devices.mintLiveKitToken({
+  const session = await devices.mintPipecatSession({
     device,
     language: args.language,
     firmwareVersion: args.firmwareVersion,
@@ -107,7 +107,7 @@ const main = async (): Promise<void> => {
           hardwareRev: completed.hardwareRev,
           firmwareVersion: completed.firmwareVersion
         },
-        livekit: token
+        pipecat: session
       },
       null,
       2

@@ -12,21 +12,57 @@ const envBoolean = (defaultValue: boolean) =>
     return value;
   }, z.boolean().default(defaultValue));
 
-const envSchema = z.object({
+const csv = (value: string | undefined): string[] =>
+  (value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const isWeakProductionSecret = (value: string | undefined, minLength = 32): boolean => {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized.length < minLength) return true;
+  return [
+    'changeme',
+    'change_me',
+    'placeholder',
+    'internal-test-token',
+    'internal-token-test',
+    'test-token'
+  ].includes(normalized);
+};
+
+const isProductionPlaceholder = (value: string | undefined): boolean => {
+  const normalized = (value ?? '').trim().toLowerCase();
+  return (
+    normalized.length === 0 ||
+    normalized.includes('example.com') ||
+    normalized.includes('.example') ||
+    normalized.includes('localhost') ||
+    normalized.includes('127.0.0.1') ||
+    normalized.includes('placeholder') ||
+    ['changeme', 'change_me'].includes(normalized)
+  );
+};
+
+const baseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().default(8080),
+  TRUST_PROXY: envBoolean(true),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   LOCAL_LATENCY_TRACKING_FILE: z.string().optional(),
   CORS_ORIGINS: z.string().default('http://localhost:8787'),
+  CORS_ALLOW_MISSING_ORIGIN: envBoolean(false),
   API_PUBLIC_BASE_URL: z.string().url().optional(),
   INTERNAL_API_BASE_URL: z.string().url().optional(),
   VOICE_NOTES_STORAGE_DIR: z.string().default('var/voice-notes'),
-
-  LIVEKIT_URL: z.string().url().optional(),
-  LIVEKIT_API_KEY: z.string().min(1).optional(),
-  LIVEKIT_API_SECRET: z.string().min(1).optional(),
-  LIVEKIT_AGENT_NAME: z.string().default('mitr-agent'),
-  LIVEKIT_TOKEN_TTL_SEC: z.coerce.number().default(3600),
+  VOICE_NOTES_ENCRYPTION_KEY_B64: z.string().optional(),
+  VOICE_NOTES_LOCAL_STORAGE_ACK_RISK: envBoolean(false),
+  SECURITY_KEYS_ROTATED_ACK: envBoolean(false),
+  PROD_SECRETS_OUT_OF_REPO_ACK: envBoolean(false),
+  POSTGRES_STORAGE_ENCRYPTION_ACK: envBoolean(false),
+  POSTGRES_BACKUPS_ENCRYPTION_ACK: envBoolean(false),
+  PIPECAT_GATEWAY_PUBLIC_WS_URL: z.string().url().default('ws://localhost:7860/ws'),
+  PIPECAT_GATEWAY_PUBLIC_HTTP_URL: z.string().url().default('http://localhost:7860'),
 
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_CHAT_MODEL: z.string().default('gpt-4.1-mini'),
@@ -42,10 +78,9 @@ const envSchema = z.object({
       'sarvam_stt_llm_cartesia_tts',
       'gemini_realtime_text_sarvam_tts',
       'gemini_realtime_text_cartesia_tts',
-      'gemini_realtime',
-      'livekit_inference'
+      'gemini_realtime'
     ])
-    .default('sarvam_stt_llm_tts'),
+    .default('openai_realtime'),
   INFERENCE_LLM_MODEL: z.string().default('openai/gpt-4o-mini'),
   INFERENCE_STT_MODEL: z.string().default('deepgram/nova-3-general'),
   INFERENCE_TTS_MODEL: z.string().default('cartesia/sonic-3'),
@@ -73,8 +108,16 @@ const envSchema = z.object({
   AUTH_OTP_TTL_SEC: z.coerce.number().default(300),
   AUTH_REVOKED_SESSION_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 7),
   AUTH_OTP_CONSUMED_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24),
-  AUTH_DEV_OTP_BYPASS: envBoolean(true),
+  AUTH_OTP_DELIVERY_MODE: z.enum(['disabled', 'dev_log', 'twilio']).default('disabled'),
+  AUTH_DEV_OTP_BYPASS: envBoolean(false),
   AUTH_DEV_OTP_CODE: z.string().default('123456'),
+  AUTH_LOCKOUT_MAX_FAILURES: z.coerce.number().int().min(1).default(5),
+  AUTH_LOCKOUT_WINDOW_SEC: z.coerce.number().int().min(30).default(15 * 60),
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_FROM_PHONE: z.string().optional(),
+  GOOGLE_OAUTH_CLIENT_IDS: z.string().optional(),
+  APPLE_OAUTH_CLIENT_IDS: z.string().optional(),
 
   DEVICE_TOKEN_TTL_SEC: z.coerce.number().default(86_400),
   SESSION_IDLE_TIMEOUT_SEC: z.coerce.number().default(1_800),
@@ -85,6 +128,7 @@ const envSchema = z.object({
   DEVICE_AGENT_HEARTBEAT_MS: z.coerce.number().default(15_000),
   DEVICE_SESSION_STALE_SEC: z.coerce.number().default(60 * 60 * 24),
   INTERNAL_SERVICE_TOKEN: z.string().min(1).optional(),
+  SHORT_CODE_PEPPER: z.string().optional(),
   REDIS_URL: z.string().url().optional(),
   POSTGRES_URL: z.string().url(),
 
@@ -147,6 +191,181 @@ const envSchema = z.object({
   EXPO_ACCESS_TOKEN: z.string().optional(),
   MAINTENANCE_CLEANUP_INTERVAL_SEC: z.coerce.number().default(900),
   USER_EVENT_STREAM_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 14)
+});
+
+const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.NODE_ENV !== 'production') return;
+
+  if (env.AUTH_DEV_OTP_BYPASS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AUTH_DEV_OTP_BYPASS'],
+      message: 'AUTH_DEV_OTP_BYPASS must be false in production'
+    });
+  }
+
+  if (env.AUTH_OTP_DELIVERY_MODE === 'dev_log') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AUTH_OTP_DELIVERY_MODE'],
+      message: 'AUTH_OTP_DELIVERY_MODE=dev_log is not allowed in production'
+    });
+  }
+
+  if (env.AUTH_OTP_DELIVERY_MODE === 'twilio') {
+    for (const key of ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_PHONE'] as const) {
+      if (!env[key]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} is required when AUTH_OTP_DELIVERY_MODE=twilio`
+        });
+      }
+    }
+  }
+
+  for (const key of [
+    'SECURITY_KEYS_ROTATED_ACK',
+    'PROD_SECRETS_OUT_OF_REPO_ACK',
+    'POSTGRES_STORAGE_ENCRYPTION_ACK',
+    'POSTGRES_BACKUPS_ENCRYPTION_ACK'
+  ] as const) {
+    if (!env[key]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `${key} must be true in production`
+      });
+    }
+  }
+
+  if (!env.INTERNAL_SERVICE_TOKEN) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['INTERNAL_SERVICE_TOKEN'],
+      message: 'INTERNAL_SERVICE_TOKEN is required in production'
+    });
+  } else if (isWeakProductionSecret(env.INTERNAL_SERVICE_TOKEN, 32)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['INTERNAL_SERVICE_TOKEN'],
+      message: 'INTERNAL_SERVICE_TOKEN must be a high-entropy secret in production'
+    });
+  }
+
+  if (!env.SHORT_CODE_PEPPER) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SHORT_CODE_PEPPER'],
+      message: 'SHORT_CODE_PEPPER is required in production'
+    });
+  } else if (isWeakProductionSecret(env.SHORT_CODE_PEPPER, 32)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SHORT_CODE_PEPPER'],
+      message: 'SHORT_CODE_PEPPER must be a high-entropy secret in production'
+    });
+  }
+
+  if (!env.REDIS_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['REDIS_URL'],
+      message: 'REDIS_URL is required in production'
+    });
+  }
+
+  const corsOrigins = csv(env.CORS_ORIGINS);
+  if (corsOrigins.length === 0 || corsOrigins.includes('*')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['CORS_ORIGINS'],
+      message: 'CORS_ORIGINS must be explicit in production'
+    });
+  }
+  const insecureCorsOrigin = corsOrigins.find((origin) => {
+    const normalized = origin.toLowerCase();
+    return !normalized.startsWith('https://') || isProductionPlaceholder(origin);
+  });
+  if (insecureCorsOrigin) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['CORS_ORIGINS'],
+      message: 'CORS_ORIGINS must contain only HTTPS production origins'
+    });
+  }
+  if (env.CORS_ALLOW_MISSING_ORIGIN) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['CORS_ALLOW_MISSING_ORIGIN'],
+      message: 'CORS_ALLOW_MISSING_ORIGIN must be false in production'
+    });
+  }
+
+  if (!env.PIPECAT_GATEWAY_PUBLIC_WS_URL.startsWith('wss://') || isProductionPlaceholder(env.PIPECAT_GATEWAY_PUBLIC_WS_URL)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PIPECAT_GATEWAY_PUBLIC_WS_URL'],
+      message: 'Pipecat gateway WebSocket URL must be a real wss:// URL in production'
+    });
+  }
+
+  if (!env.PIPECAT_GATEWAY_PUBLIC_HTTP_URL.startsWith('https://') || isProductionPlaceholder(env.PIPECAT_GATEWAY_PUBLIC_HTTP_URL)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PIPECAT_GATEWAY_PUBLIC_HTTP_URL'],
+      message: 'Pipecat gateway HTTP URL must be a real https:// URL in production'
+    });
+  }
+
+  if (!env.API_PUBLIC_BASE_URL?.startsWith('https://') || isProductionPlaceholder(env.API_PUBLIC_BASE_URL)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['API_PUBLIC_BASE_URL'],
+      message: 'API_PUBLIC_BASE_URL must be a real https:// URL in production'
+    });
+  }
+
+  const postgresUrl = new URL(env.POSTGRES_URL);
+  const sslMode = postgresUrl.searchParams.get('sslmode')?.toLowerCase();
+  const localPostgresHosts = new Set(['localhost', '127.0.0.1', '::1', 'postgres']);
+  if (!localPostgresHosts.has(postgresUrl.hostname) && sslMode !== 'verify-full') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['POSTGRES_URL'],
+      message: 'POSTGRES_URL must include sslmode=verify-full in production'
+    });
+  }
+
+  if (!env.VOICE_NOTES_LOCAL_STORAGE_ACK_RISK) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['VOICE_NOTES_LOCAL_STORAGE_ACK_RISK'],
+      message: 'Production voice note storage is local disk; set VOICE_NOTES_LOCAL_STORAGE_ACK_RISK=true only after provisioning encrypted storage/backups'
+    });
+  }
+
+  if (!env.VOICE_NOTES_ENCRYPTION_KEY_B64) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['VOICE_NOTES_ENCRYPTION_KEY_B64'],
+      message: 'VOICE_NOTES_ENCRYPTION_KEY_B64 is required in production'
+    });
+  } else if (Buffer.from(env.VOICE_NOTES_ENCRYPTION_KEY_B64, 'base64').length !== 32) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['VOICE_NOTES_ENCRYPTION_KEY_B64'],
+      message: 'VOICE_NOTES_ENCRYPTION_KEY_B64 must decode to 32 bytes'
+    });
+  }
+
+  if (!env.QDRANT_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['QDRANT_API_KEY'],
+      message: 'QDRANT_API_KEY is required in production'
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;

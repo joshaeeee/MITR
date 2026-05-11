@@ -108,7 +108,7 @@ void sounds_play_chime(void)
     }
     ESP_LOGI(TAG, "[SOUND] Playing wake chime");
     media_play_pcm(s_chime_buf, CHIME_SAMPLES);
-    /* Add a small silence gap so the LiveKit connection doesn't step on the tail */
+    /* Add a small silence gap so the gateway capture doesn't step on the tail. */
     vTaskDelay(pdMS_TO_TICKS(50));
 }
 

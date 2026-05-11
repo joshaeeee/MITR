@@ -1,41 +1,54 @@
+if(CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE)
+    set(mitr_gateway_client_src "gateway_client_server_wake.c")
+else()
+    set(mitr_gateway_client_src "gateway_client.c")
+endif()
+
+set(mitr_device_srcs
+    "main.c"
+    "board.c"
+    "media.c"
+    "preconnect_audio_src.c"
+    "device_api.c"
+    "device_storage.c"
+    "boot_feedback.c"
+    "network.c"
+    "provisioning.c"
+    "ota_manager.c"
+    "atomic_compat.c"
+    "sounds.c"
+    "wake_word.c"
+    ${mitr_gateway_client_src}
+)
+
+set(mitr_device_priv_requires
+    esp_http_client
+    esp_https_ota
+    esp_event
+    esp_netif
+    esp_wifi
+    app_update
+    esp_websocket_client
+    protocomm
+    wifi_provisioning
+    json
+    nvs_flash
+    espressif__esp_audio_codec
+    espressif__esp_capture
+    espressif__esp-sr
+    tempotian__av_render
+    tempotian__codec_board
+    tempotian__media_lib_sal
+)
+
 idf_component_register(
     SRCS
-        "main.c"
-        "example.c"
-        "board.c"
-        "media.c"
-        "preconnect_audio_src.c"
-        "device_api.c"
-        "device_storage.c"
-        "boot_feedback.c"
-        "network.c"
-        "provisioning.c"
-        "ota_manager.c"
-        "atomic_compat.c"
-        "sounds.c"
-        "wake_word.c"
+        ${mitr_device_srcs}
     INCLUDE_DIRS
         "."
     EMBED_FILES
         "assets/boot_ready.raw"
     PRIV_REQUIRES
-        esp_http_client
-        esp_https_ota
-        esp_event
-        esp_netif
-        esp_wifi
-        app_update
-        protocomm
-        wifi_provisioning
-        json
-        nvs_flash
-        espressif__esp_audio_codec
-        espressif__esp_capture
-        espressif__esp-sr
-        livekit__example_utils
-        livekit__livekit
-        tempotian__av_render
-        tempotian__codec_board
-        tempotian__media_lib_sal
+        ${mitr_device_priv_requires}
     WHOLE_ARCHIVE
 )

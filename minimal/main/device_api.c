@@ -266,7 +266,7 @@ static cJSON *build_metadata_payload(void)
     }
 
     cJSON_AddStringToObject(metadata, "platform", "esp32-s3");
-    cJSON_AddStringToObject(metadata, "transport", "livekit");
+    cJSON_AddStringToObject(metadata, "transport", "pipecat");
     cJSON_AddStringToObject(metadata, "runtime", "esp-idf");
     return metadata;
 }
@@ -401,7 +401,7 @@ esp_err_t mitr_device_request_token(const char *boot_id, mitr_device_token_respo
 
     cJSON_Delete(response);
 
-    if (!out->session_id || !out->boot_id || !out->server_url || !out->participant_token) {
+    if (!out->session_id || !out->boot_id || !out->server_url) {
         mitr_device_token_response_free(out);
         return ESP_FAIL;
     }

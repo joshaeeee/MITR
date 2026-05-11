@@ -1,9 +1,14 @@
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
 import { and, eq, gt, isNull, or } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { authIdentities, authPasswords, authSessions, otpChallenges, users } from '../../db/schema.js';
 import { authConfig } from '../../config/auth-config.js';
 import { logger } from '../../lib/logger.js';
+import { hashShortCode } from '../../lib/short-code-hash.js';
+import { assertAuthNotLocked, recordAuthFailure, recordAuthSuccess } from './auth-attempts.js';
+import { canUseEmailIdentityForPrimaryLogin, shouldCreateEmailIdentity, toTrustedEmailKey } from './auth-linking-policy.js';
+import { sendOtpCode } from './otp-delivery.js';
+import { assertPasswordPolicy } from './password-policy.js';
 
 export interface AuthUser {
   id: string;
@@ -25,9 +30,14 @@ interface SessionPair {
 const now = (): number => Date.now();
 const toDate = (value: number): Date => new Date(value);
 const token = (): string => randomBytes(32).toString('hex');
-const generateCode = (): string => (Math.floor(Math.random() * 900000) + 100000).toString();
+const generateCode = (): string => randomInt(100000, 1000000).toString();
 const toEmailKey = (email: string): string => email.trim().toLowerCase();
 const hashOpaqueToken = (value: string): string => createHash('sha256').update(value).digest('hex');
+const safeStringEquals = (left: string, right: string): boolean => {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+};
 
 const hashPassword = (password: string): string => {
   const salt = randomBytes(16).toString('hex');
@@ -37,8 +47,8 @@ const hashPassword = (password: string): string => {
 
 const verifyPassword = (password: string, encoded: string): boolean => {
   if (encoded.startsWith('legacy:')) {
-    const [, , legacyPassword] = encoded.split(':');
-    return legacyPassword === password;
+    const [, , ...legacyPasswordParts] = encoded.split(':');
+    return safeStringEquals(password, legacyPasswordParts.join(':'));
   }
   const [scheme, salt, storedHex] = encoded.split('$');
   if (scheme !== 'scrypt' || !salt || !storedHex) return false;
@@ -48,7 +58,7 @@ const verifyPassword = (password: string, encoded: string): boolean => {
   return timingSafeEqual(stored, derived);
 };
 
-const hashOtpCode = (code: string): string => createHash('sha256').update(code).digest('hex');
+const hashOtpCode = (code: string): string => hashShortCode('otp', code);
 
 export class AuthService {
   private async loadUserById(userId: string): Promise<AuthUser | null> {
@@ -101,6 +111,19 @@ export class AuthService {
     return this.loadUserById(identity.userId);
   }
 
+  private async loadUserByProvider(
+    provider: 'apple' | 'google',
+    providerUserId: string
+  ): Promise<AuthUser | null> {
+    const [identity] = await db
+      .select()
+      .from(authIdentities)
+      .where(and(eq(authIdentities.provider, provider), eq(authIdentities.providerUserId, providerUserId)))
+      .limit(1);
+    if (!identity) return null;
+    return this.loadUserById(identity.userId);
+  }
+
   private async ensureIdentity(input: {
     userId: string;
     provider: 'phone' | 'email' | 'apple' | 'google';
@@ -115,7 +138,10 @@ export class AuthService {
       .limit(1);
 
     if (existing) {
-      if (existing.userId !== input.userId || existing.email !== input.email || existing.phone !== input.phone) {
+      if (existing.userId !== input.userId) {
+        throw new Error('Identity is already linked to another user');
+      }
+      if (existing.email !== input.email || existing.phone !== input.phone) {
         await db
           .update(authIdentities)
           .set({
@@ -161,12 +187,18 @@ export class AuthService {
     name?: string;
     provider: 'phone' | 'email' | 'apple' | 'google';
     providerUserId?: string;
+    emailVerified?: boolean;
   }): Promise<AuthUser> {
-    const normalizedEmail = input.email ? toEmailKey(input.email) : undefined;
+    const normalizedEmail = toTrustedEmailKey(input);
 
     let user: AuthUser | null = null;
-    if (input.phone) user = await this.loadUserByPhone(input.phone);
-    if (!user && normalizedEmail) user = await this.loadUserByEmail(normalizedEmail);
+    if ((input.provider === 'apple' || input.provider === 'google') && input.providerUserId) {
+      user = await this.loadUserByProvider(input.provider, input.providerUserId);
+    }
+    if (!user && input.phone) user = await this.loadUserByPhone(input.phone);
+    if (!user && normalizedEmail && canUseEmailIdentityForPrimaryLogin(input.provider)) {
+      user = await this.loadUserByEmail(normalizedEmail);
+    }
 
     if (!user) {
       user = await this.createUser({ name: input.name });
@@ -185,7 +217,7 @@ export class AuthService {
       });
     }
 
-    if (normalizedEmail) {
+    if (normalizedEmail && shouldCreateEmailIdentity(input.provider)) {
       await this.ensureIdentity({
         userId: user.id,
         provider: 'email',
@@ -196,7 +228,8 @@ export class AuthService {
     }
 
     if (input.provider === 'apple' || input.provider === 'google') {
-      const providerUserId = input.providerUserId?.trim() || normalizedEmail || `${input.provider}-${user.id}`;
+      const providerUserId = input.providerUserId?.trim();
+      if (!providerUserId) throw new Error('Verified provider user id is required');
       await this.ensureIdentity({
         userId: user.id,
         provider: input.provider,
@@ -253,6 +286,10 @@ export class AuthService {
   }
 
   async startOtp(phone: string): Promise<{ challengeId: string; expiresAt: number; devOtpCode?: string }> {
+    if (!authConfig.devOtpBypassEnabled && authConfig.otpDeliveryMode === 'disabled') {
+      throw new Error('Phone OTP login is not configured');
+    }
+
     const challengeId = randomUUID();
     const code = generateCode();
     const expiresAt = now() + authConfig.otpTtlSec * 1000;
@@ -264,6 +301,13 @@ export class AuthService {
       expiresAt: toDate(expiresAt)
     });
 
+    try {
+      await sendOtpCode(phone, code);
+    } catch (error) {
+      await db.update(otpChallenges).set({ consumedAt: new Date() }).where(eq(otpChallenges.id, challengeId));
+      throw error;
+    }
+
     logger.info('OTP challenge created', {
       challengeId,
       phoneMasked: `${phone.slice(0, 2)}******${phone.slice(-2)}`
@@ -272,7 +316,7 @@ export class AuthService {
     return {
       challengeId,
       expiresAt,
-      devOtpCode: authConfig.devOtpBypassEnabled ? code : undefined
+      devOtpCode: authConfig.devOtpBypassEnabled || authConfig.otpDeliveryMode === 'dev_log' ? code : undefined
     };
   }
 
@@ -280,15 +324,29 @@ export class AuthService {
     user: AuthUser;
     session: SessionPair;
   }> {
+    const attemptKey = `otp:${input.challengeId}`;
+    const attemptOptions = {
+      maxFailures: authConfig.lockoutMaxFailures,
+      windowSec: authConfig.lockoutWindowSec
+    };
+    assertAuthNotLocked(attemptKey, attemptOptions);
+
     const [challenge] = await db
       .select()
       .from(otpChallenges)
       .where(eq(otpChallenges.id, input.challengeId))
       .limit(1);
 
-    if (!challenge) throw new Error('OTP challenge not found or expired');
-    if (challenge.consumedAt) throw new Error('OTP challenge already consumed');
+    if (!challenge) {
+      recordAuthFailure(attemptKey, attemptOptions);
+      throw new Error('OTP challenge not found or expired');
+    }
+    if (challenge.consumedAt) {
+      recordAuthFailure(attemptKey, attemptOptions);
+      throw new Error('OTP challenge already consumed');
+    }
     if (challenge.expiresAt.getTime() < now()) {
+      recordAuthFailure(attemptKey, attemptOptions);
       throw new Error('OTP challenge expired');
     }
 
@@ -299,14 +357,20 @@ export class AuthService {
       const suppliedBuffer = Buffer.from(supplied, 'hex');
       const expectedBuffer = Buffer.from(expected, 'hex');
       if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+        recordAuthFailure(attemptKey, attemptOptions);
         throw new Error('Invalid OTP code');
       }
     }
 
-    await db
+    const [consumedChallenge] = await db
       .update(otpChallenges)
       .set({ consumedAt: new Date() })
-      .where(eq(otpChallenges.id, challenge.id));
+      .where(and(eq(otpChallenges.id, challenge.id), isNull(otpChallenges.consumedAt)))
+      .returning({ id: otpChallenges.id });
+    if (!consumedChallenge) {
+      recordAuthFailure(attemptKey, attemptOptions);
+      throw new Error('OTP challenge already consumed');
+    }
 
     const user = await this.upsertUser({
       phone: challenge.phone,
@@ -314,6 +378,7 @@ export class AuthService {
       provider: 'phone',
       providerUserId: challenge.phone
     });
+    recordAuthSuccess(attemptKey);
     const session = await this.issueSessionForUser(user);
     return { user, session };
   }
@@ -323,6 +388,11 @@ export class AuthService {
     session: SessionPair;
   }> {
     const normalizedEmail = toEmailKey(input.email);
+    assertPasswordPolicy({
+      email: normalizedEmail,
+      name: input.name,
+      password: input.password
+    });
     const existing = await this.loadUserByEmail(normalizedEmail);
     if (existing) throw new Error('Email already in use');
 
@@ -342,16 +412,34 @@ export class AuthService {
     user: AuthUser;
     session: SessionPair;
   }> {
-    const user = await this.loadUserByEmail(input.email);
-    if (!user) throw new Error('Invalid email or password');
+    const normalizedEmail = toEmailKey(input.email);
+    const attemptKey = `email:${normalizedEmail}`;
+    const attemptOptions = {
+      maxFailures: authConfig.lockoutMaxFailures,
+      windowSec: authConfig.lockoutWindowSec
+    };
+    assertAuthNotLocked(attemptKey, attemptOptions);
+
+    const user = await this.loadUserByEmail(normalizedEmail);
+    if (!user) {
+      recordAuthFailure(attemptKey, attemptOptions);
+      throw new Error('Invalid email or password');
+    }
 
     const credential = await this.getPasswordCredential(user.id);
-    if (!credential) throw new Error('Invalid email or password');
-    if (!verifyPassword(input.password, credential)) throw new Error('Invalid email or password');
+    if (!credential) {
+      recordAuthFailure(attemptKey, attemptOptions);
+      throw new Error('Invalid email or password');
+    }
+    if (!verifyPassword(input.password, credential)) {
+      recordAuthFailure(attemptKey, attemptOptions);
+      throw new Error('Invalid email or password');
+    }
     if (credential.startsWith('legacy:')) {
       await this.setPasswordCredential(user.id, input.password);
     }
 
+    recordAuthSuccess(attemptKey);
     const session = await this.issueSessionForUser(user);
     return { user, session };
   }
@@ -359,15 +447,16 @@ export class AuthService {
   async oauthLogin(input: {
     provider: 'apple' | 'google';
     email?: string;
+    emailVerified: boolean;
     name?: string;
-    providerUserId?: string;
+    providerUserId: string;
   }): Promise<{ user: AuthUser; session: SessionPair }> {
-    const syntheticEmail = input.email ?? `${input.providerUserId ?? randomUUID()}@${input.provider}.mitr.local`;
     const user = await this.upsertUser({
-      email: syntheticEmail,
+      email: input.email,
+      emailVerified: input.emailVerified,
       name: input.name,
       provider: input.provider,
-      providerUserId: input.providerUserId ?? syntheticEmail
+      providerUserId: input.providerUserId
     });
 
     const session = await this.issueSessionForUser(user);
@@ -396,17 +485,29 @@ export class AuthService {
 
     if (!current) throw new Error('Invalid refresh token');
     if (current.refreshExpiresAt.getTime() < now()) {
-      await db.update(authSessions).set({ revokedAt: new Date() }).where(eq(authSessions.id, current.id));
+      await db
+        .update(authSessions)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(authSessions.id, current.id), isNull(authSessions.revokedAt)));
       throw new Error('Refresh token expired');
     }
 
     const user = await this.loadUserById(current.userId);
     if (!user) {
-      await db.update(authSessions).set({ revokedAt: new Date() }).where(eq(authSessions.id, current.id));
+      await db
+        .update(authSessions)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(authSessions.id, current.id), isNull(authSessions.revokedAt)));
       throw new Error('User no longer exists');
     }
 
-    await db.update(authSessions).set({ revokedAt: new Date() }).where(eq(authSessions.id, current.id));
+    const [revokedCurrentSession] = await db
+      .update(authSessions)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(authSessions.id, current.id), isNull(authSessions.revokedAt)))
+      .returning({ id: authSessions.id });
+    if (!revokedCurrentSession) throw new Error('Invalid refresh token');
+
     const session = await this.issueSessionForUser(user);
     return { user, session };
   }

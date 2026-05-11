@@ -2,6 +2,9 @@ import { closeRedisConnections } from '../lib/redis.js';
 import { logger } from '../lib/logger.js';
 import { InsightsPipelineService } from '../services/insights/insights-pipeline-service.js';
 import { closeInsightsQueue, createInsightsWorker } from '../services/insights/queue.js';
+import { validateEnv } from '../config/env.js';
+
+validateEnv();
 
 const pipeline = new InsightsPipelineService();
 

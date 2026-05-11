@@ -1,8 +1,12 @@
-import { env } from '../config/env.js';
 import { closeRedisConnections } from '../lib/redis.js';
 import { logger } from '../lib/logger.js';
 import { closeDigestQueue, createDigestWorker, ensureDigestRepeatableScanWithPattern } from '../services/insights/digest-queue.js';
 import { DigestNotifierService } from '../services/notifications/digest-notifier-service.js';
+import { validateEnv } from '../config/env.js';
+
+validateEnv();
+
+const digestCronUtc = (): string => process.env.DIGEST_JOB_CRON_UTC?.trim() || '* * * * *';
 
 const notifier = new DigestNotifierService();
 
@@ -48,8 +52,9 @@ const shutdown = async (signal: string): Promise<void> => {
 };
 
 const start = async (): Promise<void> => {
-  await ensureDigestRepeatableScanWithPattern(env.DIGEST_JOB_CRON_UTC);
-  logger.info('Digest worker started', { cronUtc: env.DIGEST_JOB_CRON_UTC });
+  const cronUtc = digestCronUtc();
+  await ensureDigestRepeatableScanWithPattern(cronUtc);
+  logger.info('Digest worker started', { cronUtc });
 };
 
 void start().catch((error) => {
@@ -64,4 +69,3 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   void shutdown('SIGINT');
 });
-

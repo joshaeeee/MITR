@@ -5,6 +5,7 @@ import type { AuthService } from '../services/auth/auth-service.js';
 import { DeviceService } from '../services/device/device-service.js';
 import { DeviceControlService } from '../services/device/device-control-service.js';
 import { requireDeviceAuth } from '../services/device/device-auth.js';
+import { bodyFieldsKey, createRateLimit } from '../lib/rate-limit.js';
 
 const linkSchema = z.object({
   serialNumber: z.string().min(1),
@@ -12,7 +13,7 @@ const linkSchema = z.object({
 });
 
 const claimCompleteSchema = z.object({
-  claimCode: z.string().min(4),
+  claimCode: z.string().regex(/^\d{6}$/),
   deviceId: z.string().min(1),
   displayName: z.string().optional(),
   hardwareRev: z.string().optional(),
@@ -32,7 +33,7 @@ const pairingStatusParamsSchema = z.object({
 });
 
 const bootstrapCompleteSchema = z.object({
-  pairingToken: z.string().min(8),
+  pairingToken: z.string().min(32),
   deviceId: z.string().min(1),
   displayName: z.string().optional(),
   hardwareRev: z.string().optional(),
@@ -46,6 +47,12 @@ const deviceTokenSchema = z.object({
   firmwareVersion: z.string().optional(),
   hardwareRev: z.string().optional(),
   metadata: z.record(z.unknown()).optional()
+});
+
+const deviceGatewayAuthSchema = z.object({
+  deviceId: z.string().min(1).optional(),
+  language: z.string().optional(),
+  transport: z.string().optional()
 });
 
 const deviceHeartbeatSchema = z.object({
@@ -87,6 +94,18 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
   const control = new DeviceControlService();
   const guard = requireAuth(auth);
   const deviceGuard = requireDeviceAuth(control);
+  const claimCompleteLimit = createRateLimit({
+    keyPrefix: 'devices:claim-complete',
+    windowMs: 10 * 60 * 1000,
+    max: 20,
+    key: bodyFieldsKey(['deviceId', 'claimCode'])
+  });
+  const bootstrapCompleteLimit = createRateLimit({
+    keyPrefix: 'devices:bootstrap-complete',
+    windowMs: 10 * 60 * 1000,
+    max: 20,
+    key: bodyFieldsKey(['deviceId', 'pairingToken'])
+  });
 
   app.get('/device/status', { preHandler: guard }, async (request, reply) => {
     return reply.send(await device.status(request.auth!.user.id));
@@ -149,7 +168,7 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
     return reply.send({ items: await control.listDevicesForUser(request.auth!.user.id) });
   });
 
-  app.post('/devices/claim/complete', async (request, reply) => {
+  app.post('/devices/claim/complete', { preHandler: claimCompleteLimit }, async (request, reply) => {
     const parsed = claimCompleteSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
@@ -162,7 +181,7 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
     }
   });
 
-  app.post('/devices/bootstrap/complete', async (request, reply) => {
+  app.post('/devices/bootstrap/complete', { preHandler: bootstrapCompleteLimit }, async (request, reply) => {
     const parsed = bootstrapCompleteSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
@@ -207,16 +226,41 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
     }
   });
 
-  // Mint a fresh participant JWT for the device's existing persistent room.
-  // Does NOT create a new session row or re-dispatch the agent — use it only
-  // when a session is already live and the token is approaching expiry.
+  app.post('/devices/gateway/auth', { preHandler: deviceGuard }, async (request, reply) => {
+    const parsed = deviceGatewayAuthSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    const authenticated = request.deviceAuth!.device;
+    if (parsed.data.deviceId && parsed.data.deviceId !== authenticated.deviceId) {
+      return reply.status(403).send({ error: 'Device ID does not match bearer token' });
+    }
+
+    const metadataLanguage =
+      typeof authenticated.metadataJson.elderLanguage === 'string'
+        ? authenticated.metadataJson.elderLanguage
+        : undefined;
+
+    return reply.send({
+      ok: true,
+      deviceId: authenticated.deviceId,
+      userId: authenticated.userId,
+      familyId: authenticated.familyId,
+      elderId: authenticated.elderId,
+      claimedByUserId: authenticated.claimedByUserId,
+      language: parsed.data.language || metadataLanguage || 'hi-IN',
+      transport: parsed.data.transport || 'pipecat-gateway'
+    });
+  });
+
+  // Return Pipecat session metadata for an existing device session. The
+  // long-lived device access token remains the websocket bearer credential.
   app.post('/devices/token/refresh', { preHandler: deviceGuard }, async (request, reply) => {
     const parsed = deviceTokenRefreshSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
     try {
       return reply.send(
-        await control.refreshLiveKitToken({
+        await control.refreshPipecatSession({
           device: request.deviceAuth!.device,
           sessionId: parsed.data.sessionId,
           bootId: parsed.data.bootId

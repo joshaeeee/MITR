@@ -1,15 +1,16 @@
 import path from 'node:path';
-import { env } from './env.js';
+
+const readLogLevel = (): string => process.env.LOG_LEVEL?.trim() || 'info';
 
 export const observabilityConfig = Object.freeze({
   get logLevel() {
-    return env.LOG_LEVEL;
+    return readLogLevel();
   },
   get localLatencyTrackingEnabled() {
-    return env.NODE_ENV !== 'production';
+    return process.env.NODE_ENV !== 'production';
   },
   get localLatencyTrackingFile() {
-    const configured = env.LOCAL_LATENCY_TRACKING_FILE?.trim();
+    const configured = process.env.LOCAL_LATENCY_TRACKING_FILE?.trim();
     return path.resolve(configured && configured.length > 0 ? configured : path.join(process.cwd(), 'var', 'latency-turns.jsonl'));
   },
   healthCheckTimeoutMs: 3000

@@ -25,6 +25,24 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+for worker_env in \
+  "${SCRIPT_DIR}/.env.prod.pipecat-gateway" \
+  "${SCRIPT_DIR}/.env.prod.reminder-worker" \
+  "${SCRIPT_DIR}/.env.prod.insights-worker" \
+  "${SCRIPT_DIR}/.env.prod.digest-worker"
+do
+  if [[ ! -f "${worker_env}" ]]; then
+    echo "[deploy] missing ${worker_env}. Copy the matching .template file and fill only the worker-specific secrets."
+    exit 1
+  fi
+done
+
+bash "${SCRIPT_DIR}/check-service-env-scope.sh"
+bash "${SCRIPT_DIR}/preflight-prod-env.sh" "${ENV_FILE}"
+
+echo "[deploy] validating docker compose configuration"
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" config >/dev/null
+
 if [[ -n "${GHCR_USERNAME:-}" && -n "${GHCR_TOKEN:-}" ]]; then
   echo "[deploy] logging into ghcr.io as ${GHCR_USERNAME}"
   echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
@@ -42,12 +60,12 @@ running_image() {
 }
 
 PREV_API_IMAGE="$(running_image mitr-api)"
-PREV_AGENT_IMAGE="$(running_image mitr-agent-worker)"
+PREV_PIPECAT_GATEWAY_IMAGE="$(running_image mitr-pipecat-gateway)"
 PREV_REMINDER_IMAGE="$(running_image mitr-reminder-worker)"
 
 echo "[deploy] previous images:"
 echo "  api=${PREV_API_IMAGE:-<none>}"
-echo "  agent=${PREV_AGENT_IMAGE:-<none>}"
+echo "  pipecat-gateway=${PREV_PIPECAT_GATEWAY_IMAGE:-<none>}"
 echo "  reminder=${PREV_REMINDER_IMAGE:-<none>}"
 
 echo "[deploy] pulling latest images"
@@ -79,9 +97,9 @@ if [[ "${RUN_DB_MIGRATIONS}" == "true" && "${ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIO
   exit 1
 fi
 
-if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_AGENT_IMAGE}" && -n "${PREV_REMINDER_IMAGE}" ]]; then
+if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_PIPECAT_GATEWAY_IMAGE}" && -n "${PREV_REMINDER_IMAGE}" ]]; then
   API_IMAGE="${PREV_API_IMAGE}" \
-  AGENT_IMAGE="${PREV_AGENT_IMAGE}" \
+  PIPECAT_GATEWAY_IMAGE="${PREV_PIPECAT_GATEWAY_IMAGE}" \
   REMINDER_IMAGE="${PREV_REMINDER_IMAGE}" \
   docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans
 

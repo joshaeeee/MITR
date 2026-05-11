@@ -20,13 +20,20 @@ pnpm-debug.log*
 **/.turbo/
 **/.next/
 
+# Python
+**/.venv/
+**/__pycache__/
+*.pyc
+
 # Env / secrets
 .env
 .env.*
 !.env.example
+!.env.*.template
 **/.env
 **/.env.*
 !**/.env.example
+!**/.env.*.template
 
 # Build/test outputs
 coverage/

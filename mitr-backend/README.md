@@ -1,199 +1,157 @@
-# Mitr Backend (LiveKit + OpenAI Realtime)
+# Mitr Backend (Pipecat + OpenAI Realtime)
 
-Mitr backend migrated to LiveKit transport with OpenAI Realtime voice agent.
+Mitr uses the Fastify API for product/auth/data flows and the Python Pipecat
+gateway for realtime voice.
 
 ## Architecture
-- `mitr-api` (Fastify): token issuance, onboarding/profile APIs, long-session HTTP APIs, health endpoints.
-- `mitr-agent-worker` (LiveKit Agents Node): realtime voice agent with tools.
-- Frontend/web-sim uses `livekit-client` (`Room.connect`) and no custom `/voice` protocol.
+
+- `mitr-api` (Fastify): app auth, device auth, onboarding/profile APIs,
+  sessions, telemetry, pairing, long-session HTTP APIs, health endpoints.
+- `mitr-pipecat-gateway` (Python): ESP32 and browser PCM WebSocket transport,
+  wake phrase handling, OpenAI Realtime voice, and voice tool calls.
+- `tools/web-sim`: local browser simulator that streams PCM directly to the
+  Pipecat gateway WebSocket.
 
 ## Stack
-- Runtime: Node.js + TypeScript
-- Agent runtime: `@livekit/agents` + `@livekit/agents-plugin-openai`
-- Realtime model: OpenAI Realtime (`gpt-realtime` by default)
+
+- API runtime: Node.js + TypeScript
+- Voice runtime: Pipecat + OpenAI Realtime
 - Data: Postgres + Drizzle, Redis + BullMQ, Qdrant, Mem0
-- News: Exa API
+- Retrieval/news/media: Exa, Prokerala, Bhagavad Gita API, yt-dlp
 
 ## Quickstart
-1. Copy env file:
-```bash
-cp .env.example .env
-```
 
-2. Install:
-```bash
+```sh
+cp .env.example .env
 pnpm install
 ```
 
-3. Start API:
-```bash
-pnpm dev:api
+Start the API:
+
+```sh
+DOTENV_CONFIG_PATH=/Users/shivanshjoshi/Mitr/mitr-backend/.env \
+NODE_OPTIONS='-r dotenv/config' \
+PORT=8081 \
+./node_modules/.bin/tsx src/index.ts
 ```
 
-4. Start agent worker:
-```bash
-pnpm dev:agent
+Start the voice gateway:
+
+```sh
+cd pipecat-gateway
+MITR_GATEWAY_WAKE_MODE=pipecat_phrase \
+MITR_GATEWAY_WAKE_PHRASES="hi esp,hey esp,hi e s p" \
+MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC=45 \
+OPENAI_REALTIME_STT_LANGUAGE=en \
+uv run python -m mitr_pipecat_gateway.server
 ```
 
-5. Start web simulator:
-```bash
+Start the web simulator:
+
+```sh
 pnpm test:web
 ```
+
 Open `http://localhost:8787`.
 
-## Public APIs
+## Voice APIs
 
-### Session and onboarding
 - `POST /session/start`
-  - body: `{ "userId": "<id>" }`
-  - returns `{ sessionId, transport: "livekit", onboarding }`
+  - returns `{ sessionId, transport: "pipecat", onboarding }`
+- `POST /pipecat/connect`
+  - returns Pipecat connection metadata for web clients:
+    `transport`, `wsUrl`, `serverUrl`, `identity`, `agentName`, `dispatchMetadata`
+- `POST /pipecat/gateway/auth`
+  - verifies authenticated web voice sessions for the Python gateway
+- `POST /devices/session/open`
+  - returns Pipecat connection metadata for ESP32 clients
+- `POST /devices/token`
+  - refreshes Pipecat connection metadata for ESP32 clients
+- `POST /devices/gateway/auth`
+  - verifies device bearer tokens for the Python gateway
+
+Wake behavior:
+
+```text
+Hi ESP -> awake -> conversation remains active -> 45 seconds idle -> sleeping
+```
+
+The client WebSocket remains connected across wake/sleep cycles. Model failures
+are surfaced as `model_error` and `model_reconnecting` gateway events.
+
+## Other APIs
+
 - `POST /session/end`
-  - body: `{ "sessionId": "<id>" }`
 - `GET /onboarding/questions`
 - `GET /onboarding/status?userId=<id>`
 - `POST /onboarding/submit`
-  - body: `{ "userId": "<id>", "answers": { ... } }`
-
-### LiveKit token
-- `POST /livekit/token`
-  - body: `{ "userId": "<id>", "roomName?": "...", "language?": "hi-IN", "metadata?": { ... } }`
-  - returns:
-    - `serverUrl`
-    - `participantToken`
-    - `roomName`
-    - `identity`
-    - `agentName`
-
-Token includes `room_config.agents` dispatch with `LIVEKIT_AGENT_NAME`, so agent auto-joins on connect.
-
-### Long-session runtime (HTTP)
 - `POST /long-session/start`
 - `POST /long-session/next`
 - `POST /long-session/stop`
 - `GET /long-session/:id`
 - `GET /long-session/:id/summary`
-
-### Health
 - `GET /healthz`
 - `GET /health/latency`
 
-## Important migration note
-Custom voice websocket protocol (`GET /voice` with `turn_start/audio_chunk/turn_end`) has been removed.
-Old firmware/clients using `/voice` are not supported after this migration.
-
 ## Scripts
-- `pnpm dev` -> API dev (alias)
+
 - `pnpm dev:api` -> API dev server
-- `pnpm dev:agent` -> LiveKit worker dev mode
+- `pnpm dev:agent` -> Pipecat gateway dev server
 - `pnpm start:api` -> API production start
-- `pnpm start:agent` -> Worker production start
-- `pnpm worker` -> Reminder worker
-- `pnpm test:web` -> Local LiveKit web simulator page
-- `pnpm test:agent` -> Tool registry smoke script
+- `pnpm start:agent` -> Pipecat gateway production start
+- `pnpm worker` -> reminder worker
+- `pnpm test:web` -> local Pipecat web simulator
+- `pnpm test:agent` -> Node tool registry smoke script
 
-## Cloud Run deployment shape
-Deploy as two services:
-1. `mitr-api` (public ingress)
-2. `mitr-agent-worker` (private/public based on your setup)
+## EC2 Deployment
 
-Keep both connected to the same Postgres/Redis/Qdrant/Mem0 services.
+Production compose runs:
 
-## EC2 deployment (Docker Compose + Nginx, test)
+- `mitr-api`
+- `mitr-pipecat-gateway`
+- `mitr-reminder-worker`
+- `mitr-insights-worker`
+- `mitr-digest-worker`
+- Redis and Nginx
 
-Files added under `mitr-backend/deploy/`:
-- `docker-compose.prod.yml`
-- `nginx.conf`
-- `nginx.http.conf`
-- `nginx.https.conf.template`
-- `.env.prod.template`
-- `deploy.sh`
-- `healthcheck.sh`
-- `bootstrap-ec2.sh`
-- `configure-nginx.sh`
-- `setup-https.sh`
-- `generate-prod-env.sh`
+Nginx proxies `/ws` to `mitr-pipecat-gateway:7860`; all other API traffic goes
+to `mitr-api:8080`.
 
-### One-time EC2 bootstrap
-```bash
-sudo bash /opt/mitr/MITR/mitr-backend/deploy/bootstrap-ec2.sh
-```
+Deploy:
 
-### Deploy on EC2
-```bash
+```sh
 cd /opt/mitr/MITR/mitr-backend
 cp deploy/.env.prod.template deploy/.env.prod
-# edit deploy/.env.prod with real values
-# set API_PUBLIC_BASE_URL to your public API host (e.g. http://16.16.162.185)
+cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
+cp deploy/.env.prod.reminder-worker.template deploy/.env.prod.reminder-worker
+cp deploy/.env.prod.insights-worker.template deploy/.env.prod.insights-worker
+cp deploy/.env.prod.digest-worker.template deploy/.env.prod.digest-worker
+deploy/generate-prod-secrets.sh
+bash deploy/preflight-prod-env.sh deploy/.env.prod
 bash deploy/deploy.sh
 bash deploy/setup-https.sh
 ```
 
-### Verify
-```bash
+Keep service env files narrow. Gateway and worker env files should not include
+unrelated API/OAuth/database/vector-store/device secrets.
+Use the generated `INTERNAL_SERVICE_TOKEN` in `deploy/.env.prod`, the same value
+as `MITR_BACKEND_INTERNAL_TOKEN` in `deploy/.env.prod.pipecat-gateway`, and the
+generated `VOICE_NOTES_ENCRYPTION_KEY_B64` in `deploy/.env.prod`.
+Before a pilot launch, complete `deploy/SECURITY_LAUNCH_CHECKLIST.md`; the
+production preflight blocks deploy until the required security acknowledgements
+are set.
+Use `deploy/SECURITY_TESTING_GUIDE.md` to verify local, live API, staging, and
+production security gates.
+
+Verify:
+
+```sh
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod config >/dev/null
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod ps
 curl -fsS http://127.0.0.1/healthz
-curl -fsS http://127.0.0.1/health/latency
+curl -fsS -H "Authorization: Bearer <access-token>" http://127.0.0.1/health/latency
 ```
 
-### GitHub Actions CI/CD (auto deploy to EC2)
-Workflow:
-- `.github/workflows/deploy-backend-ec2.yml`
-
-Behavior:
-- Pull requests touching `mitr-backend/**` run CI gates:
-  - `pnpm typecheck`
-  - `pnpm test:unit`
-  - `pnpm build`
-  - Dockerfile smoke-build for API + agent (no push)
-- Pushes to `main` (backend paths) run:
-  - same CI gate
-  - build + push API/agent images to GHCR (`sha-*` + `prod-latest`)
-  - baseline the Drizzle migration ledger if needed
-  - run production Drizzle migrations before the container restart
-  - SSH deploy on EC2 via `deploy/deploy.sh`
-  - rollback if healthcheck fails
-  - public smoke check on `/healthz` and `/health/latency`
-
-Required repo secrets:
-- `EC2_HOST` (public IP or DNS)
-- `EC2_USER` (`ubuntu` or `ec2-user`)
-- `EC2_SSH_KEY` (private key content)
-- `GHCR_TOKEN` (token with `read:packages` for EC2 pulls)
-
-Optional repo secret:
-- `GHCR_USERNAME` (defaults to repository owner if omitted)
-- `PUBLIC_API_BASE_URL` (recommended, e.g. `https://api.heyreca.com`; otherwise smoke check falls back to `http://EC2_HOST`)
-
-Notes:
-- Deploy job rewrites `API_IMAGE`, `AGENT_IMAGE`, `REMINDER_IMAGE` in `deploy/.env.prod` to the new SHA-tagged images.
-- `deploy/.env.prod` should keep `RUN_DB_MIGRATIONS=true` unless you have a controlled reason to skip schema changes.
-- Automatic image rollback is intentionally disabled when migrations run, because old images may not be schema-compatible after a successful migration.
-- After deploy, it verifies running container image refs to prevent stale-image restarts.
-- If `ENABLE_HTTPS=true`, `PUBLIC_HOSTNAME`, and `TLS_EMAIL` are present in `.env.prod`, deploy also provisions/renews Let's Encrypt and exposes HTTPS on `443`.
-
-### CloudWatch on EC2
-
-- Container logs ship directly from Docker to CloudWatch Logs through the `awslogs` driver in [docker-compose.prod.yml](/Users/shivanshjoshi/Mitr/mitr-backend/deploy/docker-compose.prod.yml).
-- Set `AWS_REGION` and `CLOUDWATCH_LOG_GROUP` in `deploy/.env.prod`.
-- Attach an EC2 IAM role with `CloudWatchAgentServerPolicy`.
-- Host metrics can be enabled with the config in [cloudwatch-agent.json](/Users/shivanshjoshi/Mitr/mitr-backend/deploy/cloudwatch-agent.json):
-
-```bash
-bash deploy/setup-cloudwatch.sh
-```
-
-## Ingestion / data utilities
-- Religious corpus:
-```bash
-pnpm ingest:religious ./data/religious.json
-```
-- Stories translation (optional utility):
-```bash
-pnpm stories:translate ../stories_curated.jsonl ./data/stories.hi.jsonl --target hi-IN --source en-IN
-```
-- Stories ingestion:
-```bash
-pnpm ingest:stories ./data/stories.hi.jsonl --chunk-size 1200 --chunk-overlap 150
-```
-
-CI trigger: 2026-03-18 09:07:53 IST
+GitHub Actions builds and pushes the API image and the Pipecat gateway image,
+then rewrites `API_IMAGE`, `PIPECAT_GATEWAY_IMAGE`, and `REMINDER_IMAGE` in
+`deploy/.env.prod` before deployment.

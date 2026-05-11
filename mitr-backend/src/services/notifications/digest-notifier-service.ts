@@ -7,10 +7,28 @@ import {
   familyMembers,
   insightDailyDigests
 } from '../../db/schema.js';
-import { env } from '../../config/env.js';
 import { logger } from '../../lib/logger.js';
 import { getFamilyRepository } from '../family/family-repository.js';
 import { DailyDigestService } from '../insights/daily-digest-service.js';
+
+const readIntEnv = (key: string, defaultValue: number): number => {
+  const value = process.env[key]?.trim();
+  if (!value) return defaultValue;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+};
+
+const digestDefaults = {
+  get hour() {
+    return readIntEnv('DIGEST_DEFAULT_HOUR', 20);
+  },
+  get minute() {
+    return readIntEnv('DIGEST_DEFAULT_MINUTE', 30);
+  },
+  get expoAccessToken() {
+    return process.env.EXPO_ACCESS_TOKEN?.trim();
+  }
+};
 
 export class DigestNotifierService {
   private readonly repo = getFamilyRepository();
@@ -42,8 +60,8 @@ export class DigestNotifierService {
         userId,
         familyId: family.id,
         digestEnabled: true,
-        digestHourLocal: env.DIGEST_DEFAULT_HOUR,
-        digestMinuteLocal: env.DIGEST_DEFAULT_MINUTE,
+        digestHourLocal: digestDefaults.hour,
+        digestMinuteLocal: digestDefaults.minute,
         timezone: 'Asia/Kolkata',
         realtimeEnabled: true,
         updatedAt: new Date()
@@ -213,21 +231,26 @@ export class DigestNotifierService {
 
     if (tokens.length === 0) return true;
 
-    if (!env.EXPO_ACCESS_TOKEN) {
+    const expoAccessToken = digestDefaults.expoAccessToken;
+    if (!expoAccessToken) {
       logger.warn('EXPO_ACCESS_TOKEN missing; skipping push digest send', { userId, dateKey: targetDate });
       return true;
     }
 
-    const sentAny = await this.sendExpoPush(tokens.map((token) => token.expoPushToken), {
-      title: 'MITR Daily Insight',
-      body: this.buildDigestPushBody(digest),
-      data: {
-        type: 'daily_digest',
-        dateKey: digest.dateKey,
-        scoreBand: digest.scoreBand,
-        confidence: digest.confidence
-      }
-    });
+    const sentAny = await this.sendExpoPush(
+      tokens.map((token) => token.expoPushToken),
+      {
+        title: 'MITR Daily Insight',
+        body: this.buildDigestPushBody(digest),
+        data: {
+          type: 'daily_digest',
+          dateKey: digest.dateKey,
+          scoreBand: digest.scoreBand,
+          confidence: digest.confidence
+        }
+      },
+      expoAccessToken
+    );
 
     await db
       .insert(digestDeliveryLogs)
@@ -256,7 +279,8 @@ export class DigestNotifierService {
 
   private async sendExpoPush(
     tokens: string[],
-    payload: { title: string; body: string; data: Record<string, unknown> }
+    payload: { title: string; body: string; data: Record<string, unknown> },
+    expoAccessToken: string
   ): Promise<boolean> {
     if (tokens.length === 0) return false;
 
@@ -266,7 +290,7 @@ export class DigestNotifierService {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          Authorization: `Bearer ${env.EXPO_ACCESS_TOKEN}`
+          Authorization: `Bearer ${expoAccessToken}`
         },
         body: JSON.stringify(
           tokens.map((to) => ({
@@ -305,8 +329,8 @@ export class DigestNotifierService {
         userId: member.userId,
         familyId,
         digestEnabled: true,
-        digestHourLocal: env.DIGEST_DEFAULT_HOUR,
-        digestMinuteLocal: env.DIGEST_DEFAULT_MINUTE,
+        digestHourLocal: digestDefaults.hour,
+        digestMinuteLocal: digestDefaults.minute,
         timezone: 'Asia/Kolkata',
         realtimeEnabled: true,
         updatedAt: new Date()

@@ -28,7 +28,7 @@ const run = async () => {
     logger.info('Seed user already exists', { email: EMAIL, userId: user.id });
   }
 
-  await family.getFamilyMe(user.id);
+  await family.getFamilyMe(user);
 
   await elder.upsertProfile(user.id, {
     name: 'Kamla Devi',
