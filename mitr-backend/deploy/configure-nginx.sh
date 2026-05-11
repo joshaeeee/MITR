@@ -23,6 +23,10 @@ CERT_DIR="/etc/letsencrypt/live/${CERT_NAME}"
 
 cert_ready() {
   local cert_dir="$1"
+  if command -v sudo >/dev/null 2>&1; then
+    sudo test -f "${cert_dir}/fullchain.pem" && sudo test -f "${cert_dir}/privkey.pem"
+    return
+  fi
   test -f "${cert_dir}/fullchain.pem" && test -f "${cert_dir}/privkey.pem"
 }
 
