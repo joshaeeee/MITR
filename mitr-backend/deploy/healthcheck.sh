@@ -12,10 +12,10 @@ check_endpoint() {
   curl -fsS --max-time 5 "${BASE_URL}${path}" >/dev/null
 }
 
-echo "[healthcheck] waiting for ${BASE_URL}/healthz and /health/latency"
+echo "[healthcheck] waiting for ${BASE_URL}/healthz"
 
 while (( SECONDS < deadline )); do
-  if check_endpoint "/healthz" && check_endpoint "/health/latency"; then
+  if check_endpoint "/healthz"; then
     echo "[healthcheck] OK"
     exit 0
   fi

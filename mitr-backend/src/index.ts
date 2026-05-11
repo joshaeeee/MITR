@@ -103,6 +103,14 @@ const bootstrap = async (): Promise<void> => {
     })
   );
 
+  app.get('/livez', async (request, reply) =>
+    reply.send({
+      requestId: request.id,
+      ok: true,
+      service: 'mitr-api'
+    })
+  );
+
   registerAuthRoutes(app, auth);
   registerFamilyRoutes(app, auth);
   registerElderRoutes(app, auth);

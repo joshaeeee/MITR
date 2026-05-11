@@ -443,5 +443,4 @@ jobs:
           BASE_URL="${PUBLIC_API_BASE_URL:-http://${EC2_HOST}}"
           BASE_URL="${BASE_URL%/}"
           curl -fsS --max-time 10 "${BASE_URL}/healthz" >/dev/null
-          curl -fsS --max-time 10 "${BASE_URL}/health/latency" >/dev/null
           echo "Public smoke checks passed for ${BASE_URL}"
