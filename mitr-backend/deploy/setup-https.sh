@@ -70,8 +70,6 @@ sudo mkdir -p "${CERTBOT_WEBROOT}"
 sudo chown -R "${USER}:${USER}" "${CERTBOT_WEBROOT}"
 
 if cert_ready; then
-  bash "${SCRIPT_DIR}/configure-nginx.sh"
-  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d nginx
   echo "[https] existing certificate is ready for ${CERTBOT_CERT_NAME}"
   exit 0
 fi
@@ -83,7 +81,7 @@ fi
 
 cp "${HTTP_CONF}" "${TARGET_CONF}"
 echo "[https] bootstrapped HTTP nginx config for certbot challenge"
-docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d nginx
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --no-deps nginx
 
 sudo certbot certonly \
   --webroot \
@@ -97,7 +95,7 @@ sudo certbot certonly \
   --keep-until-expiring
 
 bash "${SCRIPT_DIR}/configure-nginx.sh"
-docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d nginx
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --no-deps nginx
 
 if command -v systemctl >/dev/null 2>&1 && sudo systemctl list-unit-files certbot.timer >/dev/null 2>&1; then
   sudo systemctl enable --now certbot.timer >/dev/null 2>&1 || true
