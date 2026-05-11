@@ -399,8 +399,6 @@ jobs:
             chmod +x deploy/configure-nginx.sh deploy/setup-https.sh deploy/bootstrap-service-env-files.sh deploy/check-service-env-scope.sh deploy/preflight-prod-env.sh || true
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
             bash deploy/deploy.sh
-            echo "[deploy] ensuring HTTPS configuration"
-            bash deploy/setup-https.sh
 
             # Guard against stale image restarts.
             ACTUAL_API_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-api)"

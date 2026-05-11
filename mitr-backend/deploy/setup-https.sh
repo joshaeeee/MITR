@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env.prod"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.prod.yml"
 CERTBOT_WEBROOT="/opt/mitr/certbot-www"
+HTTP_CONF="${SCRIPT_DIR}/nginx.http.conf"
+TARGET_CONF="${SCRIPT_DIR}/nginx.conf"
 
 get_env() {
   local key="$1"
@@ -46,6 +48,11 @@ for host in "${CERTBOT_DOMAINS[@]}"; do
 done
 
 CERTBOT_CERT_NAME="${TLS_CERT_NAME:-${PUBLIC_HOSTNAME}}"
+CERT_DIR="/etc/letsencrypt/live/${CERTBOT_CERT_NAME}"
+
+cert_ready() {
+  sudo test -f "${CERT_DIR}/fullchain.pem" && sudo test -f "${CERT_DIR}/privkey.pem"
+}
 
 if ! command -v certbot >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
@@ -62,7 +69,20 @@ fi
 sudo mkdir -p "${CERTBOT_WEBROOT}"
 sudo chown -R "${USER}:${USER}" "${CERTBOT_WEBROOT}"
 
-bash "${SCRIPT_DIR}/configure-nginx.sh"
+if cert_ready; then
+  bash "${SCRIPT_DIR}/configure-nginx.sh"
+  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d nginx
+  echo "[https] existing certificate is ready for ${CERTBOT_CERT_NAME}"
+  exit 0
+fi
+
+if [[ ! -f "${HTTP_CONF}" ]]; then
+  echo "[https] missing ${HTTP_CONF}; cannot bootstrap certbot HTTP challenge"
+  exit 1
+fi
+
+cp "${HTTP_CONF}" "${TARGET_CONF}"
+echo "[https] bootstrapped HTTP nginx config for certbot challenge"
 docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d nginx
 
 sudo certbot certonly \
