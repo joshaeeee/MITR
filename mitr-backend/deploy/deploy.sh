@@ -52,6 +52,10 @@ fi
 
 cd "${SCRIPT_DIR}"
 
+if [[ -x "${SCRIPT_DIR}/setup-https.sh" ]]; then
+  bash "${SCRIPT_DIR}/setup-https.sh"
+fi
+
 if [[ -x "${SCRIPT_DIR}/configure-nginx.sh" ]]; then
   bash "${SCRIPT_DIR}/configure-nginx.sh"
 fi
