@@ -25,6 +25,8 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+bash "${SCRIPT_DIR}/bootstrap-service-env-files.sh" "${ENV_FILE}"
+
 for worker_env in \
   "${SCRIPT_DIR}/.env.prod.pipecat-gateway" \
   "${SCRIPT_DIR}/.env.prod.reminder-worker" \

@@ -400,7 +400,7 @@ jobs:
             export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="false"
 
             echo "[deploy] running backend deployment"
-            chmod +x deploy/configure-nginx.sh deploy/setup-https.sh deploy/check-service-env-scope.sh deploy/preflight-prod-env.sh || true
+            chmod +x deploy/configure-nginx.sh deploy/setup-https.sh deploy/bootstrap-service-env-files.sh deploy/check-service-env-scope.sh deploy/preflight-prod-env.sh || true
             chmod +x deploy/deploy.sh deploy/healthcheck.sh
             bash deploy/deploy.sh
             echo "[deploy] ensuring HTTPS configuration"
