@@ -13,6 +13,7 @@ import type { AuthService } from '../services/auth/auth-service.js';
 import { logger } from '../lib/logger.js';
 import { getApiHealthStatus } from '../services/health/health-status.js';
 import { DeviceControlService } from '../services/device/device-control-service.js';
+import { ElderService } from '../services/elder/elder-service.js';
 
 const sessionStartSchema = z.object({
   userId: z.string().min(1).optional()
@@ -61,6 +62,20 @@ const longSessionStopSchema = z.object({
 
 const slug = (input: string): string => input.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'user';
 
+const splitListAnswer = (value?: string): string[] =>
+  (value ?? '')
+    .split(/[,;\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const normalizeProactiveLevel = (value?: string): 'low' | 'medium' | 'high' | undefined => {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === 'low' || normalized === 'medium' || normalized === 'high' ? normalized : undefined;
+};
+
+const preferredProfileLanguage = (answers?: Record<string, string> | null): string =>
+  answers?.elderLanguage || answers?.language || 'hi-IN';
+
 export const registerSessionRoutes = (
   app: FastifyInstance,
   store: SessionStore,
@@ -69,6 +84,7 @@ export const registerSessionRoutes = (
 ): void => {
   const director = new SessionDirectorService();
   const deviceControl = new DeviceControlService();
+  const elderService = new ElderService();
   const authGuard = requireAuth(auth);
   const requireOwnedLongSession = async (reply: FastifyReply, userId: string, longSessionId: string) => {
     const session = await director.get(longSessionId);
@@ -168,7 +184,7 @@ export const registerSessionRoutes = (
       family_id: familyContext?.familyId ?? null,
       elder_id: familyContext?.elderId ?? null,
       device_id: `web-${slug(userId)}`,
-      language: parsed.data.language ?? profile?.answers?.language ?? 'hi-IN',
+      language: parsed.data.language ?? preferredProfileLanguage(profile?.answers),
       profile_answers: profile?.answers ?? null,
       ...(parsed.data.metadata ?? {})
     };
@@ -198,7 +214,7 @@ export const registerSessionRoutes = (
       userId,
       familyId: familyContext?.familyId ?? null,
       elderId: familyContext?.elderId ?? null,
-      language: parsed.data.language || profile?.answers?.language || 'hi-IN',
+      language: parsed.data.language || preferredProfileLanguage(profile?.answers),
       transport: parsed.data.transport || 'pipecat-gateway'
     });
   });
@@ -220,6 +236,35 @@ export const registerSessionRoutes = (
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
     const profile = await profiles.saveAnswers(request.auth!.user.id, parsed.data.answers);
+    const answers = profile.answers;
+    try {
+      if (answers.elderName) {
+        await elderService.upsertProfile(request.auth!.user.id, {
+          name: answers.elderName,
+          ageRange: answers.elderAgeRange,
+          language: answers.elderLanguage ?? answers.language,
+          city: answers.elderCity ?? answers.region,
+          timezone: 'Asia/Kolkata'
+        });
+        await elderService.upsertJourneyProfile(request.auth!.user.id, {
+          preferredAddress: answers.preferredAddress,
+          proactiveLevel: normalizeProactiveLevel(answers.proactiveLevel),
+          routineAnchors: splitListAnswer(answers.routineAnchors).map((label) => ({
+            label,
+            source: 'onboarding'
+          })),
+          onboardingUseCases: splitListAnswer(answers.firstUseCases),
+          boundaries: {
+            avoidTopics: splitListAnswer(answers.boundaries)
+          }
+        });
+      }
+    } catch (error) {
+      logger.warn('Onboarding profile saved but elder journey sync failed', {
+        userId: request.auth!.user.id,
+        error: (error as Error).message
+      });
+    }
     return reply.send({ ok: true, profile: profile.answers });
   });
 

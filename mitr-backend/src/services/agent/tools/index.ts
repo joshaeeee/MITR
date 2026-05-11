@@ -35,6 +35,7 @@ const createToolDefinitionsV2 = (deps: ToolDeps): AgentToolDefinition[] => {
     ...pickTools(legacySync, ['diary_add', 'diary_list']),
     ...selectFlowTools(legacySync),
     ...pickTools(legacySync, ['pranayama_guide_get', 'brain_game_get', 'festival_context_get']),
+    ...pickTools(legacySync, ['conversation_planner_get', 'prompt_outcome_record', 'medication_response_record']),
     ...pickTools(legacySync, ['medication_adherence_setup'])
   ];
 

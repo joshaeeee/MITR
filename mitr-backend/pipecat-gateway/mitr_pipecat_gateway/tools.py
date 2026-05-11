@@ -116,6 +116,51 @@ def _tool_schema(name: str, description: str) -> FunctionSchema:
             "medicine": {"type": "string", "description": "Medicine name."},
             "city": {"type": "string", "description": "City for local context."},
             "date": {"type": "string", "description": "Date for panchang or current context."},
+            "triggerType": {
+                "type": "string",
+                "enum": [
+                    "session_start",
+                    "first_use",
+                    "reminder_fired",
+                    "reminder_acknowledged",
+                    "medication_taken",
+                    "medication_delayed",
+                    "routine_time",
+                    "morning",
+                    "evening",
+                    "caregiver_nudge",
+                    "user_quiet",
+                    "user_requested",
+                    "manual",
+                ],
+                "description": "Why the assistant is planning this proactive turn.",
+            },
+            "reminderId": {"type": "string", "description": "Medication or reminder identifier."},
+            "reminderTitle": {"type": "string", "description": "Human-readable reminder title."},
+            "routineKey": {"type": "string", "description": "Routine anchor key."},
+            "routineTitle": {"type": "string", "description": "Human-readable routine title."},
+            "recordPrompt": {"type": "boolean", "description": "Whether to record this planned prompt."},
+            "promptHistoryId": {"type": "string", "description": "Identifier returned by conversation_planner_get."},
+            "promptType": {"type": "string", "description": "Prompt category for the freshness ledger."},
+            "promptKey": {"type": "string", "description": "Stable prompt key for cooldowns."},
+            "responseState": {
+                "type": "string",
+                "enum": ["accepted", "refused", "ignored", "unclear", "completed"],
+                "description": "How the elder responded to the prompt.",
+            },
+            "sentiment": {
+                "type": "string",
+                "enum": ["positive", "neutral", "negative"],
+                "description": "Optional sentiment of the elder response.",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["taken", "delayed", "refused", "no_response", "unclear"],
+                "description": "Medication reminder response status.",
+            },
+            "scheduledAt": {"type": "string", "description": "Scheduled medication/reminder datetime."},
+            "responseText": {"type": "string", "description": "Short transcript of the elder response."},
+            "metadata": {"type": "object", "description": "Optional structured context."},
         },
         required=[],
     )
@@ -181,6 +226,9 @@ def build_tools_schema() -> ToolsSchema:
         _tool_schema("pranayama_guide_get", "Provide a short pranayama guide."),
         _tool_schema("brain_game_get", "Provide a simple voice-friendly brain game."),
         _tool_schema("festival_context_get", "Provide concise festival context."),
+        _tool_schema("conversation_planner_get", "Plan the next elder-aware proactive conversation move."),
+        _tool_schema("prompt_outcome_record", "Record the elder response to a planned proactive prompt."),
+        _tool_schema("medication_response_record", "Record an elder medication reminder response."),
         _tool_schema("medication_adherence_setup", "Capture a medication adherence setup request."),
         _tool_schema("religious_retrieve", "Retrieve religious context for a question."),
         _tool_schema("story_retrieve", "Retrieve a suitable story."),
@@ -438,6 +486,49 @@ async def _execute_tool(name: str, args: dict[str, Any], auth: DeviceAuthContext
     if name == "festival_context_get":
         topic = _string_arg(args, "topic", "query") or "the festival"
         return {"ok": True, "context": f"{topic} is best discussed with date and region. I can share a simple cultural summary."}
+
+    if name == "conversation_planner_get":
+        trigger = _string_arg(args, "triggerType") or "session_start"
+        prompt_history_id = str(uuid.uuid4())
+        if trigger == "reminder_fired":
+            reminder_title = _string_arg(args, "reminderTitle", "title") or "dawa"
+            prompt_seed = f"{reminder_title} ka samay ho gaya hai. Ho jaye toh bol dijiye, le li."
+            intent = "medication_confirmation"
+            prompt_key = f"medication_confirmation:{reminder_title.lower()}"
+        else:
+            prompt_seed = "Main yahin hoon. Aaj dawa, routine, khabar, bhajan, ya family message mein madad kar sakta hoon."
+            intent = "onboarding_practice"
+            prompt_key = "local_gateway:basic"
+        return {
+            "ok": True,
+            "relationshipStage": "first_use",
+            "engagementMode": "cautious",
+            "plan": {
+                "intent": intent,
+                "promptType": "local_gateway",
+                "promptKey": prompt_key,
+                "promptSeed": prompt_seed,
+                "spokenGuidance": "Use this as the source of truth for the next proactive turn.",
+                "allowedQuestionCount": 1,
+                "tone": "extra_clear",
+                "followupPolicy": "retry_10m" if trigger == "reminder_fired" else "none",
+                "recordPrompt": True,
+                "avoidPromptKeys": [],
+                "constraints": ["One short turn.", "Adult-to-adult tone.", "No feature tour."],
+                "toolHints": [],
+                "promptHistoryId": prompt_history_id,
+            },
+        }
+
+    if name == "prompt_outcome_record":
+        return {"ok": True, "promptHistoryId": _string_arg(args, "promptHistoryId") or str(uuid.uuid4())}
+
+    if name == "medication_response_record":
+        return {
+            "ok": True,
+            "eventId": str(uuid.uuid4()),
+            "status": _string_arg(args, "status") or "unclear",
+        }
 
     if name == "medication_adherence_setup":
         return {"ok": True, "status": "captured", "message": "Medication adherence request captured in this gateway session."}
