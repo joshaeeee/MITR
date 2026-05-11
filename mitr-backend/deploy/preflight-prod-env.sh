@@ -160,13 +160,14 @@ require_base64_32() {
   local file="$1"
   local key="$2"
   local value
+  local decoded_len
   value="$(trim "$(env_value "${file}" "${key}" || true)")"
   if [[ -z "${value}" ]]; then
     echo "[preflight] ${file}: ${key} is required" >&2
     failures=$((failures + 1))
     return
   fi
-  if ! KEY_VALUE="${value}" node -e "const v=process.env.KEY_VALUE||''; process.exit(Buffer.from(v,'base64').length===32 ? 0 : 1)" >/dev/null 2>&1; then
+  if ! decoded_len="$(printf '%s' "${value}" | openssl base64 -d -A 2>/dev/null | wc -c | tr -d '[:space:]')" || [[ "${decoded_len}" != "32" ]]; then
     echo "[preflight] ${file}: ${key} must decode to 32 bytes" >&2
     failures=$((failures + 1))
   fi

@@ -175,12 +175,14 @@ normalize_postgres_url() {
 
 is_base64_32() {
   local value="$1"
+  local decoded_len
   [[ -n "${value}" ]] || return 1
-  KEY_VALUE="${value}" node -e "const v=process.env.KEY_VALUE||''; process.exit(Buffer.from(v,'base64').length===32 ? 0 : 1)" >/dev/null 2>&1
+  decoded_len="$(printf '%s' "${value}" | openssl base64 -d -A 2>/dev/null | wc -c | tr -d '[:space:]')" || return 1
+  [[ "${decoded_len}" == "32" ]]
 }
 
 generate_base64_32() {
-  node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))"
+  openssl rand 32 | openssl base64 -A
 }
 
 derive_https_base_url() {
