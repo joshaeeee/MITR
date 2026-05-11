@@ -398,6 +398,8 @@ jobs:
             export HEALTH_BASE_URL="http://127.0.0.1"
             export RUN_DB_MIGRATIONS="true"
             export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="false"
+            export DEPLOY_PUBLIC_API_BASE_URL="${{ secrets.PUBLIC_API_BASE_URL }}"
+            export DEPLOY_EC2_HOST="${{ secrets.EC2_HOST }}"
 
             echo "[deploy] running backend deployment"
             chmod +x deploy/configure-nginx.sh deploy/setup-https.sh deploy/bootstrap-service-env-files.sh deploy/check-service-env-scope.sh deploy/preflight-prod-env.sh || true
