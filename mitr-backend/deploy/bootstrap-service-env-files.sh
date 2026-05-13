@@ -143,7 +143,7 @@ ensure_current_wake_phrases() {
   local file="$1"
   local value
   value="$(env_value_from_file "${file}" MITR_GATEWAY_WAKE_PHRASES || true)"
-  if [[ -z "${value}" || "${value}" == "${LEGACY_ESP_ONLY_WAKE_PHRASES}" ]]; then
+  if [[ -z "${value}" || "${value}" == "${LEGACY_ESP_ONLY_WAKE_PHRASES}" || "${value}" != *"hi mitr"* ]]; then
     set_env_value "${file}" MITR_GATEWAY_WAKE_PHRASES "${DEFAULT_MITR_WAKE_PHRASES}"
     echo "[deploy] refreshed MITR_GATEWAY_WAKE_PHRASES in ${file}"
   fi
