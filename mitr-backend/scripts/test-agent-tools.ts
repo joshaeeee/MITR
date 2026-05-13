@@ -12,6 +12,7 @@ import { PanchangService } from '../src/services/panchang/panchang-service.js';
 import { WebSearchService } from '../src/services/web/web-search-service.js';
 import { NudgesService } from '../src/services/nudges/nudges-service.js';
 import { ElderJourneyService } from '../src/services/elder-journey/elder-journey-service.js';
+import { ElderContextService } from '../src/services/memory/elder-context-service.js';
 
 const reminderService = new ReminderService();
 const religiousRetriever = new ReligiousRetriever();
@@ -29,7 +30,8 @@ const tools = createToolDefinitions({
   panchangService: new PanchangService(geocodingService),
   webSearchService: new WebSearchService(),
   nudgesService: new NudgesService(),
-  elderJourneyService: new ElderJourneyService(reminderService)
+  elderJourneyService: new ElderJourneyService(reminderService),
+  elderContextService: new ElderContextService()
 });
 
 console.log(`Loaded ${tools.length} tools`);

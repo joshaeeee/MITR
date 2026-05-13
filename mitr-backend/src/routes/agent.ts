@@ -22,6 +22,7 @@ import { WebSearchService } from '../services/web/web-search-service.js';
 import { createToolDefinitions } from '../services/agent/tools.js';
 import { DeviceControlService } from '../services/device/device-control-service.js';
 import { ElderJourneyService } from '../services/elder-journey/elder-journey-service.js';
+import { ElderContextService } from '../services/memory/elder-context-service.js';
 
 const cursorQuerySchema = z.object({
   cursor: z.string().optional(),
@@ -87,6 +88,7 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
   const newsService = new NewsService();
   const webSearchService = new WebSearchService();
   const elderJourneyService = new ElderJourneyService(reminders);
+  const elderContextService = new ElderContextService();
   const toolDefinitions = createToolDefinitions({
     religiousRetriever: new ReligiousRetriever(),
     mem0,
@@ -99,7 +101,8 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
     panchangService: new PanchangService(new GeocodingService()),
     webSearchService,
     nudgesService: nudges,
-    elderJourneyService
+    elderJourneyService,
+    elderContextService
   });
   const toolByName = new Map(toolDefinitions.map((tool) => [tool.name, tool]));
 

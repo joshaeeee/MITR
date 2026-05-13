@@ -2,6 +2,7 @@ import os
 import re
 import time
 import unicodedata
+import asyncio
 from collections import deque
 
 from fastapi import WebSocket
@@ -53,6 +54,7 @@ from .bot import (
     PCM16Resampler,
     _int_env,
     _optional_timeout_env,
+    _queue_runtime_context_update,
     _system_instruction,
 )
 from .serializer import Esp32PCMSerializer
@@ -553,6 +555,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
         logger.info("ESP32 connected to Pipecat wake phrase gateway", device_id=auth.device_id)
+        asyncio.create_task(_queue_runtime_context_update(task, llm, auth))
         await send_state("listening", wakePhrases=_wake_phrases())
 
     @transport.event_handler("on_client_disconnected")

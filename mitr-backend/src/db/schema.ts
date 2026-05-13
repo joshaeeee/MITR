@@ -376,6 +376,110 @@ export const elderMedicationEvents = pgTable('elder_medication_events', {
   reminderCreatedIdx: index('elder_medication_events_reminder_created_idx').on(table.reminderId, table.createdAt)
 }));
 
+export const elderMemoryItems = pgTable('elder_memory_items', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  memoryType: text('memory_type')
+    .$type<'profile' | 'preference' | 'routine' | 'relationship' | 'health_context' | 'semantic' | 'episodic' | 'procedural' | 'boundary'>()
+    .notNull(),
+  subject: text('subject').notNull(),
+  summary: text('summary').notNull(),
+  valueJson: jsonb('value_json').$type<Record<string, unknown>>().default({}).notNull(),
+  importance: integer('importance').default(50).notNull(),
+  confidence: integer('confidence').default(70).notNull(),
+  status: text('status').$type<'active' | 'archived' | 'superseded' | 'disputed'>().default('active').notNull(),
+  sourceType: text('source_type')
+    .$type<'user_statement' | 'caregiver' | 'assistant_inference' | 'reminder' | 'medication_event' | 'system' | 'transcript'>()
+    .default('system')
+    .notNull(),
+  sourceId: text('source_id'),
+  visibility: text('visibility').$type<'private' | 'caregiver_visible' | 'internal_only'>().default('private').notNull(),
+  validFrom: timestamp('valid_from', { withTimezone: true }),
+  validUntil: timestamp('valid_until', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),
+  accessCount: integer('access_count').default(0).notNull(),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderStatusImportanceIdx: index('elder_memory_items_elder_status_importance_idx').on(table.elderId, table.status, table.importance),
+  elderTypeStatusIdx: index('elder_memory_items_elder_type_status_idx').on(table.elderId, table.memoryType, table.status),
+  elderSourceIdx: index('elder_memory_items_elder_source_idx').on(table.elderId, table.sourceType, table.sourceId),
+  elderExpiryIdx: index('elder_memory_items_elder_expiry_idx').on(table.elderId, table.expiresAt)
+}));
+
+export const elderContextCards = pgTable('elder_context_cards', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  cardType: text('card_type')
+    .$type<
+      | 'medication_followup'
+      | 'reminder_followup'
+      | 'event_followup'
+      | 'family_nudge'
+      | 'routine_checkin'
+      | 'preference_learning'
+      | 'care_signal'
+      | 'content_offer'
+      | 'conversation_repair'
+    >()
+    .notNull(),
+  sourceType: text('source_type')
+    .$type<'reminder' | 'medication_event' | 'user_statement' | 'caregiver' | 'insight' | 'system' | 'transcript'>()
+    .default('system')
+    .notNull(),
+  sourceId: text('source_id'),
+  dedupeKey: text('dedupe_key'),
+  title: text('title').notNull(),
+  summary: text('summary').notNull(),
+  priority: integer('priority').default(50).notNull(),
+  status: text('status').$type<'pending' | 'snoozed' | 'completed' | 'dismissed' | 'expired'>().default('pending').notNull(),
+  mentionPolicy: text('mention_policy')
+    .$type<'immediate' | 'first_safe_user_turn' | 'after_current_request' | 'when_conversational' | 'only_if_user_asks'>()
+    .default('when_conversational')
+    .notNull(),
+  dueAt: timestamp('due_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  cooldownUntil: timestamp('cooldown_until', { withTimezone: true }),
+  lastMentionedAt: timestamp('last_mentioned_at', { withTimezone: true }),
+  mentionCount: integer('mention_count').default(0).notNull(),
+  maxMentions: integer('max_mentions').default(1).notNull(),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  elderStatusDuePriorityIdx: index('elder_context_cards_elder_status_due_priority_idx').on(
+    table.elderId,
+    table.status,
+    table.dueAt,
+    table.priority
+  ),
+  elderDedupeUnique: uniqueIndex('elder_context_cards_elder_dedupe_uq').on(table.elderId, table.dedupeKey),
+  elderSourceIdx: index('elder_context_cards_elder_source_idx').on(table.elderId, table.sourceType, table.sourceId),
+  elderCooldownIdx: index('elder_context_cards_elder_cooldown_idx').on(table.elderId, table.cooldownUntil)
+}));
+
+export const elderContextCardEvents = pgTable('elder_context_card_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  cardId: uuid('card_id').notNull(),
+  elderId: uuid('elder_id').notNull(),
+  userId: text('user_id').notNull(),
+  sessionId: text('session_id'),
+  eventType: text('event_type')
+    .$type<'created' | 'mentioned' | 'answered' | 'completed' | 'dismissed' | 'ignored' | 'snoozed' | 'expired'>()
+    .notNull(),
+  responseState: text('response_state').$type<'accepted' | 'refused' | 'ignored' | 'unclear' | 'completed'>(),
+  notes: text('notes'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  cardCreatedIdx: index('elder_context_card_events_card_created_idx').on(table.cardId, table.createdAt),
+  elderCreatedIdx: index('elder_context_card_events_elder_created_idx').on(table.elderId, table.createdAt)
+}));
+
 export const auditEvents = pgTable('audit_events', {
   id: uuid('id').defaultRandom().primaryKey(),
   actorUserId: text('actor_user_id'),

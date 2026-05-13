@@ -12,6 +12,7 @@ import {
   reminders
 } from '../../db/schema.js';
 import { getFamilyRepository } from '../family/family-repository.js';
+import { ElderContextService } from '../memory/elder-context-service.js';
 import { ReminderService } from '../reminders/reminder-service.js';
 import {
   chooseConversationPlan,
@@ -164,6 +165,7 @@ const parseScheduledAt = (value?: string | null): Date | null => {
 
 export class ElderJourneyService {
   private readonly familyRepo = getFamilyRepository();
+  private readonly contextService = new ElderContextService();
 
   constructor(private readonly reminderService = new ReminderService()) {}
 
@@ -489,6 +491,15 @@ export class ElderJourneyService {
       }
       await this.markFirstSuccessfulInteraction(elder.id);
     }
+
+    await this.contextService.recordMedicationContext({
+      userId: input.userId,
+      elderId: elder.id,
+      reminderId: input.reminderId,
+      medicine: input.medicine,
+      status: input.status,
+      responseText: input.responseText
+    });
 
     return { ok: true, eventId: created.id };
   }
