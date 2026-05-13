@@ -141,16 +141,43 @@ ensure_from_template() {
   local file="$1"
   local template="$2"
   local label="$3"
-  if [[ -f "${file}" ]]; then
-    return
-  fi
   if [[ ! -f "${template}" ]]; then
     echo "[deploy] missing ${template}; cannot bootstrap ${label} env"
     exit 1
   fi
+  if [[ -f "${file}" ]]; then
+    prune_env_to_template "${file}" "${template}" "${label}"
+    return
+  fi
   cp "${template}" "${file}"
   chmod 600 "${file}" || true
   echo "[deploy] created missing ${file} from ${template}"
+}
+
+prune_env_to_template() {
+  local file="$1"
+  local template="$2"
+  local label="$3"
+  awk -v label="${label}" -F= '
+    FNR == NR {
+      if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) next
+      key=$1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key != "") allowed[key]=1
+      next
+    }
+    $0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/ { print; next }
+    {
+      key=$1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (allowed[key]) {
+        print
+      } else if (key != "" && !removed[key]++) {
+        printf("[deploy] removed stale %s env key %s\n", label, key) > "/dev/stderr"
+      }
+    }
+  ' "${template}" "${file}" > "${file}.tmp"
+  mv "${file}.tmp" "${file}"
 }
 
 normalize_postgres_url() {
