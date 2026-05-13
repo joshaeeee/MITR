@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${1:-${SCRIPT_DIR}/.env.prod}"
+DEFAULT_MITR_WAKE_PHRASES="hi mitr,hey mitr,hi mitra,hey mitra,hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,hi reka,hey reka,hi esp,hey esp,hi e s p,हाय मित्र,हे मित्र,हाय रेका,हाय रेखा"
+LEGACY_ESP_ONLY_WAKE_PHRASES="hi esp,hey esp,hi e s p"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "[deploy] missing ${ENV_FILE}. Copy .env.prod.template and fill it."
@@ -134,6 +136,16 @@ set_from_env() {
   value="$(first_env_value "$@" || true)"
   if [[ -n "${value}" ]]; then
     set_env_value "${file}" "${target_key}" "${value}"
+  fi
+}
+
+ensure_current_wake_phrases() {
+  local file="$1"
+  local value
+  value="$(env_value_from_file "${file}" MITR_GATEWAY_WAKE_PHRASES || true)"
+  if [[ -z "${value}" || "${value}" == "${LEGACY_ESP_ONLY_WAKE_PHRASES}" ]]; then
+    set_env_value "${file}" MITR_GATEWAY_WAKE_PHRASES "${DEFAULT_MITR_WAKE_PHRASES}"
+    echo "[deploy] refreshed MITR_GATEWAY_WAKE_PHRASES in ${file}"
   fi
 }
 
@@ -273,6 +285,7 @@ set_from_env "${gateway_env}" MITR_GATEWAY_PUBLIC_WS_URL PIPECAT_GATEWAY_PUBLIC_
 set_from_env "${gateway_env}" MITR_GATEWAY_CORS_ORIGINS CORS_ORIGINS
 set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_MODE MITR_GATEWAY_WAKE_MODE
 set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_PHRASES MITR_GATEWAY_WAKE_PHRASES
+ensure_current_wake_phrases "${gateway_env}"
 set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC
 set_from_env "${gateway_env}" MITR_GATEWAY_LOG_TRANSCRIPTS MITR_GATEWAY_LOG_TRANSCRIPTS
 set_from_env "${gateway_env}" MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC

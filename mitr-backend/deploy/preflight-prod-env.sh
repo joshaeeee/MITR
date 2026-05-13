@@ -291,6 +291,7 @@ if [[ -f "${SCRIPT_DIR}/.env.prod.pipecat-gateway" ]]; then
   require_url_prefix "${gateway_env}" MITR_GATEWAY_PUBLIC_WS_URL "wss://"
   require_https_origin_list "${gateway_env}" MITR_GATEWAY_CORS_ORIGINS
   reject_value "${gateway_env}" MITR_GATEWAY_AUTH_MODE "local"
+  reject_value "${gateway_env}" MITR_GATEWAY_WAKE_PHRASES "hi esp,hey esp,hi e s p"
   require_false_or_empty "${gateway_env}" MITR_GATEWAY_LOG_TRANSCRIPTS
   require_secret_min_length "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN 32
   require_same_value "${ENV_FILE}" INTERNAL_SERVICE_TOKEN "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN

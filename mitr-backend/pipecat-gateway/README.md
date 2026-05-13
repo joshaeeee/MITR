@@ -61,7 +61,7 @@ Start the gateway:
 ```sh
 cd /Users/shivanshjoshi/conductor/workspaces/Mitr/nairobi-v1/mitr-backend/pipecat-gateway
 MITR_GATEWAY_WAKE_MODE=pipecat_phrase \
-MITR_GATEWAY_WAKE_PHRASES="hi reca,hi rekha,hi r e k a,hi reka,हाय रेका,हाय रेखा" \
+MITR_GATEWAY_WAKE_PHRASES="hi mitr,hey mitr,hi mitra,hey mitra,hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,hi reka,hey reka,hi esp,hey esp,hi e s p,हाय मित्र,हे मित्र,हाय रेका,हाय रेखा" \
 MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC=45 \
 OPENAI_REALTIME_TURN_DETECTION=manual \
 MITR_GATEWAY_ECHO_SUPPRESSION=true \
@@ -78,7 +78,7 @@ uv run python -m mitr_pipecat_gateway.server
 Default mode is server-side wake phrase detection:
 
 ```text
-Hi ESP -> awake -> conversation continues -> 45 seconds of inactivity -> sleeping
+Hi Mitr / Hi Reca -> awake -> conversation continues -> 45 seconds of inactivity -> sleeping
 ```
 
 The ESP/browser WebSocket stays open. If the OpenAI model session fails while the

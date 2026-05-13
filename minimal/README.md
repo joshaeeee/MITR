@@ -45,7 +45,7 @@ Run the Pipecat gateway:
 ```sh
 cd /Users/shivanshjoshi/conductor/workspaces/Mitr/nairobi-v1/mitr-backend/pipecat-gateway
 MITR_GATEWAY_WAKE_MODE=pipecat_phrase \
-MITR_GATEWAY_WAKE_PHRASES="hi esp,hey esp,hi e s p" \
+MITR_GATEWAY_WAKE_PHRASES="hi mitr,hey mitr,hi mitra,hey mitra,hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,hi reka,hey reka,hi esp,hey esp,hi e s p,हाय मित्र,हे मित्र,हाय रेका,हाय रेखा" \
 MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC=45 \
 OPENAI_REALTIME_STT_LANGUAGE=en \
 uv run python -m mitr_pipecat_gateway.server
@@ -112,7 +112,7 @@ Healthy signs:
 - bootstrap/access-token check succeeds
 - gateway websocket connects
 - gateway sends `ready` and `listening`
-- saying "Hi ESP" wakes the gateway
+- saying "Hi Mitr" or "Hi Reca" wakes the gateway
 - response PCM plays through the speaker
 - gateway sends `sleeping` after 45 seconds of inactivity
 - heartbeat and telemetry continue while the socket remains connected

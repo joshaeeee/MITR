@@ -1,8 +1,8 @@
+import asyncio
 import os
 import re
 import time
 import unicodedata
-import asyncio
 from collections import deque
 
 from fastapi import WebSocket
@@ -12,6 +12,8 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    LLMContextFrame,
+    LLMRunFrame,
     OutputAudioRawFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -42,11 +44,15 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
+from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
+    TranscriptionUserTurnStartStrategy,
+)
+from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from pipecat.turns.user_start.wake_phrase_user_turn_start_strategy import (
     WakePhraseUserTurnStartStrategy,
 )
 from pipecat.turns.user_stop.external_user_turn_stop_strategy import ExternalUserTurnStopStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies, default_user_turn_start_strategies
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from .auth import DeviceAuthContext
 from .bot import (
@@ -78,7 +84,12 @@ def _bool_env(name: str, fallback: bool) -> bool:
 def _wake_phrases() -> list[str]:
     value = os.getenv(
         "MITR_GATEWAY_WAKE_PHRASES",
-        "hi reca,hi rekha,hi r e k a,hi reka,हाय रेका,हाय रेखा",
+        (
+            "hi mitr,hey mitr,hi mitra,hey mitra,"
+            "hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,"
+            "hi reka,hey reka,hi esp,hey esp,hi e s p,"
+            "हाय मित्र,हे मित्र,हाय रेका,हाय रेखा"
+        ),
     )
     return [phrase.strip() for phrase in value.split(",") if phrase.strip()]
 
@@ -87,6 +98,13 @@ def _wake_idle_timeout() -> float:
     if "MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC" in os.environ:
         return _float_env("MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC", 45.0)
     return _float_env("MITR_GATEWAY_WAKE_PHRASE_TIMEOUT_SEC", 45.0)
+
+
+def _post_wake_turn_start_strategies():
+    return [
+        VADUserTurnStartStrategy(enable_interruptions=False),
+        TranscriptionUserTurnStartStrategy(enable_interruptions=False),
+    ]
 
 
 def _language(value: str) -> Language:
@@ -161,6 +179,7 @@ class WakePhraseRealtimeGate(FrameProcessor):
         self._buffer: deque[InputAudioRawFrame] = deque()
         self._buffer_bytes = 0
         self._max_buffer_bytes = int(OPENAI_REALTIME_SAMPLE_RATE * max(preroll_sec, 0.5) * 2)
+        self._dropped_llm_frames = 0
 
     async def wake(self, phrase: str):
         if self._awake:
@@ -189,6 +208,7 @@ class WakePhraseRealtimeGate(FrameProcessor):
         self._pending_stop = False
         self._buffer.clear()
         self._buffer_bytes = 0
+        self._dropped_llm_frames = 0
 
     def _buffer_audio(self, frame: InputAudioRawFrame):
         self._buffer.append(frame)
@@ -206,6 +226,16 @@ class WakePhraseRealtimeGate(FrameProcessor):
 
         if isinstance(frame, InputAudioRawFrame) and not self._awake:
             self._buffer_audio(frame)
+            return
+
+        if isinstance(frame, (LLMContextFrame, LLMRunFrame)) and not self._awake:
+            self._dropped_llm_frames += 1
+            if self._dropped_llm_frames == 1 or self._dropped_llm_frames % 20 == 0:
+                logger.info(
+                    "Wake gate dropped {} while sleeping; dropped_llm_frames={}",
+                    frame.__class__.__name__,
+                    self._dropped_llm_frames,
+                )
             return
 
         if isinstance(frame, UserStartedSpeakingFrame) and not self._awake:
@@ -502,7 +532,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
             user_turn_strategies=UserTurnStrategies(
                 start=[
                     wake_phrase,
-                    *default_user_turn_start_strategies(),
+                    *_post_wake_turn_start_strategies(),
                 ],
                 stop=[ExternalUserTurnStopStrategy()],
             ),
