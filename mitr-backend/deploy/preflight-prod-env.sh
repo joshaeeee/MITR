@@ -162,6 +162,18 @@ require_same_value() {
   fi
 }
 
+require_exact_value() {
+  local file="$1"
+  local key="$2"
+  local expected="$3"
+  local value
+  value="$(trim "$(env_value "${file}" "${key}" || true)")"
+  if [[ "${value}" != "${expected}" ]]; then
+    echo "[preflight] ${file}: ${key} must be ${expected}" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 require_false_or_empty() {
   local file="$1"
   local key="$2"
@@ -284,6 +296,7 @@ if [[ -f "${SCRIPT_DIR}/.env.prod.pipecat-gateway" ]]; then
   require_same_value "${ENV_FILE}" INTERNAL_SERVICE_TOKEN "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN
   require_not_placeholder "${gateway_env}" OPENAI_API_KEY
   require_same_value "${ENV_FILE}" OPENAI_API_KEY "${gateway_env}" OPENAI_API_KEY
+  require_exact_value "${gateway_env}" OPENAI_REALTIME_TURN_DETECTION "manual"
 fi
 
 for worker_env in \
