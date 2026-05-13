@@ -3,12 +3,15 @@ import { logger } from '../lib/logger.js';
 import { SessionStore } from '../services/session-store.js';
 import { closeRedisConnections } from '../lib/redis.js';
 import { validateEnv } from '../config/env.js';
+import { ElderContextService } from '../services/memory/elder-context-service.js';
 
 validateEnv();
 
 const store = new SessionStore();
+const context = new ElderContextService();
 
 const worker = createReminderWorker(async (job) => {
+  const firedAt = new Date();
   const dedupeKey = `reminder_job:${job.id ?? job.data.reminderId}`;
   const accepted = await store.pushUserEvent(
     job.data.userId,
@@ -18,17 +21,26 @@ const worker = createReminderWorker(async (job) => {
         reminderId: job.data.reminderId,
         title: job.data.title,
         language: job.data.language,
-        firedAt: Date.now()
+        firedAt: firedAt.getTime()
       }
     },
     dedupeKey
   );
+
+  const contextCard = await context.createReminderFiredCard({
+    userId: job.data.userId,
+    reminderId: job.data.reminderId,
+    title: job.data.title,
+    language: job.data.language,
+    firedAt
+  });
 
   logger.info('Reminder fired', {
     reminderId: job.data.reminderId,
     userId: job.data.userId,
     title: job.data.title,
     queuedForDelivery: accepted,
+    contextCardCreated: contextCard.ok,
     workerJobId: job.id
   });
 });

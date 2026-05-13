@@ -23,9 +23,28 @@ from .auth import DeviceAuthContext
 _MEMORIES: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _REMINDERS: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _DIARY: dict[str, list[dict[str, Any]]] = defaultdict(list)
+_CONTEXT_CARDS: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _FLOWS: dict[str, dict[str, Any]] = {}
 ToolHook = Callable[[str], Awaitable[None]]
 _DEFAULT_ACK_BEFORE_TOOLS = {"news_retrieve", "web_search"}
+_BACKEND_REQUIRED_TOOLS = {
+    "memory_add",
+    "memory_get",
+    "context_packet_get",
+    "context_memory_add",
+    "context_card_upsert",
+    "context_card_outcome_record",
+    "reminder_create",
+    "reminder_list",
+    "nudge_pending_get",
+    "nudge_mark_listened",
+    "diary_add",
+    "diary_list",
+    "conversation_planner_get",
+    "prompt_outcome_record",
+    "medication_response_record",
+    "medication_adherence_setup",
+}
 
 
 def _int_env(name: str, fallback: int) -> int:
@@ -161,6 +180,61 @@ def _tool_schema(name: str, description: str) -> FunctionSchema:
             "scheduledAt": {"type": "string", "description": "Scheduled medication/reminder datetime."},
             "responseText": {"type": "string", "description": "Short transcript of the elder response."},
             "metadata": {"type": "object", "description": "Optional structured context."},
+            "memoryType": {
+                "type": "string",
+                "enum": [
+                    "profile",
+                    "preference",
+                    "routine",
+                    "relationship",
+                    "health_context",
+                    "semantic",
+                    "episodic",
+                    "procedural",
+                    "boundary",
+                ],
+                "description": "Typed memory class for first-party context memory.",
+            },
+            "subject": {"type": "string", "description": "Short memory subject."},
+            "summary": {"type": "string", "description": "Short memory or context-card summary."},
+            "importance": {"type": "integer", "description": "Memory/card importance, 0-100."},
+            "confidence": {"type": "integer", "description": "Memory confidence, 0-100."},
+            "cardId": {"type": "string", "description": "Context card identifier."},
+            "cardType": {
+                "type": "string",
+                "enum": [
+                    "medication_followup",
+                    "reminder_followup",
+                    "event_followup",
+                    "family_nudge",
+                    "routine_checkin",
+                    "preference_learning",
+                    "care_signal",
+                    "content_offer",
+                    "conversation_repair",
+                ],
+                "description": "Context card type.",
+            },
+            "dedupeKey": {"type": "string", "description": "Stable context card dedupe key."},
+            "mentionPolicy": {
+                "type": "string",
+                "enum": [
+                    "immediate",
+                    "first_safe_user_turn",
+                    "after_current_request",
+                    "when_conversational",
+                    "only_if_user_asks",
+                ],
+            },
+            "eventType": {
+                "type": "string",
+                "enum": ["mentioned", "answered", "completed", "dismissed", "ignored", "snoozed", "expired"],
+            },
+            "dueAtISO": {"type": "string", "description": "Context card due time as ISO timestamp."},
+            "expiresAtISO": {"type": "string", "description": "Context card expiry as ISO timestamp."},
+            "maxMentions": {"type": "integer", "description": "Maximum context card mentions."},
+            "cooldownMinutes": {"type": "integer", "description": "Minutes before this context card may be mentioned again."},
+            "includeDebug": {"type": "boolean", "description": "Include context packet debug ids."},
         },
         required=[],
     )
@@ -212,6 +286,10 @@ def build_tools_schema() -> ToolsSchema:
     tools = [
         _tool_schema("memory_add", "Store a useful personal memory from the conversation."),
         _tool_schema("memory_get", "Retrieve relevant personal memories."),
+        _tool_schema("context_packet_get", "Retrieve the compact ranked memory/context packet for this turn."),
+        _tool_schema("context_memory_add", "Store typed first-party Reca memory."),
+        _tool_schema("context_card_upsert", "Create or refresh a pending context card/open loop."),
+        _tool_schema("context_card_outcome_record", "Record how a context card mention went."),
         _tool_schema("reminder_create", "Create a reminder requested by the user."),
         _tool_schema("reminder_list", "List reminders known for the user."),
         _tool_schema("nudge_pending_get", "Get pending family nudges for the user."),
@@ -333,6 +411,8 @@ async def _execute_backend_tool(
     name: str,
     args: dict[str, Any],
     auth: DeviceAuthContext,
+    *,
+    timeout_sec: float | None = None,
 ) -> dict[str, Any] | None:
     if not auth.user_id:
         return None
@@ -346,7 +426,7 @@ async def _execute_backend_tool(
     if internal_token:
         headers["X-Internal-Service-Token"] = internal_token
 
-    timeout_sec = _int_env("MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC", 55)
+    timeout_sec = timeout_sec or _int_env("MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC", 55)
     try:
         async with httpx.AsyncClient(timeout=timeout_sec) as client:
             response = await client.post(
@@ -392,10 +472,28 @@ async def _execute_backend_tool(
     return {"ok": True, "tool": name, "result": payload}
 
 
+async def execute_backend_tool_once(
+    name: str,
+    args: dict[str, Any],
+    auth: DeviceAuthContext,
+    *,
+    timeout_sec: float | None = None,
+) -> dict[str, Any] | None:
+    return await _execute_backend_tool(name, args, auth, timeout_sec=timeout_sec)
+
+
 async def _execute_tool(name: str, args: dict[str, Any], auth: DeviceAuthContext) -> dict[str, Any]:
     backend_result = await _execute_backend_tool(name, args, auth)
     if backend_result is not None:
         return backend_result
+
+    if name in _BACKEND_REQUIRED_TOOLS:
+        return {
+            "ok": False,
+            "tool": name,
+            "status": "backend_required",
+            "error": "This tool requires the verified backend; no local fallback was used.",
+        }
 
     user_key = _user_key(auth)
 
@@ -411,6 +509,82 @@ async def _execute_tool(name: str, args: dict[str, Any], auth: DeviceAuthContext
         if query:
             items = [item for item in items if query in str(item.get("text", "")).lower()]
         return {"ok": True, "items": items[-5:]}
+
+    if name == "context_packet_get":
+        pending_cards = [
+            card
+            for card in _CONTEXT_CARDS[user_key]
+            if card.get("status", "pending") in {"pending", "snoozed"}
+        ]
+        must_handle = [
+            {
+                "cardId": card["id"],
+                "type": card.get("cardType", "event_followup"),
+                "priority": card.get("priority", 50),
+                "title": card.get("title", "pending context"),
+                "summary": card.get("summary", ""),
+            }
+            for card in pending_cards
+            if int(card.get("priority", 0)) >= 85
+        ][:2]
+        may_mention = [
+            {
+                "cardId": card["id"],
+                "type": card.get("cardType", "event_followup"),
+                "priority": card.get("priority", 50),
+                "title": card.get("title", "pending context"),
+                "summary": card.get("summary", ""),
+            }
+            for card in pending_cards
+            if int(card.get("priority", 0)) < 85
+        ][:4]
+        return {
+            "ok": True,
+            "version": "local_gateway_context_v1",
+            "generatedAt": _now_iso(),
+            "situation": "local_gateway_context",
+            "mustHandle": must_handle,
+            "mayMention": may_mention,
+            "memories": _MEMORIES[user_key][-6:],
+            "avoid": [],
+            "style": {"questionBudget": 1 if must_handle or may_mention else 0, "tone": "warm", "proactiveLevel": "medium"},
+        }
+
+    if name == "context_memory_add":
+        item = {
+            "id": str(uuid.uuid4()),
+            "memoryType": _string_arg(args, "memoryType") or "semantic",
+            "subject": _string_arg(args, "subject") or "memory",
+            "summary": _string_arg(args, "summary", "text"),
+            "createdAt": _now_iso(),
+        }
+        _MEMORIES[user_key].append(item)
+        return {"ok": True, "memoryId": item["id"]}
+
+    if name == "context_card_upsert":
+        card = {
+            "id": str(uuid.uuid4()),
+            "cardType": _string_arg(args, "cardType") or "event_followup",
+            "title": _string_arg(args, "title") or "pending context",
+            "summary": _string_arg(args, "summary", "text"),
+            "priority": int(args.get("priority") or 50),
+            "status": "pending",
+            "createdAt": _now_iso(),
+        }
+        _CONTEXT_CARDS[user_key].append(card)
+        return {"ok": True, "cardId": card["id"]}
+
+    if name == "context_card_outcome_record":
+        card_id = _string_arg(args, "cardId")
+        event_type = _string_arg(args, "eventType") or "mentioned"
+        for card in _CONTEXT_CARDS[user_key]:
+            if card.get("id") == card_id:
+                if event_type in {"completed", "dismissed", "expired"}:
+                    card["status"] = event_type
+                if event_type == "mentioned":
+                    card["mentionCount"] = int(card.get("mentionCount", 0)) + 1
+                break
+        return {"ok": True, "cardId": card_id, "eventType": event_type}
 
     if name == "reminder_create":
         text = _string_arg(args, "text", "query", "title")

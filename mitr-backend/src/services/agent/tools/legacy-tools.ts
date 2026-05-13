@@ -15,6 +15,8 @@ import { env } from '../../../config/env.js';
 import { NudgesService } from '../../nudges/nudges-service.js';
 import { ElderJourneyService } from '../../elder-journey/elder-journey-service.js';
 import type { ConversationTriggerType, PromptResponseState, PromptSentiment } from '../../elder-journey/elder-journey-types.js';
+import { ElderContextService } from '../../memory/elder-context-service.js';
+import type { ContextCardEventType, ContextCardType, MemoryType, MentionPolicy } from '../../memory/elder-context-types.js';
 
 export interface ToolDeps {
   religiousRetriever: ReligiousRetriever;
@@ -29,6 +31,7 @@ export interface ToolDeps {
   webSearchService: WebSearchService;
   nudgesService: NudgesService;
   elderJourneyService: ElderJourneyService;
+  elderContextService: ElderContextService;
 }
 
 export interface AgentToolContext {
@@ -313,6 +316,73 @@ export const createLegacyToolDefinitions = (
       .replace(/\s+/g, ' ');
   const optionalStringArg = () =>
     z.preprocess((value) => (value == null ? undefined : value), z.string().optional());
+  const parseOptionalDate = (value?: string | null): Date | undefined => {
+    if (!value) return undefined;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  };
+  const memoryTypeSchema = z.enum([
+    'profile',
+    'preference',
+    'routine',
+    'relationship',
+    'health_context',
+    'semantic',
+    'episodic',
+    'procedural',
+    'boundary'
+  ]);
+  const contextCardTypeSchema = z.enum([
+    'medication_followup',
+    'reminder_followup',
+    'event_followup',
+    'family_nudge',
+    'routine_checkin',
+    'preference_learning',
+    'care_signal',
+    'content_offer',
+    'conversation_repair'
+  ]);
+  const mentionPolicySchema = z.enum([
+    'immediate',
+    'first_safe_user_turn',
+    'after_current_request',
+    'when_conversational',
+    'only_if_user_asks'
+  ]);
+  const contextCardEventSchema = z.enum([
+    'mentioned',
+    'answered',
+    'completed',
+    'dismissed',
+    'ignored',
+    'snoozed',
+    'expired'
+  ]);
+  const conversationTriggerSchema = z.enum([
+    'session_start',
+    'first_use',
+    'reminder_fired',
+    'reminder_acknowledged',
+    'medication_taken',
+    'medication_delayed',
+    'routine_time',
+    'morning',
+    'evening',
+    'caregiver_nudge',
+    'user_quiet',
+    'user_requested',
+    'manual'
+  ]);
+  const inferMemoryType = (text: string, tags?: string[]): MemoryType => {
+    const hay = `${text} ${(tags ?? []).join(' ')}`.toLowerCase();
+    if (/routine|habit|daily|roz|yoga|walk|chai|prayer|bhajan/.test(hay)) return 'routine';
+    if (/like|prefer|pasand|choice|dislike|avoid/.test(hay)) return 'preference';
+    if (/son|daughter|wife|husband|family|brother|sister|beta|beti/.test(hay)) return 'relationship';
+    if (/medicine|tablet|dose|doctor|health|dawa|dawai/.test(hay)) return 'health_context';
+    if (/do not|avoid|boundary|never/.test(hay)) return 'boundary';
+    return 'semantic';
+  };
   type PanchangQueryType = 'today_snapshot' | 'next_tithi' | 'upcoming_tithi_dates' | 'tithi_on_date';
   const INDIA_TIMEZONE = 'Asia/Kolkata';
   const FESTIVAL_HINTS: Array<{
@@ -670,7 +740,7 @@ export const createLegacyToolDefinitions = (
   const memoryAdd: AgentToolDefinition = {
     name: 'memory_add',
     description:
-      'Store long-term user memory for future recall. Use when the user explicitly asks you to remember something, including spending details, purchases, amounts, or item lists they want recalled later. Never claim you remembered it unless this tool was called successfully in the same turn.',
+      'Store long-term user memory for future recall. Use when the user explicitly asks you to remember something, or when they share a durable preference/routine/family detail that should shape future conversations. Never claim you remembered it unless this tool was called successfully in the same turn.',
     parameters: z.object({
       text: z.string(),
       tags: z.array(z.string()).optional(),
@@ -687,14 +757,38 @@ export const createLegacyToolDefinitions = (
           ],
           { tags: input.tags, sourceTurnId: input.sourceTurnId }
         );
-        return { memorySaved: true };
+        const localMemory = await deps.elderContextService.addMemoryItem({
+          userId: context.userId,
+          elderId: context.elderId,
+          memoryType: inferMemoryType(input.text, input.tags),
+          subject: input.tags?.[0] ?? 'user_memory',
+          summary: input.text,
+          importance: input.tags?.some((tag: string) => /medicine|health|family|routine/i.test(tag)) ? 75 : 60,
+          confidence: 80,
+          sourceType: 'user_statement',
+          sourceId: input.sourceTurnId,
+          metadata: { tags: input.tags ?? [], mem0Saved: true }
+        });
+        return { memorySaved: true, localMemory };
       } catch (error) {
         logger.warn('memory_add failed', {
           userId: context.userId,
           sessionId: context.sessionId,
           error: (error as Error).message
         });
-        return { memorySaved: false, error: (error as Error).message };
+        const localMemory = await deps.elderContextService.addMemoryItem({
+          userId: context.userId,
+          elderId: context.elderId,
+          memoryType: inferMemoryType(input.text, input.tags),
+          subject: input.tags?.[0] ?? 'user_memory',
+          summary: input.text,
+          importance: input.tags?.some((tag: string) => /medicine|health|family|routine/i.test(tag)) ? 75 : 60,
+          confidence: 75,
+          sourceType: 'user_statement',
+          sourceId: input.sourceTurnId,
+          metadata: { tags: input.tags ?? [], mem0Saved: false, mem0Error: (error as Error).message }
+        });
+        return { memorySaved: localMemory.ok, memoryAvailableLocally: localMemory.ok, localMemory, mem0Error: (error as Error).message };
       }
     }
   };
@@ -727,6 +821,115 @@ export const createLegacyToolDefinitions = (
         };
       }
     }
+  };
+
+  const contextPacketGet: AgentToolDefinition = {
+    name: 'context_packet_get',
+    description:
+      'Get the compact ranked memory/context packet for this turn. Use before proactive greetings, after missed reminders, before sliding in pending follow-ups, and before any assistant-initiated topic.',
+    parameters: z.object({
+      triggerType: conversationTriggerSchema.nullish(),
+      includeDebug: z.boolean().nullish()
+    }),
+    timeoutMs: 900,
+    execute: async (input, context) =>
+      deps.elderContextService.getContextPacket({
+        userId: context.userId,
+        elderId: context.elderId,
+        sessionId: context.sessionId,
+        triggerType: input.triggerType ?? 'session_start',
+        includeDebug: input.includeDebug
+      })
+  };
+
+  const contextMemoryAdd: AgentToolDefinition = {
+    name: 'context_memory_add',
+    description:
+      'Store typed Reca memory in the first-party Postgres memory layer. Use for durable preferences, routines, relationships, boundaries, and event memories that should shape future context packets.',
+    parameters: z.object({
+      memoryType: memoryTypeSchema,
+      subject: z.string(),
+      summary: z.string(),
+      importance: z.number().int().min(0).max(100).optional(),
+      confidence: z.number().int().min(0).max(100).optional(),
+      metadata: z.record(z.unknown()).optional()
+    }),
+    timeoutMs: 900,
+    execute: async (input, context) =>
+      deps.elderContextService.addMemoryItem({
+        userId: context.userId,
+        elderId: context.elderId,
+        memoryType: input.memoryType as MemoryType,
+        subject: input.subject,
+        summary: input.summary,
+        importance: input.importance,
+        confidence: input.confidence,
+        sourceType: 'assistant_inference',
+        metadata: input.metadata
+      })
+  };
+
+  const contextCardUpsert: AgentToolDefinition = {
+    name: 'context_card_upsert',
+    description:
+      'Create or refresh a future conversational context card/open loop, such as a doctor visit follow-up tomorrow or a pending routine check-in. Use only for specific future context, not casual chat.',
+    parameters: z.object({
+      cardType: contextCardTypeSchema,
+      dedupeKey: optionalStringArg(),
+      title: z.string(),
+      summary: z.string(),
+      priority: z.number().int().min(0).max(100).optional(),
+      mentionPolicy: mentionPolicySchema.optional(),
+      dueAtISO: optionalStringArg(),
+      expiresAtISO: optionalStringArg(),
+      maxMentions: z.number().int().min(1).max(10).optional(),
+      metadata: z.record(z.unknown()).optional()
+    }),
+    timeoutMs: 900,
+    execute: async (input, context) =>
+      deps.elderContextService.upsertContextCard({
+        userId: context.userId,
+        elderId: context.elderId,
+        cardType: input.cardType as ContextCardType,
+        dedupeKey: input.dedupeKey,
+        title: input.title,
+        summary: input.summary,
+        priority: input.priority,
+        mentionPolicy: input.mentionPolicy as MentionPolicy | undefined,
+        dueAt: parseOptionalDate(input.dueAtISO),
+        expiresAt: parseOptionalDate(input.expiresAtISO),
+        maxMentions: input.maxMentions,
+        metadata: input.metadata
+      })
+  };
+
+  const contextCardOutcomeRecord: AgentToolDefinition = {
+    name: 'context_card_outcome_record',
+    description:
+      'Record what happened after Reca used a context card, so future context stays fresh and does not repeat awkwardly.',
+    parameters: z.object({
+      cardId: optionalStringArg(),
+      dedupeKey: optionalStringArg(),
+      eventType: contextCardEventSchema,
+      responseState: z.enum(['accepted', 'refused', 'ignored', 'unclear', 'completed']).nullish(),
+      notes: optionalStringArg(),
+      cooldownMinutes: z.number().int().min(1).max(1440).nullish(),
+      metadata: z.record(z.unknown()).optional()
+    }),
+    timeoutMs: 900,
+    execute: async (input, context) =>
+      deps.elderContextService.recordCardOutcome({
+        userId: context.userId,
+        elderId: context.elderId,
+        sessionId: context.sessionId,
+        cardId: input.cardId,
+        dedupeKey: input.dedupeKey,
+        eventType: input.eventType as ContextCardEventType,
+        responseState: input.responseState,
+        notes: input.notes,
+        cooldownMinutes: input.cooldownMinutes,
+        metadata: input.metadata
+      })
   };
 
   const reminderCreate: AgentToolDefinition = {
@@ -1853,22 +2056,6 @@ export const createLegacyToolDefinitions = (
     execute: async () => deps.companionService.getFestivalCompanion()
   };
 
-  const conversationTriggerSchema = z.enum([
-    'session_start',
-    'first_use',
-    'reminder_fired',
-    'reminder_acknowledged',
-    'medication_taken',
-    'medication_delayed',
-    'routine_time',
-    'morning',
-    'evening',
-    'caregiver_nudge',
-    'user_quiet',
-    'user_requested',
-    'manual'
-  ]);
-
   const conversationPlannerGet: AgentToolDefinition = {
     name: 'conversation_planner_get',
     description:
@@ -2006,6 +2193,10 @@ export const createLegacyToolDefinitions = (
   const definitions: AgentToolDefinition[] = [
     memoryAdd,
     memoryGet,
+    contextPacketGet,
+    contextMemoryAdd,
+    contextCardUpsert,
+    contextCardOutcomeRecord,
     reminderCreate,
     reminderList,
     nudgePendingGet,

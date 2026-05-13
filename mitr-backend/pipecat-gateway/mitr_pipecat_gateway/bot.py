@@ -1,10 +1,12 @@
+import json
 import os
+import asyncio
 
 from fastapi import WebSocket
 from loguru import logger
 
 from pipecat.audio.utils import create_stream_resampler
-from pipecat.frames.frames import Frame, InputAudioRawFrame
+from pipecat.frames.frames import Frame, InputAudioRawFrame, LLMUpdateSettingsFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -23,6 +25,7 @@ from pipecat.services.openai.realtime.events import (
     SessionProperties,
 )
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
+from pipecat.services.settings import LLMSettings
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
@@ -31,7 +34,7 @@ from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
 from .auth import DeviceAuthContext
 from .serializer import Esp32PCMSerializer
-from .tools import build_tools_schema, register_mitr_tools
+from .tools import build_tools_schema, execute_backend_tool_once, register_mitr_tools
 
 OPENAI_REALTIME_SAMPLE_RATE = 24000
 
@@ -39,6 +42,13 @@ OPENAI_REALTIME_SAMPLE_RATE = 24000
 def _int_env(name: str, fallback: int) -> int:
     try:
         return int(os.getenv(name, str(fallback)))
+    except ValueError:
+        return fallback
+
+
+def _float_env(name: str, fallback: float) -> float:
+    try:
+        return float(os.getenv(name, str(fallback)))
     except ValueError:
         return fallback
 
@@ -131,7 +141,13 @@ Religious and cultural behavior:
 Tool-routing contract:
 - Use tools whenever freshness, factual grounding, timing, memory lookup, or structured flow state is required.
 - Follow each tool description strictly for when to call, argument shape, and output handling.
-- Start each new session with nudge_pending_get before deep tool usage. After that, call conversation_planner_get before any proactive greeting, routine check-in, reminder follow-up, family bridge, or assistant-initiated question.
+- Use the injected runtime context packet when it is present. If it is not present yet, do not block the first response just to fetch context.
+- Call context_packet_get before sliding in any pending follow-up or assistant-initiated topic.
+- Treat context_packet_get as the source of truth for "what matters now": handle mustHandle first unless the user is distressed or asking for something urgent; use at most one mayMention item; respect avoid and style.questionBudget.
+- If a context packet is missing, failed, or marked freshness.stale=true, do not invent or assume context. Use only explicit items in the packet, and prefer answering the user's current request.
+- When you mention a context card, call context_card_outcome_record with eventType="mentioned". After the user answers, call it again with completed, dismissed, ignored, snoozed, or answered as appropriate.
+- Use context_memory_add for durable preferences, routines, relationships, boundaries, and event follow-ups that should shape future context packets. Use context_card_upsert for specific future/open-loop follow-ups such as "ask tomorrow how the doctor visit went".
+- Call conversation_planner_get before any proactive greeting, routine check-in, reminder follow-up, family bridge, or assistant-initiated question that is not fully determined by context_packet_get.
 - For reminder_fired, reminder_acknowledged, medication_taken, medication_delayed, routine_time, morning, evening, caregiver_nudge, user_quiet, and first_use triggers, conversation_planner_get is the source of truth for the next proactive move.
 - When conversation_planner_get returns plan.promptSeed, use it as the behavioral source, not necessarily verbatim. Keep the plan's intent, allowedQuestionCount, tone, followupPolicy, constraints, and toolHints.
 - If the user responds to a planned prompt, call prompt_outcome_record with the returned promptHistoryId and responseState.
@@ -143,12 +159,20 @@ Tool-routing contract:
 - If a tool result has acknowledgementOnly=true or status="started", say only one short acknowledgement like "ठीक है, मैं देख रहा हूँ।" Do not answer the actual request until the follow-up tool result arrives.
 - When a follow-up tool result arrives, answer directly from that result and do not call another tool for the same request.
 - When a tool is pending, do not ask unrelated follow-up questions and do not fabricate details.
-- If a tool fails, apologize briefly and provide the safest fallback.
+- If a tool fails, apologize briefly and say what you can safely do next.
+- If a memory/context tool fails, do not use local guesses or generic fallback context.
 - Never send null tool args; omit empty fields.
 - Never invent IDs; only use IDs returned by tools.
-- Start each new session with nudge_pending_get before deep tool usage.
+- Call nudge_pending_get only when you are about to handle family nudges or begin deeper proactive usage.
 - For nudges, handle sequentially, one at a time.
 - For flow tools, treat flow.nextStep as the source of truth for what to say next.
+
+Runtime behavior contract:
+- Never spend the user's first seconds on hidden work. If context is missing or late, answer naturally and use tools only when needed.
+- If context_packet_get has a mustHandle medication or care item, slide it in briefly before optional requests; otherwise answer the user's request first.
+- Mention at most one context card in a spoken turn. Do not combine medicine, family, routine, and life-story follow-ups.
+- If a context card is refused, ignored, or snoozed, record the outcome and do not ask again in the same session unless the user brings it up.
+- Saved memory should make Reca more considerate, not more talkative.
 
 Memory tool policy:
 - Use memory_add when the user clearly asks you to remember something for later.
@@ -179,6 +203,60 @@ Output quality:
 - End with a follow-up question only when it helps the user open up or decide next step.
 - Keep the conversation natural and emotionally attuned; do not sound like a policy disclaimer.
 """
+
+
+def _system_instruction_with_context_packet(auth: DeviceAuthContext, payload: dict[str, object]) -> str:
+    instruction = _system_instruction(auth)
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return instruction
+
+    compact = json.dumps(payload, ensure_ascii=False)
+    max_chars = _int_env("MITR_GATEWAY_CONTEXT_PACKET_MAX_CHARS", 5000)
+    if len(compact) > max_chars:
+        compact = compact[:max_chars] + "...[truncated]"
+
+    return (
+        f"{instruction}\n\n"
+        "Runtime context packet for this connection. Use it as current context; do not read it aloud. "
+        "Handle mustHandle items before optional topics unless the user is distressed or asks something urgent.\n"
+        f"{compact}"
+    )
+
+
+async def _fetch_runtime_context_packet(auth: DeviceAuthContext) -> dict[str, object] | None:
+    if os.getenv("MITR_GATEWAY_INJECT_BOOT_CONTEXT", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+
+    try:
+        result = await execute_backend_tool_once(
+            "context_packet_get",
+            {"triggerType": "session_start"},
+            auth,
+            timeout_sec=_float_env("MITR_GATEWAY_CONTEXT_PACKET_BACKGROUND_TIMEOUT_SEC", 1.0),
+        )
+    except Exception as error:
+        logger.debug("Runtime context packet fetch failed: {}", str(error))
+        return None
+
+    payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
+    return payload if isinstance(payload, dict) and payload.get("ok") else None
+
+
+async def _queue_runtime_context_update(task: PipelineTask, llm: OpenAIRealtimeLLMService, auth: DeviceAuthContext) -> None:
+    try:
+        payload = await _fetch_runtime_context_packet(auth)
+        if not payload:
+            return
+
+        await task.queue_frame(
+            LLMUpdateSettingsFrame(
+                delta=LLMSettings(system_instruction=_system_instruction_with_context_packet(auth, payload)),
+                service=llm,
+            )
+        )
+        logger.info("Runtime context packet injected asynchronously", device_id=auth.device_id)
+    except Exception as error:
+        logger.debug("Runtime context packet async injection failed: {}", str(error))
 
 
 class PCM16Resampler(FrameProcessor):
@@ -349,6 +427,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
         logger.info("ESP32 connected to Pipecat gateway", device_id=auth.device_id)
+        asyncio.create_task(_queue_runtime_context_update(task, llm, auth))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):

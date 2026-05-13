@@ -28,6 +28,7 @@ const createToolDefinitionsV2 = (deps: ToolDeps): AgentToolDefinition[] => {
 
   const syncDefinitions: AgentToolDefinition[] = [
     ...selectMemoryTools(legacySync),
+    ...pickTools(legacySync, ['context_packet_get', 'context_memory_add', 'context_card_upsert', 'context_card_outcome_record']),
     ...pickTools(legacySync, ['reminder_create', 'reminder_list']),
     ...selectNudgeTools(legacySync),
     ...pickTools(legacySync, ['devotional_playlist_get']),
