@@ -78,7 +78,7 @@ REQUIRE_INTERNAL_SERVICE_CHECK=true \
 Do not call the security objective complete until these are actually done:
 
 - Rotate exposed OpenAI, Google, GitHub, Qdrant, Mem0, Exa, Prokerala, Expo, Twilio, and internal service tokens.
-- Fill real `deploy/.env.prod*` files on the deploy host only.
+- Fill real `deploy/.env.prod` on the deploy host only; scoped service env files are generated during deploy.
 - Provision TLS certificates for `PUBLIC_HOSTNAME`.
 - Decide phone OTP launch state: keep disabled, or set `AUTH_OTP_DELIVERY_MODE=twilio` with Twilio credentials.
 - Verify production Postgres storage encryption and encrypted automated backups.

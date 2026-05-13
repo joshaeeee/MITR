@@ -54,8 +54,10 @@ Rotate every key or token that appeared in local logs, chat, screenshots, `.env`
 Production secrets must not live in the repo, `.context`, screenshots, or checked-in files. Prefer a secret manager. If using host env files, keep them only on the deploy host with restrictive permissions:
 
 ```sh
-chmod 600 deploy/.env.prod deploy/.env.prod.*
+chmod 600 deploy/.env.prod
 ```
+
+Deploy bootstrap regenerates scoped `deploy/.env.prod.*` service files from the canonical env and applies restrictive permissions.
 
 `POSTGRES_STORAGE_ENCRYPTION_ACK=true`
 

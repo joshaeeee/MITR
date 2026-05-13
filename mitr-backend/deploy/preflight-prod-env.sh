@@ -52,6 +52,35 @@ require_not_placeholder() {
   fi
 }
 
+validate_openai_api_key() {
+  local file="$1"
+  local key="$2"
+  local value
+  local status
+  local response_file
+  if [[ "${VALIDATE_OPENAI_API_KEY:-false}" != "true" ]]; then
+    return
+  fi
+  value="$(trim "$(env_value "${file}" "${key}" || true)")"
+  if [[ -z "${value}" ]]; then
+    return
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "[preflight] curl is required for OpenAI API key validation" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  response_file="$(mktemp)"
+  status="$(curl -sS -o "${response_file}" -w '%{http_code}' --max-time 10 \
+    -H "Authorization: Bearer ${value}" \
+    https://api.openai.com/v1/models 2>/dev/null || true)"
+  rm -f "${response_file}"
+  if [[ "${status}" != "200" ]]; then
+    echo "[preflight] ${file}: ${key} failed OpenAI API validation (HTTP ${status:-000})" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 require_url_prefix() {
   local file="$1"
   local key="$2"
@@ -205,6 +234,8 @@ require_postgres_sslmode "${ENV_FILE}" POSTGRES_URL
 require_nonempty "${ENV_FILE}" REDIS_URL
 require_secret_min_length "${ENV_FILE}" INTERNAL_SERVICE_TOKEN 32
 require_secret_min_length "${ENV_FILE}" SHORT_CODE_PEPPER 32
+require_not_placeholder "${ENV_FILE}" OPENAI_API_KEY
+validate_openai_api_key "${ENV_FILE}" OPENAI_API_KEY
 require_nonempty "${ENV_FILE}" MEM0_API_KEY
 require_nonempty "${ENV_FILE}" QDRANT_URL
 require_nonempty "${ENV_FILE}" QDRANT_API_KEY
@@ -252,6 +283,7 @@ if [[ -f "${SCRIPT_DIR}/.env.prod.pipecat-gateway" ]]; then
   require_secret_min_length "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN 32
   require_same_value "${ENV_FILE}" INTERNAL_SERVICE_TOKEN "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN
   require_not_placeholder "${gateway_env}" OPENAI_API_KEY
+  require_same_value "${ENV_FILE}" OPENAI_API_KEY "${gateway_env}" OPENAI_API_KEY
 fi
 
 for worker_env in \
