@@ -224,7 +224,7 @@ def _system_instruction_with_context_packet(auth: DeviceAuthContext, payload: di
 
 
 async def _fetch_runtime_context_packet(auth: DeviceAuthContext) -> dict[str, object] | None:
-    if os.getenv("MITR_GATEWAY_INJECT_BOOT_CONTEXT", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+    if os.getenv("MITR_GATEWAY_INJECT_BOOT_CONTEXT", "false").strip().lower() not in {"1", "true", "yes", "on"}:
         return None
 
     try:
