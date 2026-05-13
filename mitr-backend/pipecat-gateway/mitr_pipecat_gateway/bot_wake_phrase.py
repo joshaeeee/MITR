@@ -101,19 +101,13 @@ def _language(value: str) -> Language:
 
 
 def _openai_turn_detection() -> TurnDetection | SemanticTurnDetection | bool:
-    mode = os.getenv("OPENAI_REALTIME_TURN_DETECTION", "server_vad").strip().lower()
+    mode = os.getenv("OPENAI_REALTIME_TURN_DETECTION", "manual").strip().lower()
     if mode in {"off", "false", "none", "disabled", "manual"}:
         return False
-    if mode == "semantic_vad":
-        return SemanticTurnDetection(
-            eagerness=os.getenv("OPENAI_REALTIME_VAD_EAGERNESS", "auto"),
-            create_response=True,
-            interrupt_response=_bool_env("OPENAI_REALTIME_INTERRUPT_RESPONSE", False),
-        )
-    return TurnDetection(
-        threshold=_float_env("OPENAI_REALTIME_VAD_THRESHOLD", 0.65),
-        prefix_padding_ms=_int_env("OPENAI_REALTIME_VAD_PREFIX_PADDING_MS", 300),
-        silence_duration_ms=_int_env("OPENAI_REALTIME_VAD_SILENCE_DURATION_MS", 700),
+    raise RuntimeError(
+        "Wake-phrase gateway requires OPENAI_REALTIME_TURN_DETECTION=manual. "
+        "OpenAIRealtimeSTTService owns speech detection and the Realtime LLM "
+        "must not auto-create responses."
     )
 
 
