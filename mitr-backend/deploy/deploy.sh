@@ -34,12 +34,13 @@ for worker_env in \
   "${SCRIPT_DIR}/.env.prod.digest-worker"
 do
   if [[ ! -f "${worker_env}" ]]; then
-    echo "[deploy] missing ${worker_env}. Copy the matching .template file and fill only the worker-specific secrets."
+    echo "[deploy] missing ${worker_env}. It should be generated from deploy/.env.prod by bootstrap-service-env-files.sh."
     exit 1
   fi
 done
 
 bash "${SCRIPT_DIR}/check-service-env-scope.sh"
+export VALIDATE_OPENAI_API_KEY="${VALIDATE_OPENAI_API_KEY:-true}"
 bash "${SCRIPT_DIR}/preflight-prod-env.sh" "${ENV_FILE}"
 
 echo "[deploy] validating docker compose configuration"

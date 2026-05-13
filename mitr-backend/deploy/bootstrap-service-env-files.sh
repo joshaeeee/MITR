@@ -137,6 +137,16 @@ set_from_env() {
   fi
 }
 
+require_canonical_value() {
+  local key="$1"
+  local value
+  value="$(env_value "${key}")"
+  if is_placeholder "${value}"; then
+    echo "[deploy] ${ENV_FILE}: ${key} must be set in the canonical production env" >&2
+    exit 1
+  fi
+}
+
 ensure_from_template() {
   local file="$1"
   local template="$2"
@@ -145,39 +155,9 @@ ensure_from_template() {
     echo "[deploy] missing ${template}; cannot bootstrap ${label} env"
     exit 1
   fi
-  if [[ -f "${file}" ]]; then
-    prune_env_to_template "${file}" "${template}" "${label}"
-    return
-  fi
   cp "${template}" "${file}"
   chmod 600 "${file}" || true
-  echo "[deploy] created missing ${file} from ${template}"
-}
-
-prune_env_to_template() {
-  local file="$1"
-  local template="$2"
-  local label="$3"
-  awk -v label="${label}" -F= '
-    FNR == NR {
-      if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) next
-      key=$1
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-      if (key != "") allowed[key]=1
-      next
-    }
-    $0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/ { print; next }
-    {
-      key=$1
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-      if (allowed[key]) {
-        print
-      } else if (key != "" && !removed[key]++) {
-        printf("[deploy] removed stale %s env key %s\n", label, key) > "/dev/stderr"
-      }
-    }
-  ' "${template}" "${file}" > "${file}.tmp"
-  mv "${file}.tmp" "${file}"
+  echo "[deploy] generated ${label} env from ${template}; canonical values come from ${ENV_FILE}"
 }
 
 normalize_postgres_url() {
@@ -281,6 +261,7 @@ ensure_core_env() {
 }
 
 ensure_core_env
+require_canonical_value OPENAI_API_KEY
 
 gateway_env="${SCRIPT_DIR}/.env.prod.pipecat-gateway"
 ensure_from_template "${gateway_env}" "${SCRIPT_DIR}/.env.prod.pipecat-gateway.template" "pipecat-gateway"

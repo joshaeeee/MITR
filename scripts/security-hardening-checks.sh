@@ -188,6 +188,7 @@ cleanup_env_files
 log "production preflight accepts synthetic configured env"
 voice_key="$(node -e "console.log(Buffer.alloc(32, 4).toString('base64'))")"
 internal_token="$(node -e "console.log('a'.repeat(64))")"
+openai_key='test-openai-key-12345678901234567890'
 postgres_url='postgresql://mitr:secret@db.example.com:5432/mitr?sslmode=verify-full'
 cp deploy/.env.prod.template deploy/.env.prod
 cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
@@ -206,6 +207,7 @@ set_kv deploy/.env.prod PIPECAT_GATEWAY_PUBLIC_HTTP_URL https://api.mitr.app
 set_kv deploy/.env.prod POSTGRES_URL "${postgres_url}"
 set_kv deploy/.env.prod INTERNAL_SERVICE_TOKEN "${internal_token}"
 set_kv deploy/.env.prod SHORT_CODE_PEPPER "$(node -e "console.log('c'.repeat(64))")"
+set_kv deploy/.env.prod OPENAI_API_KEY "${openai_key}"
 set_kv deploy/.env.prod MEM0_API_KEY mem0-test-key
 set_kv deploy/.env.prod QDRANT_URL https://qdrant.example
 set_kv deploy/.env.prod QDRANT_API_KEY qdrant-test-key
@@ -219,7 +221,7 @@ set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_PUBLIC_WS_URL wss://api.mit
 set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_CORS_ORIGINS https://app.mitr.app
 set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_LOG_TRANSCRIPTS false
 set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
-set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY test-openai-key-12345678901234567890
+set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY "${openai_key}"
 for worker_env in \
   deploy/.env.prod.reminder-worker \
   deploy/.env.prod.insights-worker \
@@ -237,6 +239,16 @@ if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-mismatch.o
 fi
 head -n 5 /tmp/mitr-preflight-mismatch.out
 
+set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
+set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY test-stale-service-openai-key-1234567890
+if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-openai-mismatch.out 2>&1; then
+  cat /tmp/mitr-preflight-openai-mismatch.out
+  echo "[security-checks] expected preflight to reject mismatched OpenAI API keys" >&2
+  exit 1
+fi
+head -n 5 /tmp/mitr-preflight-openai-mismatch.out
+
+set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY "${openai_key}"
 set_kv deploy/.env.prod INTERNAL_SERVICE_TOKEN short
 set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN short
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-weak-token.out 2>&1; then

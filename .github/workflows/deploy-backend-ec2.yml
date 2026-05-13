@@ -325,14 +325,6 @@ jobs:
             if [ -f "mitr-backend/deploy/.env.prod" ]; then
               cp "mitr-backend/deploy/.env.prod" ".deploy-tmp/env.prod"
             fi
-            if [ -f "mitr-backend/deploy/.env.prod.pipecat-gateway" ]; then
-              cp "mitr-backend/deploy/.env.prod.pipecat-gateway" ".deploy-tmp/env.prod.pipecat-gateway"
-            fi
-            for worker_env in reminder-worker insights-worker digest-worker; do
-              if [ -f "mitr-backend/deploy/.env.prod.${worker_env}" ]; then
-                cp "mitr-backend/deploy/.env.prod.${worker_env}" ".deploy-tmp/env.prod.${worker_env}"
-              fi
-            done
             git reset --hard HEAD
             git clean -fd \
               -e .deploy-tmp/ \
@@ -349,16 +341,6 @@ jobs:
               mkdir -p "mitr-backend/deploy"
               cp ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod"
             fi
-            if [ -f ".deploy-tmp/env.prod.pipecat-gateway" ]; then
-              mkdir -p "mitr-backend/deploy"
-              cp ".deploy-tmp/env.prod.pipecat-gateway" "mitr-backend/deploy/.env.prod.pipecat-gateway"
-            fi
-            for worker_env in reminder-worker insights-worker digest-worker; do
-              if [ -f ".deploy-tmp/env.prod.${worker_env}" ]; then
-                mkdir -p "mitr-backend/deploy"
-                cp ".deploy-tmp/env.prod.${worker_env}" "mitr-backend/deploy/.env.prod.${worker_env}"
-              fi
-            done
             rm -rf .deploy-tmp
             echo "[deploy] checkout ready at $(git rev-parse --short HEAD)"
 

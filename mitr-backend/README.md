@@ -122,21 +122,19 @@ Deploy:
 ```sh
 cd /opt/mitr/MITR/mitr-backend
 cp deploy/.env.prod.template deploy/.env.prod
-cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
-cp deploy/.env.prod.reminder-worker.template deploy/.env.prod.reminder-worker
-cp deploy/.env.prod.insights-worker.template deploy/.env.prod.insights-worker
-cp deploy/.env.prod.digest-worker.template deploy/.env.prod.digest-worker
 deploy/generate-prod-secrets.sh
+bash deploy/bootstrap-service-env-files.sh deploy/.env.prod
 bash deploy/preflight-prod-env.sh deploy/.env.prod
 bash deploy/deploy.sh
 bash deploy/setup-https.sh
 ```
 
-Keep service env files narrow. Gateway and worker env files should not include
-unrelated API/OAuth/database/vector-store/device secrets.
-Use the generated `INTERNAL_SERVICE_TOKEN` in `deploy/.env.prod`, the same value
-as `MITR_BACKEND_INTERNAL_TOKEN` in `deploy/.env.prod.pipecat-gateway`, and the
-generated `VOICE_NOTES_ENCRYPTION_KEY_B64` in `deploy/.env.prod`.
+Fill secrets and runtime config only in `deploy/.env.prod`. Deploy bootstrap
+regenerates narrow gateway and worker env files from that canonical env, so
+service env files should not be edited by hand. Gateway and worker env files
+must not include unrelated API/OAuth/database/vector-store/device secrets. The
+deploy preflight validates `OPENAI_API_KEY` against OpenAI by default before
+restarting production containers.
 Before a pilot launch, complete `deploy/SECURITY_LAUNCH_CHECKLIST.md`; the
 production preflight blocks deploy until the required security acknowledgements
 are set.
