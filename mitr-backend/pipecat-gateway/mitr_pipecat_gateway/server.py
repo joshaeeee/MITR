@@ -76,7 +76,7 @@ def _validate_production_env() -> None:
 _validate_production_env()
 
 logger.remove()
-logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"))
+logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO").strip().upper())
 
 _active_websockets: dict[str, WebSocket] = {}
 

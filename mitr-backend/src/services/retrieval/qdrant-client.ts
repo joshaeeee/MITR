@@ -10,6 +10,10 @@ const isHttps = (raw: string): boolean => {
 };
 
 export const createQdrantClient = (): QdrantClient => {
+  if (!env.QDRANT_URL) {
+    throw new Error('QDRANT_URL is required to create a Qdrant client');
+  }
+
   const secure = isHttps(env.QDRANT_URL);
 
   return new QdrantClient({

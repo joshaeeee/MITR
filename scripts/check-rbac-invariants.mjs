@@ -483,8 +483,8 @@ requireContains(
 for (const workerPath of [reminderWorker, insightsWorker, digestWorker]) {
   requireContains(
     workerPath,
-    'validateEnv();',
-    'worker entrypoints must validate production env at startup'
+    'validateWorkerEnv();',
+    'worker entrypoints must validate worker-scoped production env at startup'
   );
 }
 requireContains(

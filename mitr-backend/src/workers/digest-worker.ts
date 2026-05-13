@@ -2,9 +2,9 @@ import { closeRedisConnections } from '../lib/redis.js';
 import { logger } from '../lib/logger.js';
 import { closeDigestQueue, createDigestWorker, ensureDigestRepeatableScanWithPattern } from '../services/insights/digest-queue.js';
 import { DigestNotifierService } from '../services/notifications/digest-notifier-service.js';
-import { validateEnv } from '../config/env.js';
+import { validateWorkerEnv } from '../config/env.js';
 
-validateEnv();
+validateWorkerEnv();
 
 const digestCronUtc = (): string => process.env.DIGEST_JOB_CRON_UTC?.trim() || '* * * * *';
 

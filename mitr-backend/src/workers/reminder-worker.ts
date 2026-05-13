@@ -2,10 +2,10 @@ import { createReminderWorker, closeReminderQueue } from '../services/reminders/
 import { logger } from '../lib/logger.js';
 import { SessionStore } from '../services/session-store.js';
 import { closeRedisConnections } from '../lib/redis.js';
-import { validateEnv } from '../config/env.js';
+import { validateWorkerEnv } from '../config/env.js';
 import { ElderContextService } from '../services/memory/elder-context-service.js';
 
-validateEnv();
+validateWorkerEnv();
 
 const store = new SessionStore();
 const context = new ElderContextService();

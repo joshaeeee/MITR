@@ -39,8 +39,7 @@ const withEnv = async (patch: Record<string, string | undefined>, fn: () => void
 
 test('importing env module does not throw when required vars are missing', async () => {
   // If the lazy Proxy regresses to eager parsing, this import would throw
-  // because POSTGRES_URL / MEM0_API_KEY / QDRANT_URL are not set in the
-  // test environment.
+  // because POSTGRES_URL is not set in a bare test environment.
   const mod = await import('./env.js');
   assert.ok(mod.env, 'env export should exist');
   assert.equal(typeof mod.validateEnv, 'function', 'validateEnv should be a function');
@@ -176,7 +175,7 @@ test('production env requires launch security acknowledgements', async () => {
   );
 });
 
-test('production env requires Redis and Qdrant API key', async () => {
+test('production env requires Redis and Qdrant API key for hosted Qdrant', async () => {
   const { validateEnv } = await import('./env.js');
   await withEnv(
     {
@@ -186,7 +185,7 @@ test('production env requires Redis and Qdrant API key', async () => {
       QDRANT_API_KEY: '',
       POSTGRES_URL: 'postgresql://postgres:postgres@localhost:5432/mitr',
       MEM0_API_KEY: 'mem0-test',
-      QDRANT_URL: 'http://localhost:6333',
+      QDRANT_URL: 'https://qdrant.mitr.app',
       CORS_ORIGINS: 'https://app.mitr.app',
       API_PUBLIC_BASE_URL: 'https://api.mitr.app',
       PIPECAT_GATEWAY_PUBLIC_WS_URL: 'wss://api.mitr.app/ws',
@@ -199,6 +198,29 @@ test('production env requires Redis and Qdrant API key', async () => {
     },
     () => {
       assert.throws(() => validateEnv(), /REDIS_URL|QDRANT_API_KEY/);
+    }
+  );
+});
+
+test('production worker env accepts scoped worker configuration', async () => {
+  const { validateWorkerEnv } = await import('./env.js');
+  await withEnv(
+    {
+      NODE_ENV: 'production',
+      POSTGRES_URL: 'postgresql://postgres:postgres@localhost:5432/mitr',
+      REDIS_URL: 'redis://redis:6379',
+      MEM0_API_KEY: undefined,
+      QDRANT_URL: undefined,
+      QDRANT_API_KEY: undefined,
+      INTERNAL_SERVICE_TOKEN: undefined,
+      SHORT_CODE_PEPPER: undefined,
+      API_PUBLIC_BASE_URL: undefined,
+      PIPECAT_GATEWAY_PUBLIC_WS_URL: undefined,
+      PIPECAT_GATEWAY_PUBLIC_HTTP_URL: undefined,
+      VOICE_NOTES_ENCRYPTION_KEY_B64: undefined
+    },
+    () => {
+      assert.doesNotThrow(() => validateWorkerEnv());
     }
   );
 });
@@ -359,13 +381,9 @@ test('production env accepts remote Postgres verify-full SSL mode', async () => 
 test('env proxy returns correct defaults for optional fields', async () => {
   const { env } = await import('./env.js');
   // PORT has a .default(8080) — accessing it should trigger parse and return the default.
-  // This will only work if the 3 required fields (POSTGRES_URL, MEM0_API_KEY, QDRANT_URL)
-  // are present in the environment. If they are not, this test verifies that accessing
-  // a property correctly propagates the Zod validation error.
-  const hasRequiredVars =
-    Boolean(process.env.POSTGRES_URL) &&
-    Boolean(process.env.MEM0_API_KEY) &&
-    Boolean(process.env.QDRANT_URL);
+  // This only needs the base required fields. API-only production checks run
+  // through validateEnv(), not through the lazy proxy.
+  const hasRequiredVars = Boolean(process.env.POSTGRES_URL);
 
   if (hasRequiredVars) {
     assert.equal(typeof env.PORT, 'number');
@@ -376,10 +394,7 @@ test('env proxy returns correct defaults for optional fields', async () => {
 
 test('validateEnv throws when required env vars are missing', async () => {
   const { validateEnv } = await import('./env.js');
-  const hasRequiredVars =
-    Boolean(process.env.POSTGRES_URL) &&
-    Boolean(process.env.MEM0_API_KEY) &&
-    Boolean(process.env.QDRANT_URL);
+  const hasRequiredVars = Boolean(process.env.POSTGRES_URL);
 
   if (hasRequiredVars) {
     // In a fully provisioned environment, validateEnv should succeed.
