@@ -132,14 +132,14 @@ const baseEnvSchema = z.object({
   REDIS_URL: z.string().url().optional(),
   POSTGRES_URL: z.string().url(),
 
-  MEM0_API_KEY: z.string().min(1),
+  MEM0_API_KEY: z.string().min(1).optional(),
   MEM0_BASE_URL: z.string().url().default('https://api.mem0.ai'),
   MEM0_ORG_ID: z.string().optional(),
   MEM0_PROJECT_ID: z.string().optional(),
   MEM0_ADD_TIMEOUT_MS: z.coerce.number().default(5000),
   MEM0_SEARCH_TIMEOUT_MS: z.coerce.number().default(3500),
 
-  QDRANT_URL: z.string().url(),
+  QDRANT_URL: z.string().url().optional(),
   QDRANT_API_KEY: z.string().optional(),
   QDRANT_CHECK_COMPATIBILITY: envBoolean(false),
   QDRANT_COLLECTION: z.string().default('religious_texts'),
@@ -193,7 +193,23 @@ const baseEnvSchema = z.object({
   USER_EVENT_STREAM_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 14)
 });
 
-const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+const requireProductionPostgresTls = (
+  env: z.infer<typeof baseEnvSchema>,
+  ctx: z.RefinementCtx
+): void => {
+  const postgresUrl = new URL(env.POSTGRES_URL);
+  const sslMode = postgresUrl.searchParams.get('sslmode')?.toLowerCase();
+  const localPostgresHosts = new Set(['localhost', '127.0.0.1', '::1', 'postgres']);
+  if (!localPostgresHosts.has(postgresUrl.hostname) && sslMode !== 'verify-full') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['POSTGRES_URL'],
+      message: 'POSTGRES_URL must include sslmode=verify-full in production'
+    });
+  }
+};
+
+const apiEnvSchema = baseEnvSchema.superRefine((env, ctx) => {
   if (env.NODE_ENV !== 'production') return;
 
   if (env.AUTH_DEV_OTP_BYPASS) {
@@ -326,14 +342,21 @@ const envSchema = baseEnvSchema.superRefine((env, ctx) => {
     });
   }
 
-  const postgresUrl = new URL(env.POSTGRES_URL);
-  const sslMode = postgresUrl.searchParams.get('sslmode')?.toLowerCase();
-  const localPostgresHosts = new Set(['localhost', '127.0.0.1', '::1', 'postgres']);
-  if (!localPostgresHosts.has(postgresUrl.hostname) && sslMode !== 'verify-full') {
+  requireProductionPostgresTls(env, ctx);
+
+  if (!env.MEM0_API_KEY) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['POSTGRES_URL'],
-      message: 'POSTGRES_URL must include sslmode=verify-full in production'
+      path: ['MEM0_API_KEY'],
+      message: 'MEM0_API_KEY is required in production'
+    });
+  }
+
+  if (!env.QDRANT_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['QDRANT_URL'],
+      message: 'QDRANT_URL is required in production'
     });
   }
 
@@ -359,23 +382,40 @@ const envSchema = baseEnvSchema.superRefine((env, ctx) => {
     });
   }
 
-  if (!env.QDRANT_API_KEY) {
+  if (env.QDRANT_URL?.startsWith('https://') && !env.QDRANT_API_KEY) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['QDRANT_API_KEY'],
-      message: 'QDRANT_API_KEY is required in production'
+      message: 'QDRANT_API_KEY is required in production when QDRANT_URL uses https'
     });
   }
 });
 
-export type Env = z.infer<typeof envSchema>;
+const workerEnvSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.NODE_ENV !== 'production') return;
+
+  if (!env.REDIS_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['REDIS_URL'],
+      message: 'REDIS_URL is required in production'
+    });
+  }
+
+  requireProductionPostgresTls(env, ctx);
+});
+
+export type Env = z.infer<typeof baseEnvSchema>;
 
 /** Validate all env vars eagerly. Call at startup entry points. */
-export const validateEnv = (): Env => envSchema.parse(process.env);
+export const validateEnv = (): Env => apiEnvSchema.parse(process.env);
+
+/** Validate the narrower env surface used by production background workers. */
+export const validateWorkerEnv = (): Env => workerEnvSchema.parse(process.env);
 
 let _cached: Env | undefined;
 const _parse = (): Env => {
-  _cached ??= envSchema.parse(process.env);
+  _cached ??= baseEnvSchema.parse(process.env);
   return _cached;
 };
 

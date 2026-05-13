@@ -10,6 +10,10 @@ export class Mem0Service {
   private headers: Record<string, string>;
 
   constructor() {
+    if (!env.MEM0_API_KEY) {
+      throw new Error('MEM0_API_KEY is required to use Mem0Service');
+    }
+
     this.headers = {
       Authorization: `Token ${env.MEM0_API_KEY}`,
       'Content-Type': 'application/json'
