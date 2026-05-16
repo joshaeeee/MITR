@@ -169,8 +169,16 @@ export const registerAgentRoutes = (app: FastifyInstance, auth: AuthService): vo
     const parsed = memoryQuerySchema.safeParse(request.query ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-    const items = await mem0.searchMemory(request.auth!.user.id, parsed.data.query, parsed.data.k ?? 5);
-    return reply.send({ items });
+    const results = await mem0.searchScopedMemories({
+      userId: request.auth!.user.id,
+      query: parsed.data.query,
+      limit: parsed.data.k ?? 5
+    });
+    const authorized = await elderContextService.authorizeMem0SearchResults({
+      userId: request.auth!.user.id,
+      results
+    });
+    return reply.send({ items: authorized.map((memory) => memory.summary), memories: authorized });
   });
 
   app.get('/agent/tasks', { preHandler: guard }, async (request, reply) => {

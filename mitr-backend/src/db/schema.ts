@@ -384,7 +384,7 @@ export const elderMemoryItems = pgTable('elder_memory_items', {
     .$type<'profile' | 'preference' | 'routine' | 'relationship' | 'health_context' | 'semantic' | 'episodic' | 'procedural' | 'boundary'>()
     .notNull(),
   subject: text('subject').notNull(),
-  summary: text('summary').notNull(),
+  summary: text('summary'),
   valueJson: jsonb('value_json').$type<Record<string, unknown>>().default({}).notNull(),
   importance: integer('importance').default(50).notNull(),
   confidence: integer('confidence').default(70).notNull(),
@@ -400,6 +400,15 @@ export const elderMemoryItems = pgTable('elder_memory_items', {
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),
   accessCount: integer('access_count').default(0).notNull(),
+  mem0UserId: text('mem0_user_id'),
+  mem0EventId: text('mem0_event_id'),
+  mem0MemoryId: text('mem0_memory_id'),
+  mem0Status: text('mem0_status')
+    .$type<'not_indexed' | 'pending' | 'indexed' | 'failed' | 'deleted'>()
+    .default('not_indexed')
+    .notNull(),
+  mem0IndexedAt: timestamp('mem0_indexed_at', { withTimezone: true }),
+  contentHash: text('content_hash'),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
@@ -407,7 +416,10 @@ export const elderMemoryItems = pgTable('elder_memory_items', {
   elderStatusImportanceIdx: index('elder_memory_items_elder_status_importance_idx').on(table.elderId, table.status, table.importance),
   elderTypeStatusIdx: index('elder_memory_items_elder_type_status_idx').on(table.elderId, table.memoryType, table.status),
   elderSourceIdx: index('elder_memory_items_elder_source_idx').on(table.elderId, table.sourceType, table.sourceId),
-  elderExpiryIdx: index('elder_memory_items_elder_expiry_idx').on(table.elderId, table.expiresAt)
+  elderExpiryIdx: index('elder_memory_items_elder_expiry_idx').on(table.elderId, table.expiresAt),
+  elderMem0UserStatusIdx: index('elder_memory_items_mem0_user_status_idx').on(table.mem0UserId, table.status),
+  elderMem0MemoryIdx: index('elder_memory_items_mem0_memory_idx').on(table.mem0MemoryId),
+  elderContentHashIdx: index('elder_memory_items_elder_content_hash_idx').on(table.elderId, table.contentHash)
 }));
 
 export const elderContextCards = pgTable('elder_context_cards', {

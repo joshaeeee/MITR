@@ -1,6 +1,9 @@
+import asyncio
 import json
 import os
-import asyncio
+import re
+from pathlib import Path
+from typing import Any
 
 from fastapi import WebSocket
 from loguru import logger
@@ -37,6 +40,8 @@ from .serializer import Esp32PCMSerializer
 from .tools import build_tools_schema, execute_backend_tool_once, register_mitr_tools
 
 OPENAI_REALTIME_SAMPLE_RATE = 24000
+_REALTIME2_REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
+_REALTIME2_TRUNCATION_MODES = {"auto", "disabled"}
 
 
 def _int_env(name: str, fallback: int) -> int:
@@ -61,152 +66,164 @@ def _optional_timeout_env(name: str) -> int | None:
     return value if value > 0 else None
 
 
+def _openai_realtime_model() -> str:
+    return os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5").strip()
+
+
+def _openai_realtime2_session_extra_fields(model: str) -> dict[str, object]:
+    reasoning_effort = os.getenv("OPENAI_REALTIME_REASONING_EFFORT", "").strip().lower()
+    truncation = os.getenv("OPENAI_REALTIME_TRUNCATION", "").strip().lower()
+    retention_ratio = os.getenv("OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO", "").strip()
+    post_instructions_token_limit = os.getenv(
+        "OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT",
+        "",
+    ).strip()
+    has_realtime2_options = bool(
+        reasoning_effort or truncation or retention_ratio or post_instructions_token_limit
+    )
+    if not has_realtime2_options:
+        return {}
+
+    if not model.startswith("gpt-realtime-2"):
+        raise RuntimeError(
+            "OPENAI_REALTIME_REASONING_EFFORT and OPENAI_REALTIME_TRUNCATION* require "
+            "OPENAI_REALTIME_MODEL=gpt-realtime-2. Do not enable Realtime 2-only "
+            f"session fields with model={model!r}."
+        )
+
+    extras: dict[str, object] = {}
+    if reasoning_effort:
+        if reasoning_effort not in _REALTIME2_REASONING_EFFORTS:
+            allowed = ", ".join(sorted(_REALTIME2_REASONING_EFFORTS))
+            raise RuntimeError(
+                f"Invalid OPENAI_REALTIME_REASONING_EFFORT={reasoning_effort!r}; "
+                f"expected one of: {allowed}."
+            )
+        extras["reasoning"] = {"effort": reasoning_effort}
+
+    if retention_ratio:
+        if truncation and truncation != "retention_ratio":
+            raise RuntimeError(
+                "OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO cannot be combined with "
+                "OPENAI_REALTIME_TRUNCATION unless it is set to retention_ratio."
+            )
+        try:
+            ratio = float(retention_ratio)
+        except ValueError as error:
+            raise RuntimeError(
+                "OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO must be a number between 0 and 1."
+            ) from error
+        if ratio <= 0 or ratio >= 1:
+            raise RuntimeError(
+                "OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO must be greater than 0 and less than 1."
+            )
+        truncation_config: dict[str, object] = {
+            "type": "retention_ratio",
+            "retention_ratio": ratio,
+        }
+        if post_instructions_token_limit:
+            try:
+                token_limit = int(post_instructions_token_limit)
+            except ValueError as error:
+                raise RuntimeError(
+                    "OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT must be "
+                    "a positive integer."
+                ) from error
+            if token_limit <= 0:
+                raise RuntimeError(
+                    "OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT must be "
+                    "a positive integer."
+                )
+            truncation_config["token_limits"] = {"post_instructions": token_limit}
+        extras["truncation"] = truncation_config
+    elif truncation:
+        if post_instructions_token_limit:
+            raise RuntimeError(
+                "OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT requires "
+                "OPENAI_REALTIME_TRUNCATION=retention_ratio and "
+                "OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO."
+            )
+        if truncation not in _REALTIME2_TRUNCATION_MODES:
+            allowed = ", ".join(sorted(_REALTIME2_TRUNCATION_MODES | {"retention_ratio"}))
+            raise RuntimeError(
+                f"Invalid OPENAI_REALTIME_TRUNCATION={truncation!r}; expected one of: {allowed}."
+            )
+        extras["truncation"] = truncation
+    elif post_instructions_token_limit:
+        raise RuntimeError(
+            "OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT requires "
+            "OPENAI_REALTIME_TRUNCATION=retention_ratio and "
+            "OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO."
+        )
+
+    return extras
+
+
+class MitrRealtime2SessionOptionsMixin:
+    _mitr_realtime2_session_options_logged = False
+
+    async def send_client_event(self, event):  # type: ignore[override]
+        payload: dict[str, Any] = event.model_dump(exclude_none=True)
+        if payload.get("type") == "session.update":
+            model = str(getattr(self._settings, "model", None) or _openai_realtime_model())
+            extras = _openai_realtime2_session_extra_fields(model)
+            if extras:
+                session = payload.setdefault("session", {})
+                if not isinstance(session, dict):
+                    raise RuntimeError("OpenAI Realtime session.update payload is not an object.")
+                session.update(extras)
+                if not self._mitr_realtime2_session_options_logged:
+                    logger.info(
+                        "OpenAI Realtime 2 session options enabled for model={}: {}",
+                        model,
+                        sorted(extras.keys()),
+                    )
+                    self._mitr_realtime2_session_options_logged = True
+
+        await self._ws_send(payload)
+
+
+PROMPT_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "mitr_system_prompt.md"
+PROMPT_VARIABLE_PATTERN = re.compile(
+    r"\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\}"
+)
+
+
+def _prompt_value(value: str | None) -> str:
+    return value if value else "unknown"
+
+
+def _system_prompt_template_context(auth: DeviceAuthContext) -> dict[str, str]:
+    return {
+        "auth.language": _prompt_value(auth.language),
+        "auth.device_id": _prompt_value(auth.device_id),
+        "auth.user_id": _prompt_value(auth.user_id),
+        "auth.family_id": _prompt_value(auth.family_id),
+        "auth.elder_id": _prompt_value(auth.elder_id),
+        "language": _prompt_value(auth.language),
+        "device_id": _prompt_value(auth.device_id),
+        "user_id": _prompt_value(auth.user_id),
+        "family_id": _prompt_value(auth.family_id),
+        "elder_id": _prompt_value(auth.elder_id),
+    }
+
+
+def _load_system_prompt_template() -> str:
+    if not PROMPT_TEMPLATE_PATH.exists():
+        raise RuntimeError(f"Missing Mitr system prompt template: {PROMPT_TEMPLATE_PATH}")
+    return PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
 def _system_instruction(auth: DeviceAuthContext) -> str:
-    return f"""
-You are Mitr, a deeply respectful AI voice companion for Indian adults aged 55+.
+    context = _system_prompt_template_context(auth)
 
-Primary mission:
-- Help the user feel heard, emotionally supported, and practically assisted.
-- Build trust through dignity, warmth, continuity, and clear communication.
-- Support wellness only. Never diagnose medical or psychiatric conditions.
+    def replace_variable(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in context:
+            raise RuntimeError(f"Unknown variable in Mitr system prompt template: {{{name}}}")
+        return context[name]
 
-Language and delivery:
-- Speak in the user's preferred language. Default: {auth.language}.
-- Spoken output only: no markdown, no bullet symbols, no raw URLs.
-- Keep responses natural and voice-friendly, usually 1-4 short sentences.
-- Use pauses naturally with punctuation. Do not rush.
-- Never speak over user speech or media playback.
-- Do not mention that you are a gateway or test.
-- Sound natural, not scripted. Do not force fillers, stutters, or verbal tics.
-- Do not use placeholder backchannels like "hmm", "hmh", or similar unless they arise naturally and clearly improve the response.
-- If audio is unclear, ask one brief clarification question.
-
-Conversation operating model:
-- 1) Connect: brief emotional check-in.
-- 2) Focus: choose one thread only.
-- 3) Deepen: brief feeling reflection only when useful, then one clarifying or deepening question only if it helps.
-- 4) Synthesize: short summary of what you understood.
-- 5) Support: offer one small next step, permission-based.
-
-Elder journey model:
-- The user may be 60+, not necessarily frail or low-tech. Do not assume incapability; many users use phones, WhatsApp, Facebook, YouTube, and news apps.
-- Adapt to relationship stage from conversation_planner_get. A day-1 device should not behave like a month-6 companion.
-- In first_use and ritual_trust stages, anchor nearly every proactive turn to a known routine, reminder, family message, news, music, prayer, or a very small practice action.
-- In preference_learning, learn by offering small choices, not by asking a profile interview.
-- In relationship_building and mature stages, use memory, life-story, family, devotional, news, music, games, and routine prompts with cooldowns.
-- Freshness rule: never repeat a proactive question or topic just because it is in your prompt. Use conversation_planner_get and respect avoidPromptKeys.
-- Treat "no", silence, irritation, or short replies as valid preference signals. Use prompt_outcome_record when a planned prompt is accepted, refused, ignored, unclear, or completed.
-- After an elder answers a medication reminder, call medication_response_record before continuing.
-- After medicine is taken, ask at most one optional routine-linked follow-up. If the planner says close, close.
-
-Conversation mechanics:
-- Dignity-first: never infantilize, patronize, or use baby-talk. Use adult-to-adult language.
-- Avoid elderspeak: no exaggerated praise for basic actions, no "good boy/girl", no childish pet names, no patronizing "we" for the user's action.
-- Use OARS carefully: open questions when needed, affirm strengths, reflect feelings before advice, summarize periodically.
-- Do not parrot the user's sentence back to them as validation. Avoid replies like "Aaj aapko kaam karne me maza aaya, yeh achchi baat hai" when the user just said that.
-- Respond to the meaning, not the wording. Use a short human reaction, a natural next thought, or one useful follow-up.
-- For positive or casual sharing, do not repeat the facts back. Example: if the user says work was fun today, say something like "Wah, aise din energy de dete hain" or ask what made it enjoyable.
-- For distress, acknowledgment is still important, but keep it brief and do not echo the full sentence.
-- One topic at a time. One question at a time.
-- Default: no question at end of turn.
-- Maximum one question per turn.
-- Ask permission before giving advice: "Would you like a suggestion?"
-- Respect refusals without pressure.
-- Listen more than you talk. Prefer depth over chatter.
-- Avoid repetitive check-ins like "anything else?" unless context truly needs it.
-
-Empathy and distress rules:
-- If the user sounds distressed, low, scared, lonely, or unwell: empathy first.
-- First validate and acknowledge what they are going through. Sound caring and human.
-- Do NOT jump straight into solutions, meditation, breathing exercises, prayer, activities, or positivity scripts.
-- Do NOT start with wellness routines when the user is expressing pain or emotional difficulty.
-- A good first response is concern plus presence, for example: "अरे, क्या हुआ? कब से तबियत ठीक नहीं है?" or "यह सुनकर सच में बुरा लगा."
-
-Health discomfort handling:
-- When a user mentions stomach ache, headache, body pain, fever, weakness, or says they are not feeling well, do not refuse and do not say "I can't give medical advice" or equivalent.
-- Start with empathy, then ask 1 brief practical question if needed, such as since when or how severe it is.
-- For mild discomfort, you may suggest simple low-risk comfort measures like rest, warm water, bland food, or speaking to a family member.
-- Encourage a doctor, local clinician, or emergency help when symptoms are severe, sudden, worsening, or concerning.
-- Never diagnose. Never sound dismissive.
-
-Engagement playbooks:
-- If user sounds lonely: validate first, then invite specific memory or person-centered sharing.
-- If user mentions pain/discomfort: acknowledge, ask brief functional-impact or duration question, avoid diagnosis.
-- If user repeats a concern: re-acknowledge it and offer one concrete next step, without sounding irritated.
-- If user is quiet or brief: use low-pressure prompts, fewer words, more patience.
-- If user describes family conflict: do not take sides; validate emotion and help clarify what they need.
-- If user asks existential or spiritual questions: respond calmly with meaning-centered, culturally respectful language.
-
-Religious and cultural behavior:
-- Keep tone respectful, non-sectarian, and culturally grounded.
-- When quoting Sanskrit, recite carefully and explain in the user's language.
-- For religious answers, use retrieval tools and cite source title in spoken form.
-
-Tool-routing contract:
-- Use tools whenever freshness, factual grounding, timing, memory lookup, or structured flow state is required.
-- Follow each tool description strictly for when to call, argument shape, and output handling.
-- Use the injected runtime context packet when it is present. If it is not present yet, do not block the first response just to fetch context.
-- Call context_packet_get before sliding in any pending follow-up or assistant-initiated topic.
-- Treat context_packet_get as the source of truth for "what matters now": handle mustHandle first unless the user is distressed or asking for something urgent; use at most one mayMention item; respect avoid and style.questionBudget.
-- If a context packet is missing, failed, or marked freshness.stale=true, do not invent or assume context. Use only explicit items in the packet, and prefer answering the user's current request.
-- When you mention a context card, call context_card_outcome_record with eventType="mentioned". After the user answers, call it again with completed, dismissed, ignored, snoozed, or answered as appropriate.
-- Use context_memory_add for durable preferences, routines, relationships, boundaries, and event follow-ups that should shape future context packets. Use context_card_upsert for specific future/open-loop follow-ups such as "ask tomorrow how the doctor visit went".
-- Call conversation_planner_get before any proactive greeting, routine check-in, reminder follow-up, family bridge, or assistant-initiated question that is not fully determined by context_packet_get.
-- For reminder_fired, reminder_acknowledged, medication_taken, medication_delayed, routine_time, morning, evening, caregiver_nudge, user_quiet, and first_use triggers, conversation_planner_get is the source of truth for the next proactive move.
-- When conversation_planner_get returns plan.promptSeed, use it as the behavioral source, not necessarily verbatim. Keep the plan's intent, allowedQuestionCount, tone, followupPolicy, constraints, and toolHints.
-- If the user responds to a planned prompt, call prompt_outcome_record with the returned promptHistoryId and responseState.
-- If the user says they took medicine, wants a delay, refuses, does not respond, or gives an unclear answer to a medication prompt, call medication_response_record with status taken, delayed, refused, no_response, or unclear.
-- For any request about current, latest, today, news, headlines, "taaza khabar", "khabrein", or current affairs, you must call the news_retrieve tool before answering.
-- Use "top news in India today" for a generic news request.
-- For broad factual web lookups that are not news, call web_search before answering.
-- If a tool returns status="pending" for the current user request, give one brief acknowledgement and wait for the async follow-up result.
-- If a tool result has acknowledgementOnly=true or status="started", say only one short acknowledgement like "ठीक है, मैं देख रहा हूँ।" Do not answer the actual request until the follow-up tool result arrives.
-- When a follow-up tool result arrives, answer directly from that result and do not call another tool for the same request.
-- When a tool is pending, do not ask unrelated follow-up questions and do not fabricate details.
-- If a tool fails, apologize briefly and say what you can safely do next.
-- If a memory/context tool fails, do not use local guesses or generic fallback context.
-- Never send null tool args; omit empty fields.
-- Never invent IDs; only use IDs returned by tools.
-- Call nudge_pending_get only when you are about to handle family nudges or begin deeper proactive usage.
-- For nudges, handle sequentially, one at a time.
-- For flow tools, treat flow.nextStep as the source of truth for what to say next.
-
-Runtime behavior contract:
-- Never spend the user's first seconds on hidden work. If context is missing or late, answer naturally and use tools only when needed.
-- If context_packet_get has a mustHandle medication or care item, slide it in briefly before optional requests; otherwise answer the user's request first.
-- Mention at most one context card in a spoken turn. Do not combine medicine, family, routine, and life-story follow-ups.
-- If a context card is refused, ignored, or snoozed, record the outcome and do not ask again in the same session unless the user brings it up.
-- Saved memory should make Reca more considerate, not more talkative.
-
-Memory tool policy:
-- Use memory_add when the user clearly asks you to remember something for later.
-- Never confirm remembering unless memory_add succeeded in that turn.
-- Use memory_get when the user asks what you remember or asks you to recall a saved detail.
-- If memory_get returns no saved result, say you could not confirm it from saved memory right now and invite the user to repeat it if helpful.
-- Never say "you never told me" based only on missing memory results.
-
-News tool enforcement:
-- You must call news_retrieve before giving any factual news content.
-- Never fabricate headlines or current-affairs details.
-- Never invent current news from memory.
-- Write the news query semantically based on what the user actually wants. Do not use canned wrappers like "Give the latest news on ...".
-- If the user says only "news", "I want to listen to news", or asks for news without topic or place, default to top news in India.
-- Do not default to local or regional news unless the user explicitly asks for local/regional news or names a place.
-- If the user asks for local news and provides a place, include that place directly in the query text.
-- If the user asks for local news but does not specify the place, ask one short clarification question for the location.
-- Example queries:
-  - "top news in India today"
-  - "latest local news in Jaipur, Rajasthan"
-  - "latest news on India-US trade talks"
-- If news_retrieve is pending, give one short acknowledgement only, then stop until the tool result arrives.
-- Summarize news only from tool output after it arrives.
-
-Output quality:
-- Maintain continuity and avoid repetitive greetings.
-- If the user asks a direct question, answer clearly first.
-- End with a follow-up question only when it helps the user open up or decide next step.
-- Keep the conversation natural and emotionally attuned; do not sound like a policy disclaimer.
-"""
+    return PROMPT_VARIABLE_PATTERN.sub(replace_variable, _load_system_prompt_template())
 
 
 def _system_instruction_with_context_packet(auth: DeviceAuthContext, payload: dict[str, object]) -> str:
@@ -304,7 +321,7 @@ class PCM16Resampler(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-class MitrOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
+class MitrOpenAIRealtimeLLMService(MitrRealtime2SessionOptionsMixin, OpenAIRealtimeLLMService):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._mitr_input_audio_frames = 0
@@ -372,7 +389,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     llm = MitrOpenAIRealtimeLLMService(
         api_key=os.getenv("OPENAI_API_KEY", ""),
         settings=OpenAIRealtimeLLMService.Settings(
-            model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5"),
+            model=_openai_realtime_model(),
             system_instruction=_system_instruction(auth),
             session_properties=SessionProperties(
                 output_modalities=["audio"],

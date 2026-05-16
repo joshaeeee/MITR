@@ -44,6 +44,47 @@ Tool calls are registered in Pipecat. When `MITR_BACKEND_INTERNAL_TOKEN` or
 Node backend through `POST /internal/pipecat/tool` so existing app services stay
 the source of truth.
 
+User-visible tools use Pipecat async function calls by default. The gateway sends
+an intermediate result so Reca acknowledges the request immediately, then sends
+the final result with `run_llm=true` so Reca confirms success or failure when the
+backend finishes. Internal context tools such as `context_packet_get`,
+`conversation_planner_get`, and `prompt_outcome_record` stay synchronous so hidden
+context work does not produce spoken filler.
+
+Controls:
+
+```text
+MITR_GATEWAY_ASYNC_TOOL_ACKS=true
+MITR_GATEWAY_ASYNC_ACK_TOOLS=        # optional comma-list, supports *
+MITR_GATEWAY_SYNC_TOOLS=             # optional comma-list for forced sync tools
+MITR_GATEWAY_TOOL_FOLLOWUP_MIN_DELAY_SEC=1.2
+```
+
+## System Prompt
+
+The canonical Mitr voice prompt lives in:
+
+```text
+mitr_pipecat_gateway/prompts/mitr_system_prompt.md
+```
+
+Edit that markdown file to change the assistant behavior. The gateway reloads it
+when a new Pipecat session starts, so restart the gateway after editing during
+local tests.
+
+Supported template variables:
+
+```text
+{auth.language} or {language}
+{auth.device_id} or {device_id}
+{auth.user_id} or {user_id}
+{auth.family_id} or {family_id}
+{auth.elder_id} or {elder_id}
+```
+
+Unknown variables fail startup/session creation instead of falling back to an old
+prompt.
+
 ## Local Run
 
 Start the Node API first:
@@ -69,6 +110,8 @@ MITR_GATEWAY_ECHO_SUPPRESSION_TAIL_MS=900 \
 MITR_GATEWAY_TOOL_TIMEOUT_SEC=65 \
 MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC=55 \
 MITR_GATEWAY_TOOL_INPUT_SUPPRESSION_TAIL_MS=500 \
+MITR_GATEWAY_ASYNC_TOOL_ACKS=true \
+MITR_GATEWAY_TOOL_FOLLOWUP_MIN_DELAY_SEC=1.2 \
 OPENAI_REALTIME_STT_LANGUAGE=en \
 uv run python -m mitr_pipecat_gateway.server
 ```
@@ -110,4 +153,39 @@ Expected gateway logs:
 Pipecat wake phrase mode enabled
 Pipecat wake phrase detected
 OpenAI wake-phrase output audio started
+```
+
+## Realtime 2 Experiment
+
+Keep the stable wake runtime unchanged unless these experiment flags are set:
+
+```sh
+OPENAI_REALTIME_MODEL=gpt-realtime-2
+OPENAI_REALTIME_REASONING_EFFORT=low
+OPENAI_REALTIME_TRUNCATION=auto
+```
+
+`OPENAI_REALTIME_REASONING_EFFORT` and `OPENAI_REALTIME_TRUNCATION*` are
+Realtime 2-only settings. The gateway fails fast if they are set with any model
+other than `gpt-realtime-2`, so an experiment cannot silently send unsupported
+session fields to the stable model.
+
+Run the raw OpenAI websocket smoke test before using the ESP:
+
+```sh
+cd mitr-backend/pipecat-gateway
+uv run python scripts/realtime2_smoke.py \
+  --model gpt-realtime-2 \
+  --reasoning-effort low \
+  --truncation auto \
+  --env-file ../.env
+```
+
+For long sessions, Realtime 2 truncation can also use a retention ratio:
+
+```sh
+OPENAI_REALTIME_MODEL=gpt-realtime-2
+OPENAI_REALTIME_TRUNCATION=retention_ratio
+OPENAI_REALTIME_TRUNCATION_RETENTION_RATIO=0.8
+OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT=8000
 ```

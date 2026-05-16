@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import uuid
 from collections.abc import Awaitable, Callable
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,7 +14,7 @@ from fastapi import WebSocket
 from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.services.openai.realtime import events as realtime_events
+from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams, LLMService
 
 from .auth import DeviceAuthContext
@@ -26,7 +26,40 @@ _DIARY: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _CONTEXT_CARDS: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _FLOWS: dict[str, dict[str, Any]] = {}
 ToolHook = Callable[[str], Awaitable[None]]
-_DEFAULT_ACK_BEFORE_TOOLS = {"news_retrieve", "web_search"}
+_DEFAULT_ASYNC_ACK_TOOLS = {
+    "memory_add",
+    "reminder_create",
+    "reminder_list",
+    "nudge_pending_get",
+    "nudge_mark_listened",
+    "devotional_playlist_get",
+    "daily_briefing_get",
+    "diary_add",
+    "diary_list",
+    "flow_start",
+    "flow_next",
+    "flow_stop",
+    "pranayama_guide_get",
+    "brain_game_get",
+    "festival_context_get",
+    "medication_adherence_setup",
+    "religious_retrieve",
+    "story_retrieve",
+    "news_retrieve",
+    "web_search",
+    "panchang_get",
+    "youtube_media_get",
+}
+_DEFAULT_SYNC_TOOLS = {
+    "memory_get",
+    "context_packet_get",
+    "context_memory_add",
+    "context_card_upsert",
+    "context_card_outcome_record",
+    "conversation_planner_get",
+    "prompt_outcome_record",
+    "medication_response_record",
+}
 _BACKEND_REQUIRED_TOOLS = {
     "memory_add",
     "memory_get",
@@ -45,6 +78,15 @@ _BACKEND_REQUIRED_TOOLS = {
     "medication_response_record",
     "medication_adherence_setup",
 }
+
+
+@dataclass(frozen=True)
+class ToolExecutionPolicy:
+    async_ack: bool
+
+    @property
+    def cancel_on_interruption(self) -> bool:
+        return not self.async_ack
 
 
 def _int_env(name: str, fallback: int) -> int:
@@ -73,6 +115,31 @@ def _csv_env(name: str, fallback: set[str]) -> set[str]:
     if not value:
         return set(fallback)
     return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def _matches_tool_name(name: str, names: set[str]) -> bool:
+    return "*" in names or name in names
+
+
+def _configured_async_ack_tools() -> set[str]:
+    value = os.getenv("MITR_GATEWAY_ASYNC_ACK_TOOLS")
+    if value is not None:
+        return _csv_env("MITR_GATEWAY_ASYNC_ACK_TOOLS", _DEFAULT_ASYNC_ACK_TOOLS)
+    legacy_value = os.getenv("MITR_GATEWAY_ACK_BEFORE_TOOLS")
+    if legacy_value:
+        return set(_DEFAULT_ASYNC_ACK_TOOLS) | _csv_env("MITR_GATEWAY_ACK_BEFORE_TOOLS", set())
+    return set(_DEFAULT_ASYNC_ACK_TOOLS)
+
+
+def _tool_execution_policy(name: str) -> ToolExecutionPolicy:
+    if not _bool_env("MITR_GATEWAY_ASYNC_TOOL_ACKS", True):
+        return ToolExecutionPolicy(async_ack=False)
+
+    forced_sync_tools = _csv_env("MITR_GATEWAY_SYNC_TOOLS", _DEFAULT_SYNC_TOOLS)
+    if _matches_tool_name(name, forced_sync_tools):
+        return ToolExecutionPolicy(async_ack=False)
+
+    return ToolExecutionPolicy(async_ack=_matches_tool_name(name, _configured_async_ack_tools()))
 
 
 def _user_key(auth: DeviceAuthContext) -> str:
@@ -176,6 +243,11 @@ def _tool_schema(name: str, description: str) -> FunctionSchema:
                 "type": "string",
                 "enum": ["taken", "delayed", "refused", "no_response", "unclear"],
                 "description": "Medication reminder response status.",
+            },
+            "visibility": {
+                "type": "string",
+                "enum": ["private", "caregiver_visible", "internal_only"],
+                "description": "Memory visibility policy. Use private by default; caregiver_visible only for care, routines, medication, or safety context.",
             },
             "scheduledAt": {"type": "string", "description": "Scheduled medication/reminder datetime."},
             "responseText": {"type": "string", "description": "Short transcript of the elder response."},
@@ -342,69 +414,32 @@ def _started_tool_result(name: str, args: dict[str, Any], auth: DeviceAuthContex
         "status": "started",
         "acknowledgementOnly": True,
         "language": auth.language,
-        "message": "Acknowledge briefly that you are checking this, then wait for the follow-up result.",
+        "message": (
+            "Acknowledge briefly that you are doing this now, then wait for the final async tool result."
+        ),
         "request": args,
     }
 
 
-def _followup_instruction(name: str, auth: DeviceAuthContext) -> str:
-    return (
-        f"The {name} tool result is ready. Answer the user's earlier request now. "
-        f"Speak in {auth.language} when possible. Keep it concise and voice-friendly. "
-        "Do not call another tool for this same request."
-    )
-
-
-async def _send_realtime_tool_followup(
-    params: FunctionCallParams,
-    auth: DeviceAuthContext,
+def _finished_tool_result(
     name: str,
     args: dict[str, Any],
+    auth: DeviceAuthContext,
     result: dict[str, Any],
-) -> bool:
-    send_client_event = getattr(params.llm, "send_client_event", None)
-    if not callable(send_client_event):
-        return False
-
-    payload = {
-        "type": "tool_result_ready",
+) -> dict[str, Any]:
+    return {
+        "ok": bool(result.get("ok", False)),
         "tool": name,
-        "arguments": args,
+        "status": "finished",
+        "acknowledgementOnly": False,
+        "language": auth.language,
+        "message": (
+            "The async tool result is ready. Answer the user's earlier request now from this result. "
+            "If ok is true, confirm the completed action. If ok is false, say briefly that it could not be completed."
+        ),
+        "request": args,
         "result": result,
     }
-    text = (
-        f"{_followup_instruction(name, auth)}\n\n"
-        f"Tool result JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-    )
-
-    try:
-        await send_client_event(
-            realtime_events.ConversationItemCreateEvent(
-                item=realtime_events.ConversationItem(
-                    type="message",
-                    role="user",
-                    content=[
-                        realtime_events.ItemContent(
-                            type="input_text",
-                            text=text,
-                        )
-                    ],
-                )
-            )
-        )
-        await send_client_event(
-            realtime_events.ResponseCreateEvent(
-                response=realtime_events.ResponseProperties(
-                    output_modalities=["audio"],
-                    instructions=_followup_instruction(name, auth),
-                    tool_choice="none",
-                )
-            )
-        )
-        return True
-    except Exception as error:
-        logger.warning("Failed to inject realtime tool follow-up for {}: {!r}", name, error)
-        return False
 
 
 async def _execute_backend_tool(
@@ -738,31 +773,27 @@ def register_mitr_tools(
         args = dict(params.arguments or {})
         name = params.function_name
         logger.info("Pipecat tool call started: {} arg_keys={}", name, sorted(args.keys()))
-        ack_before_tools = _csv_env("MITR_GATEWAY_ACK_BEFORE_TOOLS", _DEFAULT_ACK_BEFORE_TOOLS)
-        should_ack_before_tool = _bool_env("MITR_GATEWAY_ACK_SLOW_TOOLS", True) and name in ack_before_tools
+        should_async_ack = _tool_execution_policy(name).async_ack
         if on_tool_start:
             await on_tool_start(name)
         try:
             await _send_tool_event(websocket, name, "start", args)
-            if should_ack_before_tool:
-                logger.info("Pipecat tool call acknowledging before slow tool: {}", name)
-                await params.result_callback(_started_tool_result(name, args, auth))
+            if should_async_ack:
+                logger.info("Pipecat async tool call acknowledging start: {}", name)
+                await params.result_callback(
+                    _started_tool_result(name, args, auth),
+                    properties=FunctionCallResultProperties(is_final=False, run_llm=True),
+                )
                 min_delay = _float_env("MITR_GATEWAY_TOOL_FOLLOWUP_MIN_DELAY_SEC", 1.2)
                 if min_delay > 0:
                     await asyncio.sleep(min_delay)
                 result = await _execute_tool(name, args, auth)
-                logger.info("Pipecat tool call completed after acknowledgement: {} ok={}", name, result.get("ok"))
+                logger.info("Pipecat async tool call completed: {} ok={}", name, result.get("ok"))
                 await _send_tool_event(websocket, name, "end", result)
-                if not await _send_realtime_tool_followup(params, auth, name, args, result):
-                    await _send_tool_event(
-                        websocket,
-                        name,
-                        "error",
-                        {
-                            "ok": False,
-                            "message": "Tool result is ready but the realtime follow-up could not be injected.",
-                        },
-                    )
+                await params.result_callback(
+                    _finished_tool_result(name, args, auth, result),
+                    properties=FunctionCallResultProperties(run_llm=True),
+                )
                 return
 
             result = await _execute_tool(name, args, auth)
@@ -775,16 +806,23 @@ def register_mitr_tools(
             payload = {"ok": False, "error": str(error)}
             logger.warning("Pipecat tool call failed: {} error={}", name, str(error))
             await _send_tool_event(websocket, name, "error", payload)
-            await params.result_callback(payload)
+            if should_async_ack:
+                await params.result_callback(
+                    _finished_tool_result(name, args, auth, payload),
+                    properties=FunctionCallResultProperties(run_llm=True),
+                )
+            else:
+                await params.result_callback(payload)
         finally:
             if on_tool_end:
                 await on_tool_end(name)
 
     timeout_sec = _int_env("MITR_GATEWAY_TOOL_TIMEOUT_SEC", 65)
     for schema in build_tools_schema().standard_tools:
+        policy = _tool_execution_policy(schema.name)
         llm.register_function(
             schema.name,
             handler,
-            cancel_on_interruption=True,
+            cancel_on_interruption=policy.cancel_on_interruption,
             timeout_secs=timeout_sec,
         )

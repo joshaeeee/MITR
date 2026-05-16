@@ -136,8 +136,13 @@ const baseEnvSchema = z.object({
   MEM0_BASE_URL: z.string().url().default('https://api.mem0.ai'),
   MEM0_ORG_ID: z.string().optional(),
   MEM0_PROJECT_ID: z.string().optional(),
+  MEM0_APP_ID: z.string().default('mitr-reca'),
+  MEM0_AGENT_ID: z.string().default('reca'),
   MEM0_ADD_TIMEOUT_MS: z.coerce.number().default(5000),
   MEM0_SEARCH_TIMEOUT_MS: z.coerce.number().default(3500),
+  MEM0_CONTEXT_SEARCH_TIMEOUT_MS: z.coerce.number().default(650),
+  MEM0_SEARCH_THRESHOLD: z.coerce.number().default(0.1),
+  MEM0_SEARCH_RERANK: envBoolean(false),
 
   QDRANT_URL: z.string().url().optional(),
   QDRANT_API_KEY: z.string().optional(),

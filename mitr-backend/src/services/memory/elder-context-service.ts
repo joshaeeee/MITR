@@ -10,6 +10,7 @@ import {
 } from '../../db/schema.js';
 import { getFamilyRepository } from '../family/family-repository.js';
 import type { ElderProfile } from '../family/family-types.js';
+import type { Mem0SearchResult } from './mem0-service.js';
 import {
   buildContextPacket,
   type ContextCardEventType,
@@ -40,7 +41,7 @@ export interface MemoryItemInput {
   elderId?: string | null;
   memoryType: MemoryType;
   subject: string;
-  summary: string;
+  summary?: string | null;
   valueJson?: Record<string, unknown>;
   importance?: number;
   confidence?: number;
@@ -48,6 +49,12 @@ export interface MemoryItemInput {
   sourceId?: string | null;
   visibility?: 'private' | 'caregiver_visible' | 'internal_only';
   expiresAt?: Date | null;
+  mem0UserId?: string | null;
+  mem0EventId?: string | null;
+  mem0MemoryId?: string | null;
+  mem0Status?: MemoryItemInsert['mem0Status'];
+  mem0IndexedAt?: Date | null;
+  contentHash?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -80,6 +87,20 @@ export interface ContextOutcomeInput {
   notes?: string | null;
   cooldownMinutes?: number | null;
   metadata?: Record<string, unknown>;
+}
+
+export interface AuthorizedMem0Memory {
+  registryId: string;
+  mem0MemoryId: string;
+  memoryType: MemoryType;
+  subject: string;
+  summary: string;
+  importance: number;
+  confidence: number;
+  visibility: MemoryRow['visibility'];
+  score?: number;
+  categories: string[];
+  metadata: Record<string, unknown>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -116,11 +137,16 @@ const toMemoryCandidate = (row: MemoryRow) => ({
   id: row.id,
   memoryType: row.memoryType,
   subject: row.subject,
-  summary: row.summary,
+  summary: row.summary ?? '',
   importance: row.importance,
   confidence: row.confidence,
   metadata: row.metadata
 });
+
+const readMetadataString = (metadata: Record<string, unknown>, key: string): string | null => {
+  const value = metadata[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+};
 
 const reminderCardType = (title: string): ContextCardType => (MEDICINE_RE.test(title) ? 'medication_followup' : 'reminder_followup');
 
@@ -314,10 +340,26 @@ export class ElderContextService {
     };
   }
 
-  async addMemoryItem(input: MemoryItemInput): Promise<{ ok: true; memoryId: string } | { ok: false; error: string }> {
+  async addMemoryItem(input: MemoryItemInput): Promise<{ ok: true; memoryId: string; existing?: boolean } | { ok: false; error: string }> {
     const elder = await this.resolveElderForUser(input.userId, input.elderId);
     if (!elder) return { ok: false, error: 'Elder profile not found for this user' };
 
+    if (input.contentHash) {
+      const [existing] = await db
+        .select({ id: elderMemoryItems.id, mem0Status: elderMemoryItems.mem0Status })
+        .from(elderMemoryItems)
+        .where(
+          and(
+            eq(elderMemoryItems.elderId, elder.id),
+            eq(elderMemoryItems.status, 'active'),
+            eq(elderMemoryItems.contentHash, input.contentHash)
+          )
+        )
+        .limit(1);
+      if (existing && existing.mem0Status !== 'failed') return { ok: true, memoryId: existing.id, existing: true };
+    }
+
+    const summary = input.summary?.trim();
     const [created] = await db
       .insert(elderMemoryItems)
       .values({
@@ -325,7 +367,7 @@ export class ElderContextService {
         userId: input.userId,
         memoryType: input.memoryType,
         subject: input.subject.trim(),
-        summary: input.summary.trim(),
+        summary: summary && summary.length > 0 ? summary : undefined,
         valueJson: input.valueJson ?? {},
         importance: clampInt(input.importance, 50, 0, 100),
         confidence: clampInt(input.confidence, 70, 0, 100),
@@ -336,6 +378,12 @@ export class ElderContextService {
         sourceId: input.sourceId ?? undefined,
         visibility: input.visibility ?? 'private',
         expiresAt: input.expiresAt ?? undefined,
+        mem0UserId: input.mem0UserId ?? undefined,
+        mem0EventId: input.mem0EventId ?? undefined,
+        mem0MemoryId: input.mem0MemoryId ?? undefined,
+        mem0Status: input.mem0Status ?? 'not_indexed',
+        mem0IndexedAt: input.mem0IndexedAt ?? undefined,
+        contentHash: input.contentHash ?? undefined,
         metadata: input.metadata ?? {},
         updatedAt: new Date()
       })
@@ -343,6 +391,115 @@ export class ElderContextService {
 
     await this.invalidateContextCache(elder.id);
     return { ok: true, memoryId: created.id };
+  }
+
+  async updateMemoryMem0State(input: {
+    userId: string;
+    elderId?: string | null;
+    memoryId: string;
+    mem0EventId?: string | null;
+    mem0MemoryId?: string | null;
+    mem0Status: MemoryItemInsert['mem0Status'];
+    error?: string | null;
+  }): Promise<{ ok: boolean; memoryId?: string; error?: string }> {
+    const elder = await this.resolveElderForUser(input.userId, input.elderId);
+    if (!elder) return { ok: false, error: 'Elder profile not found for this user' };
+
+    const metadataPatch = input.error ? { mem0Error: input.error } : {};
+    const [updated] = await db
+      .update(elderMemoryItems)
+      .set({
+        mem0EventId: input.mem0EventId ?? undefined,
+        mem0MemoryId: input.mem0MemoryId ?? undefined,
+        mem0Status: input.mem0Status,
+        mem0IndexedAt: input.mem0Status === 'indexed' ? new Date() : undefined,
+        metadata: sql`${elderMemoryItems.metadata} || ${JSON.stringify(metadataPatch)}::jsonb` as unknown as Record<string, unknown>,
+        updatedAt: new Date()
+      })
+      .where(and(eq(elderMemoryItems.id, input.memoryId), eq(elderMemoryItems.elderId, elder.id)))
+      .returning({ id: elderMemoryItems.id });
+
+    await this.invalidateContextCache(elder.id);
+    return updated ? { ok: true, memoryId: updated.id } : { ok: false, error: 'Memory registry row not found' };
+  }
+
+  async authorizeMem0SearchResults(input: {
+    userId: string;
+    elderId?: string | null;
+    results: Mem0SearchResult[];
+    audience?: 'agent' | 'caregiver';
+    now?: Date;
+  }): Promise<AuthorizedMem0Memory[]> {
+    const elder = await this.resolveElderForUser(input.userId, input.elderId);
+    if (!elder) return [];
+
+    const registryIds = input.results
+      .map((result) => readMetadataString(result.metadata, 'registryId') ?? readMetadataString(result.metadata, 'mitrRegistryId'))
+      .filter((id): id is string => Boolean(id));
+    if (registryIds.length === 0) return [];
+
+    const now = input.now ?? new Date();
+    const rows = await db
+      .select()
+      .from(elderMemoryItems)
+      .where(
+        and(
+          eq(elderMemoryItems.elderId, elder.id),
+          eq(elderMemoryItems.status, 'active'),
+          inArray(elderMemoryItems.id, [...new Set(registryIds)]),
+          or(isNull(elderMemoryItems.expiresAt), gt(elderMemoryItems.expiresAt, now))
+        )
+      );
+
+    const allowedVisibilities: Array<MemoryRow['visibility']> =
+      input.audience === 'caregiver' ? ['caregiver_visible'] : ['private', 'caregiver_visible'];
+    const rowById = new Map(
+      rows
+        .filter((row) => allowedVisibilities.includes(row.visibility))
+        .map((row) => [row.id, row])
+    );
+
+    const authorized = input.results.flatMap((result) => {
+      const registryId =
+        readMetadataString(result.metadata, 'registryId') ?? readMetadataString(result.metadata, 'mitrRegistryId');
+      if (!registryId) return [];
+      const row = rowById.get(registryId);
+      if (!row) return [];
+      return [
+        {
+          registryId: row.id,
+          mem0MemoryId: result.id,
+          memoryType: row.memoryType,
+          subject: row.subject,
+          summary: result.memory,
+          importance: row.importance,
+          confidence: row.confidence,
+          visibility: row.visibility,
+          score: result.score,
+          categories: result.categories,
+          metadata: {
+            ...(row.metadata ?? {}),
+            mem0: result.metadata
+          }
+        }
+      ];
+    });
+
+    for (const memory of authorized) {
+      await db
+        .update(elderMemoryItems)
+        .set({
+          mem0MemoryId: memory.mem0MemoryId,
+          mem0Status: 'indexed',
+          mem0IndexedAt: now,
+          lastAccessedAt: now,
+          accessCount: sql`${elderMemoryItems.accessCount} + 1` as unknown as number,
+          updatedAt: now
+        })
+        .where(and(eq(elderMemoryItems.id, memory.registryId), eq(elderMemoryItems.elderId, elder.id)));
+    }
+
+    return authorized;
   }
 
   async upsertContextCard(input: ContextCardInput): Promise<{ ok: true; cardId: string } | { ok: false; error: string }> {
