@@ -113,6 +113,13 @@
       "when": 1778567400000,
       "tag": "0015_elder_memory_context",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1778839800000,
+      "tag": "0016_mem0_memory_registry",
+      "breakpoints": true
     }
   ]
 }

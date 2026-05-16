@@ -57,8 +57,10 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from .auth import DeviceAuthContext
 from .bot import (
     OPENAI_REALTIME_SAMPLE_RATE,
+    MitrRealtime2SessionOptionsMixin,
     PCM16Resampler,
     _int_env,
+    _openai_realtime_model,
     _optional_timeout_env,
     _queue_runtime_context_update,
     _system_instruction,
@@ -387,7 +389,10 @@ class EchoSuppressionOutputTracker(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-class MitrWakePhraseOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
+class MitrWakePhraseOpenAIRealtimeLLMService(
+    MitrRealtime2SessionOptionsMixin,
+    OpenAIRealtimeLLMService,
+):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._mitr_input_audio_frames = 0
@@ -466,7 +471,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     llm = MitrWakePhraseOpenAIRealtimeLLMService(
         api_key=api_key,
         settings=OpenAIRealtimeLLMService.Settings(
-            model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5"),
+            model=_openai_realtime_model(),
             system_instruction=_system_instruction(auth),
             session_properties=SessionProperties(
                 output_modalities=["audio"],

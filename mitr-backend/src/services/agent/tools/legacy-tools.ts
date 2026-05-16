@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ReligiousRetriever } from '../../retrieval/religious-retriever.js';
-import { Mem0Service } from '../../memory/mem0-service.js';
+import { Mem0Service, MITR_MEM0_CUSTOM_INSTRUCTIONS, mem0UserIdFor } from '../../memory/mem0-service.js';
 import { ReminderService } from '../../reminders/reminder-service.js';
 import { NewsService } from '../../news/news-service.js';
 import { CompanionService } from '../../companion/companion-service.js';
@@ -383,6 +383,26 @@ export const createLegacyToolDefinitions = (
     if (/do not|avoid|boundary|never/.test(hay)) return 'boundary';
     return 'semantic';
   };
+  const contentHash = (value: string): string => createHash('sha256').update(value.trim().toLowerCase()).digest('hex');
+  const memoryImportance = (text: string, tags?: string[]): number =>
+    tags?.some((tag: string) => /medicine|health|family|routine/i.test(tag)) ||
+    /medicine|tablet|dose|doctor|health|dawa|dawai|routine|daily|family|beta|beti/i.test(text)
+      ? 75
+      : 60;
+  const memorySubject = (text: string, tags?: string[]): string =>
+    tags?.find((tag) => tag.trim().length > 0)?.trim() ?? inferMemoryType(text, tags);
+  const contextMemoryQuery = (triggerType?: string | null): string => {
+    if (triggerType === 'morning' || triggerType === 'routine_time') {
+      return 'important routines habits morning preferences recurring activities';
+    }
+    if (triggerType === 'medication_taken' || triggerType === 'medication_delayed' || triggerType === 'reminder_fired') {
+      return 'medication routines health preferences reminders care context';
+    }
+    if (triggerType === 'caregiver_nudge') {
+      return 'family relationships caregiver preferences boundaries';
+    }
+    return 'important user preferences routines relationships boundaries hobbies spiritual interests';
+  };
   type PanchangQueryType = 'today_snapshot' | 'next_tithi' | 'upcoming_tithi_dates' | 'tithi_on_date';
   const INDIA_TIMEZONE = 'Asia/Kolkata';
   const FESTIVAL_HINTS: Array<{
@@ -740,7 +760,7 @@ export const createLegacyToolDefinitions = (
   const memoryAdd: AgentToolDefinition = {
     name: 'memory_add',
     description:
-      'Store long-term user memory for future recall. Use when the user explicitly asks you to remember something, or when they share a durable preference/routine/family detail that should shape future conversations. Never claim you remembered it unless this tool was called successfully in the same turn.',
+      'Store explicit long-term user memory for future recall. Use when the user explicitly asks you to remember something. Passive behavior capture should use context_memory_add. Never claim you remembered it unless this tool was called successfully in the same turn.',
     parameters: z.object({
       text: z.string(),
       tags: z.array(z.string()).optional(),
@@ -748,47 +768,97 @@ export const createLegacyToolDefinitions = (
     }),
     timeoutMs: 6000,
     execute: async (input, context) => {
+      const memoryType = inferMemoryType(input.text, input.tags);
+      const subject = memorySubject(input.text, input.tags);
+      const importance = memoryImportance(input.text, input.tags);
+      const mem0UserId = mem0UserIdFor(context.userId, context.elderId);
+      const registry = await deps.elderContextService.addMemoryItem({
+        userId: context.userId,
+        elderId: context.elderId,
+        memoryType,
+        subject,
+        importance,
+        confidence: 82,
+        sourceType: 'user_statement',
+        sourceId: input.sourceTurnId,
+        visibility: memoryType === 'health_context' || memoryType === 'routine' ? 'caregiver_visible' : 'private',
+        mem0UserId,
+        mem0Status: 'pending',
+        contentHash: contentHash(input.text),
+        metadata: {
+          tags: input.tags ?? [],
+          contentSource: 'mem0',
+          captureMode: 'explicit',
+          sourceTextChars: input.text.length
+        }
+      });
+      if (!registry.ok) return { memorySaved: false, error: registry.error };
+      if (registry.existing) {
+        return {
+          memorySaved: true,
+          memoryQueued: false,
+          deduped: true,
+          registryId: registry.memoryId,
+          mem0UserId
+        };
+      }
+
       try {
-        await deps.mem0.addMemory(
-          context.userId,
-          [
+        const mem0 = await deps.mem0.addScopedMemory({
+          userId: context.userId,
+          elderId: context.elderId,
+          messages: [
             { role: 'user', content: input.text },
             { role: 'assistant', content: 'Store this as important memory for future conversations.' }
           ],
-          { tags: input.tags, sourceTurnId: input.sourceTurnId }
-        );
-        const localMemory = await deps.elderContextService.addMemoryItem({
+          metadata: {
+            registryId: registry.memoryId,
+            memoryType,
+            subject,
+            visibility: memoryType === 'health_context' || memoryType === 'routine' ? 'caregiver_visible' : 'private',
+            importance,
+            confidence: 82,
+            sourceType: 'user_statement',
+            sourceTurnId: input.sourceTurnId ?? null,
+            tags: input.tags ?? []
+          },
+          customInstructions: MITR_MEM0_CUSTOM_INSTRUCTIONS
+        });
+        await deps.elderContextService.updateMemoryMem0State({
           userId: context.userId,
           elderId: context.elderId,
-          memoryType: inferMemoryType(input.text, input.tags),
-          subject: input.tags?.[0] ?? 'user_memory',
-          summary: input.text,
-          importance: input.tags?.some((tag: string) => /medicine|health|family|routine/i.test(tag)) ? 75 : 60,
-          confidence: 80,
-          sourceType: 'user_statement',
-          sourceId: input.sourceTurnId,
-          metadata: { tags: input.tags ?? [], mem0Saved: true }
+          memoryId: registry.memoryId,
+          mem0EventId: mem0.eventId,
+          mem0Status: mem0.status === 'FAILED' ? 'failed' : 'pending'
         });
-        return { memorySaved: true, localMemory };
+        return {
+          memorySaved: mem0.status !== 'FAILED',
+          memoryQueued: mem0.status !== 'FAILED',
+          registryId: registry.memoryId,
+          mem0UserId,
+          mem0EventId: mem0.eventId,
+          mem0Status: mem0.status
+        };
       } catch (error) {
         logger.warn('memory_add failed', {
           userId: context.userId,
           sessionId: context.sessionId,
           error: (error as Error).message
         });
-        const localMemory = await deps.elderContextService.addMemoryItem({
+        await deps.elderContextService.updateMemoryMem0State({
           userId: context.userId,
           elderId: context.elderId,
-          memoryType: inferMemoryType(input.text, input.tags),
-          subject: input.tags?.[0] ?? 'user_memory',
-          summary: input.text,
-          importance: input.tags?.some((tag: string) => /medicine|health|family|routine/i.test(tag)) ? 75 : 60,
-          confidence: 75,
-          sourceType: 'user_statement',
-          sourceId: input.sourceTurnId,
-          metadata: { tags: input.tags ?? [], mem0Saved: false, mem0Error: (error as Error).message }
+          memoryId: registry.memoryId,
+          mem0Status: 'failed',
+          error: (error as Error).message
         });
-        return { memorySaved: localMemory.ok, memoryAvailableLocally: localMemory.ok, localMemory, mem0Error: (error as Error).message };
+        return {
+          memorySaved: false,
+          registryId: registry.memoryId,
+          mem0UserId,
+          error: 'Mem0 memory write failed; memory content was not stored.',
+          mem0Error: (error as Error).message
+        };
       }
     }
   };
@@ -804,13 +874,25 @@ export const createLegacyToolDefinitions = (
     timeoutMs: 4200,
     execute: async (input, context) => {
       try {
-        const memories = await deps.mem0.searchMemory(context.userId, input.query, input.k ?? 5);
+        const results = await deps.mem0.searchScopedMemories({
+          userId: context.userId,
+          elderId: context.elderId,
+          query: input.query,
+          limit: input.k ?? 5
+        });
+        const authorized = await deps.elderContextService.authorizeMem0SearchResults({
+          userId: context.userId,
+          elderId: context.elderId,
+          results
+        });
         return {
-          memories,
-          memoryAvailable: true
+          memories: authorized.map((memory) => memory.summary),
+          items: authorized,
+          memoryAvailable: true,
+          memorySource: 'mem0'
         };
       } catch (error) {
-        logger.warn('memory_get degraded to empty result', {
+        logger.warn('memory_get failed', {
           userId: context.userId,
           sessionId: context.sessionId,
           error: (error as Error).message
@@ -832,41 +914,145 @@ export const createLegacyToolDefinitions = (
       includeDebug: z.boolean().nullish()
     }),
     timeoutMs: 900,
-    execute: async (input, context) =>
-      deps.elderContextService.getContextPacket({
+    execute: async (input, context) => {
+      const packet = await deps.elderContextService.getContextPacket({
         userId: context.userId,
         elderId: context.elderId,
         sessionId: context.sessionId,
         triggerType: input.triggerType ?? 'session_start',
         includeDebug: input.includeDebug
-      })
+      });
+      if (!('ok' in packet) || packet.ok !== true) return packet;
+
+      try {
+        const results = await deps.mem0.searchScopedMemories({
+          userId: context.userId,
+          elderId: context.elderId,
+          query: contextMemoryQuery(input.triggerType),
+          limit: 8,
+          timeoutMs: env.MEM0_CONTEXT_SEARCH_TIMEOUT_MS
+        });
+        const authorized = await deps.elderContextService.authorizeMem0SearchResults({
+          userId: context.userId,
+          elderId: context.elderId,
+          results
+        });
+        if (authorized.length === 0) return packet;
+        return {
+          ...packet,
+          memories: authorized.slice(0, 6).map((memory) => ({
+            memoryId: memory.registryId,
+            type: memory.memoryType,
+            subject: memory.subject,
+            summary: memory.summary,
+            confidence: memory.confidence
+          }))
+        };
+      } catch (error) {
+        logger.warn('context_packet_get mem0 enrichment unavailable', {
+          userId: context.userId,
+          sessionId: context.sessionId,
+          error: (error as Error).message
+        });
+        return packet;
+      }
+    }
   };
 
   const contextMemoryAdd: AgentToolDefinition = {
     name: 'context_memory_add',
     description:
-      'Store typed Reca memory in the first-party Postgres memory layer. Use for durable preferences, routines, relationships, boundaries, and event memories that should shape future context packets.',
+      'Store typed Reca memory in Mem0 with a first-party Postgres policy registry row. Use silently for durable preferences, routines, relationships, boundaries, behavior patterns, and event memories that should shape future context packets.',
     parameters: z.object({
       memoryType: memoryTypeSchema,
       subject: z.string(),
       summary: z.string(),
       importance: z.number().int().min(0).max(100).optional(),
       confidence: z.number().int().min(0).max(100).optional(),
+      visibility: z.enum(['private', 'caregiver_visible', 'internal_only']).optional(),
       metadata: z.record(z.unknown()).optional()
     }),
-    timeoutMs: 900,
-    execute: async (input, context) =>
-      deps.elderContextService.addMemoryItem({
+    timeoutMs: 6000,
+    execute: async (input, context) => {
+      const mem0UserId = mem0UserIdFor(context.userId, context.elderId);
+      const visibility =
+        input.visibility ??
+        (input.memoryType === 'health_context' || input.memoryType === 'routine' ? 'caregiver_visible' : 'private');
+      const registry = await deps.elderContextService.addMemoryItem({
         userId: context.userId,
         elderId: context.elderId,
         memoryType: input.memoryType as MemoryType,
         subject: input.subject,
-        summary: input.summary,
         importance: input.importance,
         confidence: input.confidence,
         sourceType: 'assistant_inference',
-        metadata: input.metadata
-      })
+        visibility,
+        mem0UserId,
+        mem0Status: 'pending',
+        contentHash: contentHash(input.summary),
+        metadata: {
+          ...(input.metadata ?? {}),
+          contentSource: 'mem0',
+          captureMode: 'passive'
+        }
+      });
+      if (!registry.ok) return registry;
+      if (registry.existing) {
+        return {
+          ok: true,
+          memoryId: registry.memoryId,
+          mem0UserId,
+          deduped: true
+        };
+      }
+
+      try {
+        const mem0 = await deps.mem0.addScopedMemory({
+          userId: context.userId,
+          elderId: context.elderId,
+          messages: [{ role: 'user', content: input.summary }],
+          metadata: {
+            registryId: registry.memoryId,
+            memoryType: input.memoryType,
+            subject: input.subject,
+            visibility,
+            importance: input.importance ?? 60,
+            confidence: input.confidence ?? 72,
+            sourceType: 'assistant_inference',
+            ...(input.metadata ?? {})
+          },
+          customInstructions: MITR_MEM0_CUSTOM_INSTRUCTIONS
+        });
+        await deps.elderContextService.updateMemoryMem0State({
+          userId: context.userId,
+          elderId: context.elderId,
+          memoryId: registry.memoryId,
+          mem0EventId: mem0.eventId,
+          mem0Status: mem0.status === 'FAILED' ? 'failed' : 'pending'
+        });
+        return {
+          ok: mem0.status !== 'FAILED',
+          memoryId: registry.memoryId,
+          mem0UserId,
+          mem0EventId: mem0.eventId,
+          mem0Status: mem0.status
+        };
+      } catch (error) {
+        await deps.elderContextService.updateMemoryMem0State({
+          userId: context.userId,
+          elderId: context.elderId,
+          memoryId: registry.memoryId,
+          mem0Status: 'failed',
+          error: (error as Error).message
+        });
+        return {
+          ok: false,
+          memoryId: registry.memoryId,
+          error: 'Mem0 memory write failed; memory content was not stored.',
+          mem0Error: (error as Error).message
+        };
+      }
+    }
   };
 
   const contextCardUpsert: AgentToolDefinition = {

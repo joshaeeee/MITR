@@ -79,6 +79,43 @@ Hi Mitr / Hi Reca -> awake -> conversation remains active -> 45 seconds idle -> 
 The client WebSocket remains connected across wake/sleep cycles. Model failures
 are surfaced as `model_error` and `model_reconnecting` gateway events.
 
+## Memory Architecture
+
+Mitr uses a Mem0-first memory layer:
+
+- Mem0 is the durable memory content store and semantic recall layer.
+- Postgres `elder_memory_items` is the policy registry: elder scope, visibility,
+  status, source, confidence, Mem0 event IDs, deletion/expiry, and audit metadata.
+- Redis only caches compact context packets for realtime latency.
+- ESP32 and Reca never call Mem0 directly. All memory reads/writes go through
+  `POST /internal/pipecat/tool`, where device/user/elder context is verified.
+
+Entity scope:
+
+```text
+Mem0 user_id = elder:<elderId>
+Fallback when no elder exists = user:<userId>
+```
+
+New memory writes do not duplicate durable memory text in Postgres. The backend
+creates a registry row, sends the memory content to Mem0 v3
+`/v3/memories/add/`, stores the returned `event_id`, and uses registry metadata
+to RBAC-filter future Mem0 search results before Reca can speak from them.
+
+Relevant env:
+
+```text
+MEM0_API_KEY=
+MEM0_BASE_URL=https://api.mem0.ai
+MEM0_APP_ID=mitr-reca
+MEM0_AGENT_ID=reca
+MEM0_ADD_TIMEOUT_MS=5000
+MEM0_SEARCH_TIMEOUT_MS=3500
+MEM0_CONTEXT_SEARCH_TIMEOUT_MS=650
+MEM0_SEARCH_THRESHOLD=0.1
+MEM0_SEARCH_RERANK=false
+```
+
 ## Other APIs
 
 - `POST /session/end`
