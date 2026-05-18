@@ -60,6 +60,7 @@ from .bot import (
     MitrRealtime2SessionOptionsMixin,
     PCM16Resampler,
     _int_env,
+    _openai_realtime_max_output_tokens,
     _openai_realtime_model,
     _optional_timeout_env,
     _queue_runtime_context_update,
@@ -163,10 +164,53 @@ def _wake_phrase_pattern(phrase: str) -> re.Pattern:
     return re.compile(r"(?<!\w)" + body + r"(?!\w)", re.IGNORECASE)
 
 
+def _wake_phrase_aliases(phrases: list[str] | None = None) -> list[str]:
+    configured = phrases if phrases is not None else _wake_phrases()
+    aliases = set(configured)
+    normalized = {_strip_wake_phrase_punctuation(phrase).strip().lower() for phrase in configured}
+
+    def add_if_configured(triggers: set[str], extra_aliases: set[str]):
+        if normalized & triggers:
+            aliases.update(extra_aliases)
+
+    add_if_configured(
+        {"hi esp", "hey esp", "hi e s p", "hey e s p"},
+        {"हाय ईएसपी", "हे ईएसपी", "हाय ई एस पी", "हे ई एस पी"},
+    )
+    add_if_configured(
+        {"hi reca", "hey reca", "hi reka", "hey reka", "hi rekha", "hey rekha"},
+        {"हाय रेका", "हे रेका", "हाय रेखा", "हे रेखा"},
+    )
+    add_if_configured(
+        {"hi r e k a", "hey r e k a"},
+        {"हाय आर ई के ए", "हे आर ई के ए"},
+    )
+    add_if_configured(
+        {"hi mitr", "hey mitr", "hi mitra", "hey mitra"},
+        {"हाय मित्र", "हे मित्र", "हाय मित्रा", "हे मित्रा"},
+    )
+
+    return sorted((phrase for phrase in aliases if phrase.strip()), key=len, reverse=True)
+
+
+def _leading_wake_phrase_pattern(phrase: str) -> re.Pattern:
+    normalized = _strip_wake_phrase_punctuation(phrase).strip()
+    body = r"\s*".join(re.escape(word) for word in normalized.split())
+    return re.compile(r"^\s*" + body + r"(?:[\s,.:;!?।-]+|$)", re.IGNORECASE)
+
+
+def _strip_leading_wake_phrase(text: str) -> tuple[str, bool]:
+    for phrase in _wake_phrase_aliases():
+        match = _leading_wake_phrase_pattern(phrase).match(text)
+        if match:
+            return text[match.end() :].strip(" \t\r\n,.:;!?।-"), True
+    return text, False
+
+
 class UnicodeWakePhraseUserTurnStartStrategy(WakePhraseUserTurnStartStrategy):
     def __init__(self, *, phrases: list[str], **kwargs):
         super().__init__(phrases=phrases, **kwargs)
-        self._patterns = [_wake_phrase_pattern(phrase) for phrase in phrases]
+        self._patterns = [_wake_phrase_pattern(phrase) for phrase in _wake_phrase_aliases(phrases)]
 
     @staticmethod
     def _strip_punctuation(text: str) -> str:
@@ -182,6 +226,7 @@ class WakePhraseRealtimeGate(FrameProcessor):
         self._buffer_bytes = 0
         self._max_buffer_bytes = int(OPENAI_REALTIME_SAMPLE_RATE * max(preroll_sec, 0.5) * 2)
         self._dropped_llm_frames = 0
+        self._dropped_audio_frames = 0
 
     async def wake(self, phrase: str):
         if self._awake:
@@ -189,14 +234,13 @@ class WakePhraseRealtimeGate(FrameProcessor):
 
         self._awake = True
         logger.info(
-            "Pipecat wake phrase detected: {!r}; flushing {} buffered audio frames",
+            "Pipecat wake phrase detected: {!r}; discarding {} buffered audio frames",
             phrase,
             len(self._buffer),
         )
 
         await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        while self._buffer:
-            await self.push_frame(self._buffer.popleft(), FrameDirection.DOWNSTREAM)
+        self._buffer.clear()
         self._buffer_bytes = 0
 
         if self._pending_stop:
@@ -211,6 +255,7 @@ class WakePhraseRealtimeGate(FrameProcessor):
         self._buffer.clear()
         self._buffer_bytes = 0
         self._dropped_llm_frames = 0
+        self._dropped_audio_frames = 0
 
     def _buffer_audio(self, frame: InputAudioRawFrame):
         self._buffer.append(frame)
@@ -228,6 +273,15 @@ class WakePhraseRealtimeGate(FrameProcessor):
 
         if isinstance(frame, InputAudioRawFrame) and not self._awake:
             self._buffer_audio(frame)
+            return
+
+        if isinstance(frame, InputAudioRawFrame):
+            self._dropped_audio_frames += 1
+            if self._dropped_audio_frames == 1 or self._dropped_audio_frames % 100 == 0:
+                logger.info(
+                    "Wake gate dropped raw audio while awake; STT transcript owns LLM input; dropped_audio_frames={}",
+                    self._dropped_audio_frames,
+                )
             return
 
         if isinstance(frame, (LLMContextFrame, LLMRunFrame)) and not self._awake:
@@ -259,6 +313,47 @@ class TranscriptDebug(FrameProcessor):
                 logger.info("OpenAI STT final: {!r}", frame.text)
             elif isinstance(frame, InterimTranscriptionFrame):
                 logger.info("OpenAI STT interim: {!r}", frame.text)
+
+        await self.push_frame(frame, direction)
+
+
+class WakePhrasePromptFilter(FrameProcessor):
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if direction != FrameDirection.DOWNSTREAM or not isinstance(frame, LLMContextFrame):
+            await self.push_frame(frame, direction)
+            return
+
+        messages = list(frame.context.get_messages())
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+
+            content = message.get("content")
+            if not isinstance(content, str):
+                break
+
+            stripped, changed = _strip_leading_wake_phrase(content)
+            if not changed:
+                break
+
+            if stripped:
+                messages[index] = {**message, "content": stripped}
+                frame.context.set_messages(messages)
+                logger.info(
+                    "Wake phrase stripped from LLM user message; chars_before={} chars_after={}",
+                    len(content),
+                    len(stripped),
+                )
+                await self.push_frame(frame, direction)
+                return
+
+            del messages[index]
+            frame.context.set_messages(messages)
+            logger.info("Wake-only transcript suppressed; waiting for user request")
+            return
 
         await self.push_frame(frame, direction)
 
@@ -420,6 +515,11 @@ class MitrWakePhraseOpenAIRealtimeLLMService(
         logger.info("OpenAI wake-phrase output audio done")
         await super()._handle_evt_audio_done(evt)
 
+    async def _handle_user_stopped_speaking(self, frame):
+        logger.debug(
+            "Ignoring UserStoppedSpeakingFrame in wake mode; STT transcript context owns response creation"
+        )
+
     async def _handle_evt_speech_started(self, evt):
         logger.info("OpenAI wake-phrase turn detection: speech_started; interruption suppressed")
         await self.broadcast_frame(UserStartedSpeakingFrame)
@@ -485,7 +585,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
                         voice=os.getenv("OPENAI_REALTIME_VOICE", "alloy"),
                     ),
                 ),
-                max_output_tokens=_int_env("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", 1024),
+                max_output_tokens=_openai_realtime_max_output_tokens(),
                 tools=build_tools_schema(),
                 tool_choice="auto",
             ),
@@ -512,6 +612,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         preroll_sec=_float_env("MITR_GATEWAY_WAKE_PHRASE_PREROLL_SEC", 4.0),
     )
     transcript_debug = TranscriptDebug()
+    wake_prompt_filter = WakePhrasePromptFilter()
     llm_resampler = PCM16Resampler(target_sample_rate=OPENAI_REALTIME_SAMPLE_RATE)
     echo_suppression = EchoSuppressionState(
         enabled=_bool_env("MITR_GATEWAY_ECHO_SUPPRESSION", True),
@@ -560,6 +661,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
             stt,
             transcript_debug,
             context_aggregator.user(),
+            wake_prompt_filter,
             llm_resampler,
             gate,
             llm,

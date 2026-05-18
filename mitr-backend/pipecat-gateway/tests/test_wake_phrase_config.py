@@ -58,6 +58,24 @@ class WakePhraseConfigTests(unittest.TestCase):
         self.assertGreater(len(strategies), 0)
         self.assertTrue(all(not strategy._enable_interruptions for strategy in strategies))
 
+    def test_wake_phrase_strip_handles_hindi_stt_aliases(self):
+        os.environ["MITR_GATEWAY_WAKE_PHRASES"] = "hi esp,hey esp,hi reca"
+
+        self.assertEqual(bot_wake_phrase._strip_leading_wake_phrase("हाय ईएसपी"), ("", True))
+        self.assertEqual(
+            bot_wake_phrase._strip_leading_wake_phrase("हाय ईएसपी weekly plan banao"),
+            ("weekly plan banao", True),
+        )
+        self.assertEqual(bot_wake_phrase._strip_leading_wake_phrase("हाय रेका।"), ("", True))
+
+    def test_wake_phrase_aliases_do_not_enable_unconfigured_devices(self):
+        os.environ["MITR_GATEWAY_WAKE_PHRASES"] = "hi reca"
+
+        self.assertEqual(
+            bot_wake_phrase._strip_leading_wake_phrase("हाय ईएसपी weekly plan banao"),
+            ("हाय ईएसपी weekly plan banao", False),
+        )
+
     def test_realtime2_session_options_are_explicit(self):
         os.environ["OPENAI_REALTIME_REASONING_EFFORT"] = "low"
         os.environ["OPENAI_REALTIME_TRUNCATION"] = "auto"

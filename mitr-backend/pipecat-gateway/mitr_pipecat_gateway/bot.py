@@ -51,6 +51,21 @@ def _int_env(name: str, fallback: int) -> int:
         return fallback
 
 
+def _openai_realtime_max_output_tokens() -> int | str:
+    value = os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "inf").strip().lower()
+    if value in {"inf", "infinite", "unlimited"}:
+        return "inf"
+    try:
+        tokens = int(value)
+    except ValueError as error:
+        raise RuntimeError(
+            "OPENAI_REALTIME_MAX_OUTPUT_TOKENS must be a positive integer or inf."
+        ) from error
+    if tokens <= 0:
+        raise RuntimeError("OPENAI_REALTIME_MAX_OUTPUT_TOKENS must be positive.")
+    return tokens
+
+
 def _float_env(name: str, fallback: float) -> float:
     try:
         return float(os.getenv(name, str(fallback)))
@@ -407,7 +422,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
                         voice=os.getenv("OPENAI_REALTIME_VOICE", "alloy"),
                     ),
                 ),
-                max_output_tokens=_int_env("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", 1024),
+                max_output_tokens=_openai_realtime_max_output_tokens(),
                 tools=build_tools_schema(),
                 tool_choice="auto",
             ),

@@ -28,6 +28,9 @@ _FLOWS: dict[str, dict[str, Any]] = {}
 ToolHook = Callable[[str], Awaitable[None]]
 _DEFAULT_ASYNC_ACK_TOOLS = {
     "memory_add",
+    "mem0_memory_add",
+    "mem0_memory_update",
+    "mem0_memory_delete",
     "reminder_create",
     "reminder_list",
     "nudge_pending_get",
@@ -52,6 +55,10 @@ _DEFAULT_ASYNC_ACK_TOOLS = {
 }
 _DEFAULT_SYNC_TOOLS = {
     "memory_get",
+    "reca_skill_get",
+    "mem0_memory_search",
+    "mem0_memory_list",
+    "mem0_memory_get",
     "context_packet_get",
     "context_memory_add",
     "context_card_upsert",
@@ -62,6 +69,13 @@ _DEFAULT_SYNC_TOOLS = {
 }
 _BACKEND_REQUIRED_TOOLS = {
     "memory_add",
+    "reca_skill_get",
+    "mem0_memory_add",
+    "mem0_memory_search",
+    "mem0_memory_list",
+    "mem0_memory_get",
+    "mem0_memory_update",
+    "mem0_memory_delete",
     "memory_get",
     "context_packet_get",
     "context_memory_add",
@@ -165,6 +179,11 @@ def _tool_schema(name: str, description: str) -> FunctionSchema:
         properties={
             "query": {"type": "string", "description": "User query or search text."},
             "text": {"type": "string", "description": "Text content from the user."},
+            "skillName": {"type": "string", "enum": ["memory_protocol"], "description": "Reca runtime skill name."},
+            "memoryId": {"type": "string", "description": "Mem0 memory identifier returned by search/list/get."},
+            "memory_id": {"type": "string", "description": "Mem0 memory identifier returned by search/list/get."},
+            "filters": {"type": "object", "description": "Mem0 metadata filters such as category, status, domain, or record_kind."},
+            "infer": {"type": "boolean", "description": "Whether Mem0 should infer/extract facts from raw text. Use false for structured protocol records."},
             "title": {"type": "string", "description": "Optional title."},
             "time": {"type": "string", "description": "Requested reminder or schedule time."},
             "datetimeISO": {"type": "string", "description": "ISO datetime for reminders."},
@@ -357,6 +376,13 @@ def _web_search_schema() -> FunctionSchema:
 def build_tools_schema() -> ToolsSchema:
     tools = [
         _tool_schema("memory_add", "Store a useful personal memory from the conversation."),
+        _tool_schema("reca_skill_get", "Load a Reca runtime skill such as memory_protocol."),
+        _tool_schema("mem0_memory_add", "Add a structured Mem0-backed memory in the current Reca user scope."),
+        _tool_schema("mem0_memory_search", "Search Mem0-backed memories in the current Reca user scope."),
+        _tool_schema("mem0_memory_list", "List Mem0-backed memories by metadata filters in the current Reca user scope."),
+        _tool_schema("mem0_memory_get", "Get one Mem0-backed memory by memory ID after scoped search/list."),
+        _tool_schema("mem0_memory_update", "Update one Mem0-backed memory by memory ID."),
+        _tool_schema("mem0_memory_delete", "Delete one Mem0-backed memory by memory ID only on explicit user request."),
         _tool_schema("memory_get", "Retrieve relevant personal memories."),
         _tool_schema("context_packet_get", "Retrieve the compact ranked memory/context packet for this turn."),
         _tool_schema("context_memory_add", "Store typed first-party Reca memory."),
