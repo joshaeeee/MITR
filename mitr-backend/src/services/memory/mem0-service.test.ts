@@ -115,3 +115,103 @@ test('searchScopedMemories calls Mem0 v3 search with entity filters', async () =
     }
   });
 });
+
+test('listScopedMemories calls Mem0 v3 list with scoped filters', async () => {
+  await withMem0Env(async () => {
+    const previousFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (url, init) => {
+        assert.equal(String(url), 'https://api.mem0.test/v3/memories/?page=2&page_size=10');
+        assert.equal(init?.method, 'POST');
+        const body = JSON.parse(String(init?.body));
+        assert.deepEqual(body.filters, { category: 'workout_log', user_id: 'elder:elder-1' });
+        return new Response(
+          JSON.stringify({
+            count: 1,
+            next: null,
+            previous: null,
+            results: [
+              {
+                id: 'mem-1',
+                memory: 'Workout log: pushups.',
+                user_id: 'elder:elder-1',
+                metadata: { category: 'workout_log' },
+                categories: []
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as typeof fetch;
+
+      const service = new Mem0Service();
+      const result = await service.listScopedMemories({
+        userId: 'user-1',
+        elderId: 'elder-1',
+        filters: { category: 'workout_log' },
+        limit: 10,
+        page: 2
+      });
+
+      assert.equal(result.count, 1);
+      assert.equal(result.memories[0]?.id, 'mem-1');
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+});
+
+test('updateScopedMemory verifies scope before updating memory', async () => {
+  await withMem0Env(async () => {
+    const previousFetch = globalThis.fetch;
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    try {
+      globalThis.fetch = (async (url, init) => {
+        calls.push({ url: String(url), init });
+        if (calls.length === 1) {
+          assert.equal(String(url), 'https://api.mem0.test/v1/memories/mem-1/');
+          assert.equal(init?.method, 'GET');
+          return new Response(
+            JSON.stringify({
+              id: 'mem-1',
+              memory: 'Old plan',
+              user_id: 'elder:elder-1',
+              metadata: { mitrUserId: 'user-1', elderId: 'elder-1', category: 'fitness_plan' }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        assert.equal(String(url), 'https://api.mem0.test/v1/memories/mem-1/');
+        assert.equal(init?.method, 'PUT');
+        const body = JSON.parse(String(init?.body));
+        assert.equal(body.text, 'New plan');
+        assert.equal(body.metadata.category, 'fitness_plan');
+        assert.equal(body.metadata.status, 'active');
+        assert.equal(body.metadata.mitrUserId, 'user-1');
+        return new Response(
+          JSON.stringify({
+            id: 'mem-1',
+            text: 'New plan',
+            user_id: 'elder:elder-1',
+            metadata: body.metadata
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as typeof fetch;
+
+      const service = new Mem0Service();
+      const memory = await service.updateScopedMemory({
+        userId: 'user-1',
+        elderId: 'elder-1',
+        memoryId: 'mem-1',
+        text: 'New plan',
+        metadata: { status: 'active' }
+      });
+
+      assert.equal(memory.memory, 'New plan');
+      assert.equal(calls.length, 2);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+});

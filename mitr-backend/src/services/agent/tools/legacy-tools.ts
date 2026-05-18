@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { ReligiousRetriever } from '../../retrieval/religious-retriever.js';
 import { Mem0Service, MITR_MEM0_CUSTOM_INSTRUCTIONS, mem0UserIdFor } from '../../memory/mem0-service.js';
@@ -71,6 +74,32 @@ export interface AgentToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny
 }
 
 type FlowType = 'satsang' | 'story' | 'companion';
+
+const SKILL_FILES: Record<string, string> = {
+  memory_protocol: 'memory_protocol.md'
+};
+
+const loadSkillMarkdown = async (skillName: string): Promise<string> => {
+  const filename = SKILL_FILES[skillName];
+  if (!filename) throw new Error(`Unknown Reca skill: ${skillName}`);
+
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(process.cwd(), '.context', 'reca-skills', filename),
+    join(moduleDir, '..', 'skills', filename),
+    join(process.cwd(), 'src', 'services', 'agent', 'skills', filename)
+  ];
+
+  for (const path of candidates) {
+    try {
+      return await readFile(path, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  throw new Error(`Reca skill file not found: ${filename}`);
+};
 
 const toSessionBlockResponse = (
   block:
@@ -860,6 +889,165 @@ export const createLegacyToolDefinitions = (
           mem0Error: (error as Error).message
         };
       }
+    }
+  };
+
+  const recaSkillGet: AgentToolDefinition = {
+    name: 'reca_skill_get',
+    description:
+      'Load a Reca runtime skill markdown file. Use memory_protocol before using Mem0 as a flexible memory layer for plans, logs, summaries, tracking, or custom user systems.',
+    parameters: z.object({
+      skillName: z.enum(['memory_protocol'])
+    }),
+    timeoutMs: 900,
+    execute: async (input) => ({
+      ok: true,
+      skillName: input.skillName,
+      format: 'markdown',
+      content: await loadSkillMarkdown(input.skillName)
+    })
+  };
+
+  const mem0MemoryAdd: AgentToolDefinition = {
+    name: 'mem0_memory_add',
+    description:
+      'Add a Mem0-backed memory directly using Reca user scope. Use for structured Mem0 protocol documents, logs, summaries, and facts. Prefer infer=false when text is already structured.',
+    parameters: z.object({
+      text: z.string().min(1),
+      metadata: z.record(z.unknown()).optional(),
+      infer: z.boolean().optional()
+    }),
+    timeoutMs: 6000,
+    execute: async (input, context) => {
+      const result = await deps.mem0.addScopedMemory({
+        userId: context.userId,
+        elderId: context.elderId,
+        messages: [{ role: 'user', content: input.text }],
+        metadata: {
+          ...(input.metadata ?? {}),
+          captureMode: 'mem0_protocol_tool'
+        },
+        infer: input.infer ?? false
+      });
+      return {
+        ok: result.status !== 'FAILED',
+        mem0Status: result.status,
+        mem0EventId: result.eventId,
+        message: result.message
+      };
+    }
+  };
+
+  const mem0MemorySearch: AgentToolDefinition = {
+    name: 'mem0_memory_search',
+    description:
+      'Search Mem0-backed memories in the current Reca user scope. Use query plus metadata filters such as category, status, domain, object_type, or record_kind.',
+    parameters: z.object({
+      query: z.string().min(1),
+      filters: z.record(z.unknown()).optional(),
+      limit: z.number().int().min(1).max(20).optional()
+    }),
+    timeoutMs: 4200,
+    execute: async (input, context) => {
+      const memories = await deps.mem0.searchScopedMemories({
+        userId: context.userId,
+        elderId: context.elderId,
+        query: input.query,
+        filters: input.filters,
+        limit: input.limit ?? 5
+      });
+      return { ok: true, memories };
+    }
+  };
+
+  const mem0MemoryList: AgentToolDefinition = {
+    name: 'mem0_memory_list',
+    description:
+      'List Mem0-backed memories in the current Reca user scope by metadata filters. Use when exact domain/category browsing is needed before update or rollup.',
+    parameters: z.object({
+      filters: z.record(z.unknown()).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+      page: z.number().int().min(1).optional()
+    }),
+    timeoutMs: 4200,
+    execute: async (input, context) => ({
+      ok: true,
+      ...(await deps.mem0.listScopedMemories({
+        userId: context.userId,
+        elderId: context.elderId,
+        filters: input.filters,
+        limit: input.limit ?? 20,
+        page: input.page
+      }))
+    })
+  };
+
+  const mem0MemoryGet: AgentToolDefinition = {
+    name: 'mem0_memory_get',
+    description: 'Get one Mem0-backed memory by memory ID after it has been found through scoped search or list.',
+    parameters: z.object({
+      memoryId: optionalStringArg(),
+      memory_id: optionalStringArg()
+    }),
+    timeoutMs: 4200,
+    execute: async (input, context) => {
+      const memoryId = input.memoryId ?? input.memory_id;
+      if (!memoryId) return { ok: false, error: 'memoryId is required' };
+      return {
+        ok: true,
+        memory: await deps.mem0.getScopedMemory({
+          userId: context.userId,
+          elderId: context.elderId,
+          memoryId
+        })
+      };
+    }
+  };
+
+  const mem0MemoryUpdate: AgentToolDefinition = {
+    name: 'mem0_memory_update',
+    description:
+      'Update one Mem0-backed memory by memory ID. Use for documents, active snapshots, and rollups; do not use for append-only logs unless correcting a mistake.',
+    parameters: z.object({
+      memoryId: optionalStringArg(),
+      memory_id: optionalStringArg(),
+      text: z.string().min(1),
+      metadata: z.record(z.unknown()).optional()
+    }),
+    timeoutMs: 6000,
+    execute: async (input, context) => {
+      const memoryId = input.memoryId ?? input.memory_id;
+      if (!memoryId) return { ok: false, error: 'memoryId is required' };
+      return {
+        ok: true,
+        memory: await deps.mem0.updateScopedMemory({
+          userId: context.userId,
+          elderId: context.elderId,
+          memoryId,
+          text: input.text,
+          metadata: input.metadata
+        })
+      };
+    }
+  };
+
+  const mem0MemoryDelete: AgentToolDefinition = {
+    name: 'mem0_memory_delete',
+    description:
+      'Delete one Mem0-backed memory by memory ID. Use only when the user explicitly asks to delete/forget a specific memory.',
+    parameters: z.object({
+      memoryId: optionalStringArg(),
+      memory_id: optionalStringArg()
+    }),
+    timeoutMs: 6000,
+    execute: async (input, context) => {
+      const memoryId = input.memoryId ?? input.memory_id;
+      if (!memoryId) return { ok: false, error: 'memoryId is required' };
+      return deps.mem0.deleteScopedMemory({
+        userId: context.userId,
+        elderId: context.elderId,
+        memoryId
+      });
     }
   };
 
@@ -2378,6 +2566,13 @@ export const createLegacyToolDefinitions = (
 
   const definitions: AgentToolDefinition[] = [
     memoryAdd,
+    recaSkillGet,
+    mem0MemoryAdd,
+    mem0MemorySearch,
+    mem0MemoryList,
+    mem0MemoryGet,
+    mem0MemoryUpdate,
+    mem0MemoryDelete,
     memoryGet,
     contextPacketGet,
     contextMemoryAdd,

@@ -16,6 +16,7 @@ export interface Mem0AddResult {
 export interface Mem0SearchResult {
   id: string;
   memory: string;
+  userId?: string;
   score?: number;
   metadata: Record<string, unknown>;
   categories: string[];
@@ -38,11 +39,42 @@ export interface Mem0ScopedSearchInput {
   userId: string;
   elderId?: string | null;
   query: string;
+  filters?: Record<string, unknown>;
   limit?: number;
   threshold?: number;
   rerank?: boolean;
   referenceDate?: string | number;
   timeoutMs?: number;
+}
+
+export interface Mem0ScopedListInput {
+  userId: string;
+  elderId?: string | null;
+  filters?: Record<string, unknown>;
+  limit?: number;
+  page?: number;
+  timeoutMs?: number;
+}
+
+export interface Mem0ScopedGetInput {
+  userId: string;
+  elderId?: string | null;
+  memoryId: string;
+  timeoutMs?: number;
+}
+
+export interface Mem0ScopedUpdateInput extends Mem0ScopedGetInput {
+  text: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface Mem0ScopedDeleteInput extends Mem0ScopedGetInput {}
+
+export interface Mem0ListResult {
+  memories: Mem0SearchResult[];
+  count?: number;
+  next?: string | null;
+  previous?: string | null;
 }
 
 export const mem0UserIdFor = (userId: string, elderId?: string | null): string => {
@@ -61,6 +93,11 @@ const asNumber = (value: unknown): number | undefined =>
 
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
+
+const mergeScopedFilters = (mem0UserId: string, filters?: Record<string, unknown>): Record<string, unknown> => ({
+  ...(filters ?? {}),
+  user_id: mem0UserId
+});
 
 export const MITR_MEM0_CUSTOM_INSTRUCTIONS = `
 Mitr/Reca memory rules for elders:
@@ -171,7 +208,7 @@ export class Mem0Service {
 
     const payload: Record<string, unknown> = {
       query: input.query,
-      filters: { user_id: mem0UserId },
+      filters: mergeScopedFilters(mem0UserId, input.filters),
       top_k: input.limit ?? 5,
       threshold: input.threshold ?? env.MEM0_SEARCH_THRESHOLD,
       rerank: input.rerank ?? env.MEM0_SEARCH_RERANK
@@ -193,6 +230,77 @@ export class Mem0Service {
     return memories;
   }
 
+  async listScopedMemories(input: Mem0ScopedListInput): Promise<Mem0ListResult> {
+    const mem0UserId = mem0UserIdFor(input.userId, input.elderId);
+    const pageSize = Math.min(Math.max(input.limit ?? 20, 1), 100);
+    const page = Math.max(input.page ?? 1, 1);
+    const response = await this.requestJson(`/v3/memories/?page=${page}&page_size=${pageSize}`, {
+      method: 'POST',
+      body: { filters: mergeScopedFilters(mem0UserId, input.filters) },
+      timeoutMs: input.timeoutMs ?? env.MEM0_SEARCH_TIMEOUT_MS
+    });
+    const data = asObject(response);
+    const rows = Array.isArray(data.results) ? data.results : [];
+    return {
+      memories: rows.map((row) => this.parseSearchRow(row)).filter((row): row is Mem0SearchResult => Boolean(row)),
+      count: asNumber(data.count),
+      next: asString(data.next) ?? null,
+      previous: asString(data.previous) ?? null
+    };
+  }
+
+  async getScopedMemory(input: Mem0ScopedGetInput): Promise<Mem0SearchResult> {
+    const response = await this.requestJson(`/v1/memories/${encodeURIComponent(input.memoryId)}/`, {
+      method: 'GET',
+      timeoutMs: input.timeoutMs ?? env.MEM0_SEARCH_TIMEOUT_MS
+    });
+    const memory = this.parseSearchRow(response);
+    if (!memory) throw new Error('Mem0 memory response was missing id or memory text');
+    this.assertScopedMemory(input, memory);
+    return memory;
+  }
+
+  async updateScopedMemory(input: Mem0ScopedUpdateInput): Promise<Mem0SearchResult> {
+    const existing = await this.getScopedMemory(input);
+    const scopedMetadata = {
+      ...(existing.metadata ?? {}),
+      ...(input.metadata ?? {}),
+      mitrUserId: input.userId,
+      elderId: input.elderId ?? null,
+      appId: env.MEM0_APP_ID,
+      agentId: env.MEM0_AGENT_ID,
+      mem0ScopeVersion: 'elder_user_v1'
+    };
+    const response = await this.requestJson(`/v1/memories/${encodeURIComponent(input.memoryId)}/`, {
+      method: 'PUT',
+      body: {
+        text: input.text,
+        metadata: scopedMetadata
+      },
+      timeoutMs: input.timeoutMs ?? env.MEM0_ADD_TIMEOUT_MS
+    });
+    const memory = this.parseSearchRow(response);
+    if (!memory) {
+      return {
+        id: input.memoryId,
+        memory: input.text,
+        metadata: scopedMetadata,
+        categories: []
+      };
+    }
+    this.assertScopedMemory(input, memory);
+    return memory;
+  }
+
+  async deleteScopedMemory(input: Mem0ScopedDeleteInput): Promise<{ ok: true; memoryId: string }> {
+    await this.getScopedMemory(input);
+    await this.requestJson(`/v1/memories/${encodeURIComponent(input.memoryId)}/`, {
+      method: 'DELETE',
+      timeoutMs: input.timeoutMs ?? env.MEM0_ADD_TIMEOUT_MS
+    });
+    return { ok: true, memoryId: input.memoryId };
+  }
+
   async getEvent(eventId: string, timeoutMs = env.MEM0_SEARCH_TIMEOUT_MS): Promise<Record<string, unknown>> {
     return asObject(
       await this.requestJson(`/v1/event/${encodeURIComponent(eventId)}/`, {
@@ -210,12 +318,27 @@ export class Mem0Service {
     return {
       id,
       memory,
+      userId: asString(item.user_id),
       score: asNumber(item.score),
       metadata: asObject(item.metadata),
       categories: asStringArray(item.categories),
       createdAt: asString(item.created_at),
       updatedAt: asString(item.updated_at)
     };
+  }
+
+  private assertScopedMemory(input: Mem0ScopedGetInput, memory: Mem0SearchResult): void {
+    const expectedUserId = mem0UserIdFor(input.userId, input.elderId);
+    const metadata = memory.metadata ?? {};
+    const metadataUserId = asString(metadata.mitrUserId);
+    const metadataElderId = asString(metadata.elderId);
+    const matchesMem0User = memory.userId === expectedUserId;
+    const matchesMitrUser = metadataUserId === input.userId;
+    const matchesElder =
+      input.elderId === undefined || input.elderId === null || metadataElderId === undefined || metadataElderId === input.elderId;
+    if (!matchesMem0User && !(matchesMitrUser && matchesElder)) {
+      throw new Error('Mem0 memory is outside the current Reca user scope');
+    }
   }
 
   private async requestJson(
@@ -255,6 +378,9 @@ export class Mem0Service {
       throw new Error(`Mem0 request failed (${response.status}): ${body}`);
     }
 
-    return response.json();
+    if (response.status === 204) return {};
+    const text = await response.text();
+    if (!text.trim()) return {};
+    return JSON.parse(text);
   }
 }
