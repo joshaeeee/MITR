@@ -7,7 +7,6 @@ from collections import deque
 
 from fastapi import WebSocket
 from loguru import logger
-
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
@@ -193,20 +192,6 @@ def _wake_phrase_aliases(phrases: list[str] | None = None) -> list[str]:
     return sorted((phrase for phrase in aliases if phrase.strip()), key=len, reverse=True)
 
 
-def _leading_wake_phrase_pattern(phrase: str) -> re.Pattern:
-    normalized = _strip_wake_phrase_punctuation(phrase).strip()
-    body = r"\s*".join(re.escape(word) for word in normalized.split())
-    return re.compile(r"^\s*" + body + r"(?:[\s,.:;!?।-]+|$)", re.IGNORECASE)
-
-
-def _strip_leading_wake_phrase(text: str) -> tuple[str, bool]:
-    for phrase in _wake_phrase_aliases():
-        match = _leading_wake_phrase_pattern(phrase).match(text)
-        if match:
-            return text[match.end() :].strip(" \t\r\n,.:;!?।-"), True
-    return text, False
-
-
 class UnicodeWakePhraseUserTurnStartStrategy(WakePhraseUserTurnStartStrategy):
     def __init__(self, *, phrases: list[str], **kwargs):
         super().__init__(phrases=phrases, **kwargs)
@@ -226,7 +211,6 @@ class WakePhraseRealtimeGate(FrameProcessor):
         self._buffer_bytes = 0
         self._max_buffer_bytes = int(OPENAI_REALTIME_SAMPLE_RATE * max(preroll_sec, 0.5) * 2)
         self._dropped_llm_frames = 0
-        self._dropped_audio_frames = 0
 
     async def wake(self, phrase: str):
         if self._awake:
@@ -234,13 +218,14 @@ class WakePhraseRealtimeGate(FrameProcessor):
 
         self._awake = True
         logger.info(
-            "Pipecat wake phrase detected: {!r}; discarding {} buffered audio frames",
+            "Pipecat wake phrase detected: {!r}; flushing {} buffered audio frames",
             phrase,
             len(self._buffer),
         )
 
         await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        self._buffer.clear()
+        while self._buffer:
+            await self.push_frame(self._buffer.popleft(), FrameDirection.DOWNSTREAM)
         self._buffer_bytes = 0
 
         if self._pending_stop:
@@ -255,7 +240,6 @@ class WakePhraseRealtimeGate(FrameProcessor):
         self._buffer.clear()
         self._buffer_bytes = 0
         self._dropped_llm_frames = 0
-        self._dropped_audio_frames = 0
 
     def _buffer_audio(self, frame: InputAudioRawFrame):
         self._buffer.append(frame)
@@ -273,15 +257,6 @@ class WakePhraseRealtimeGate(FrameProcessor):
 
         if isinstance(frame, InputAudioRawFrame) and not self._awake:
             self._buffer_audio(frame)
-            return
-
-        if isinstance(frame, InputAudioRawFrame):
-            self._dropped_audio_frames += 1
-            if self._dropped_audio_frames == 1 or self._dropped_audio_frames % 100 == 0:
-                logger.info(
-                    "Wake gate dropped raw audio while awake; STT transcript owns LLM input; dropped_audio_frames={}",
-                    self._dropped_audio_frames,
-                )
             return
 
         if isinstance(frame, (LLMContextFrame, LLMRunFrame)) and not self._awake:
@@ -308,52 +283,14 @@ class TranscriptDebug(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if direction == FrameDirection.DOWNSTREAM and _bool_env("MITR_GATEWAY_LOG_TRANSCRIPTS", False):
+        if direction == FrameDirection.DOWNSTREAM and _bool_env(
+            "MITR_GATEWAY_LOG_TRANSCRIPTS",
+            False,
+        ):
             if isinstance(frame, TranscriptionFrame):
                 logger.info("OpenAI STT final: {!r}", frame.text)
             elif isinstance(frame, InterimTranscriptionFrame):
                 logger.info("OpenAI STT interim: {!r}", frame.text)
-
-        await self.push_frame(frame, direction)
-
-
-class WakePhrasePromptFilter(FrameProcessor):
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-
-        if direction != FrameDirection.DOWNSTREAM or not isinstance(frame, LLMContextFrame):
-            await self.push_frame(frame, direction)
-            return
-
-        messages = list(frame.context.get_messages())
-        for index in range(len(messages) - 1, -1, -1):
-            message = messages[index]
-            if not isinstance(message, dict) or message.get("role") != "user":
-                continue
-
-            content = message.get("content")
-            if not isinstance(content, str):
-                break
-
-            stripped, changed = _strip_leading_wake_phrase(content)
-            if not changed:
-                break
-
-            if stripped:
-                messages[index] = {**message, "content": stripped}
-                frame.context.set_messages(messages)
-                logger.info(
-                    "Wake phrase stripped from LLM user message; chars_before={} chars_after={}",
-                    len(content),
-                    len(stripped),
-                )
-                await self.push_frame(frame, direction)
-                return
-
-            del messages[index]
-            frame.context.set_messages(messages)
-            logger.info("Wake-only transcript suppressed; waiting for user request")
-            return
 
         await self.push_frame(frame, direction)
 
@@ -404,7 +341,8 @@ class EchoSuppressionState:
         if self._dropped_input_frames == 1 or self._dropped_input_frames % 100 == 0:
             remaining_ms = max(0, round((self._mute_until - time.monotonic()) * 1000))
             logger.info(
-                "Echo suppression dropped mic frame #{} while assistant audio is active; remaining={}ms",
+                "Echo suppression dropped mic frame #{} while assistant audio is "
+                "active; remaining={}ms",
                 self._dropped_input_frames,
                 remaining_ms,
             )
@@ -515,11 +453,6 @@ class MitrWakePhraseOpenAIRealtimeLLMService(
         logger.info("OpenAI wake-phrase output audio done")
         await super()._handle_evt_audio_done(evt)
 
-    async def _handle_user_stopped_speaking(self, frame):
-        logger.debug(
-            "Ignoring UserStoppedSpeakingFrame in wake mode; STT transcript context owns response creation"
-        )
-
     async def _handle_evt_speech_started(self, evt):
         logger.info("OpenAI wake-phrase turn detection: speech_started; interruption suppressed")
         await self.broadcast_frame(UserStartedSpeakingFrame)
@@ -612,7 +545,6 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         preroll_sec=_float_env("MITR_GATEWAY_WAKE_PHRASE_PREROLL_SEC", 4.0),
     )
     transcript_debug = TranscriptDebug()
-    wake_prompt_filter = WakePhrasePromptFilter()
     llm_resampler = PCM16Resampler(target_sample_rate=OPENAI_REALTIME_SAMPLE_RATE)
     echo_suppression = EchoSuppressionState(
         enabled=_bool_env("MITR_GATEWAY_ECHO_SUPPRESSION", True),
@@ -646,7 +578,10 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     )
 
     logger.info("Pipecat wake phrase mode enabled; phrases={}", _wake_phrases())
-    logger.info("OpenAI Realtime turn detection enabled: {}", _describe_turn_detection(turn_detection))
+    logger.info(
+        "OpenAI Realtime turn detection enabled: {}",
+        _describe_turn_detection(turn_detection),
+    )
     logger.info(
         "Gateway echo suppression: enabled={} tail_ms={}",
         echo_suppression.enabled,
@@ -661,7 +596,6 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
             stt,
             transcript_debug,
             context_aggregator.user(),
-            wake_prompt_filter,
             llm_resampler,
             gate,
             llm,
