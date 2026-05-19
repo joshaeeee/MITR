@@ -115,6 +115,10 @@ Do not store:
 
 For uncertain health statements, store only that the user mentioned concern or uncertainty; do not convert it into a diagnosis.
 Prefer concise memories that are useful for natural future conversation.
+
+When a tool sends a structured protocol record with infer=false (for example a fitness_plan,
+meal_plan, study_plan, workout_log, or summary), preserve the full provided record as the
+memory content. Do not compress a generated plan into only "the user wants a plan."
 `.trim();
 
 export class Mem0Service {

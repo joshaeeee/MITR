@@ -789,7 +789,7 @@ export const createLegacyToolDefinitions = (
   const memoryAdd: AgentToolDefinition = {
     name: 'memory_add',
     description:
-      'Store explicit long-term user memory for future recall. Use when the user explicitly asks you to remember something. Passive behavior capture should use context_memory_add. Never claim you remembered it unless this tool was called successfully in the same turn.',
+      'Store explicit long-term user memory for future recall. Use when the user explicitly asks you to remember a fact, preference, or context. Do not use for generated reusable artifacts such as plans, routines, trackers, or study schedules; use reca_skill_get(memory_protocol) and mem0_memory_* so the full artifact is saved. Passive behavior capture should use context_memory_add. Never claim you remembered it unless this tool was called successfully in the same turn.',
     parameters: z.object({
       text: z.string(),
       tags: z.array(z.string()).optional(),
@@ -911,7 +911,7 @@ export const createLegacyToolDefinitions = (
   const mem0MemoryAdd: AgentToolDefinition = {
     name: 'mem0_memory_add',
     description:
-      'Add a Mem0-backed memory directly using Reca user scope. Use for structured Mem0 protocol documents, logs, summaries, and facts. Prefer infer=false when text is already structured.',
+      'Add a Mem0-backed memory directly using Reca user scope. Use for structured Mem0 protocol documents, full generated plans, logs, summaries, and facts. Prefer infer=false when text is already structured.',
     parameters: z.object({
       text: z.string().min(1),
       metadata: z.record(z.unknown()).optional(),
