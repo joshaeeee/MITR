@@ -48,11 +48,35 @@ Use extra metadata when useful:
 |---|---|---|---|
 | Fitness | `fitness_plan` | `workout_log` | `workout_summary` |
 | Nutrition | `meal_plan` | `food_log` | `nutrition_summary` |
+| Mindfulness | `mindfulness_plan` | `mindfulness_log` | `mindfulness_summary` |
+| Study | `study_plan` | `study_log` | `study_summary` |
 | Expenses | `budget` | `expense_log` | `expense_summary` |
 | Daily planning | `goals` | `todo_log` | — |
 | User context | `user_profile` | — | — |
 
 New use case? Create a new category. No migration, setup, or permission needed.
+
+## Canvas Behavior
+
+Treat generated reusable artifacts as memory documents, not as ordinary preference facts.
+
+If the user asks for a workout plan, diet plan, study plan, mindfulness routine, budget, recipe system, habit tracker, or any artifact they are likely to reuse:
+
+1. Search/list for an active document in that domain.
+2. Create the artifact in the conversation.
+3. Add or update a Mem0 document containing the full artifact.
+4. Use `infer=false` and metadata that makes the document easy to retrieve.
+
+Do not save only "User wants a workout plan." Save the actual plan.
+
+For later updates, add logs rather than rewriting history:
+
+- "I completed day 1" -> add `workout_log`
+- "I skipped today" -> add `workout_log` with status/skipped reason
+- "I studied chapter 3" -> add `study_log`
+- "I ate dal and rice" -> add `food_log`
+
+Update the active document only when the user changes the plan itself or asks to revise it.
 
 ## Reca Mem0 Tools Available
 
@@ -101,9 +125,11 @@ Use for plans and current profiles:
 
 ```json
 {
-  "text": "Fitness plan: 4-day muscle building plan. Monday Push, Wednesday Pull, Friday Legs, Saturday Upper.",
+  "text": "Fitness plan: 4-day hybrid weights routine.\nGoal: build strength and conditioning.\nDay 1: Upper strength - bench press 4x5, row 4x6, overhead press 3x6, pull-down 3x8, farmer carry 4 rounds.\nDay 2: Lower strength - squat 4x5, Romanian deadlift 3x8, lunges 3x10 each side, calf raises 3x12, core plank 3 rounds.\nDay 3: Conditioning plus full body - deadlift 3x5, incline dumbbell press 3x8, kettlebell swings 5x15, bike intervals 8 rounds.\nDay 4: Hypertrophy circuit - leg press 3x12, cable row 3x12, dumbbell shoulder press 3x10, curls/triceps 3x12, easy walk 20 minutes.",
   "metadata": {
     "category": "fitness_plan",
+    "domain": "fitness",
+    "record_kind": "document",
     "status": "active",
     "version": 1
   },
