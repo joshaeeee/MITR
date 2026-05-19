@@ -1,8 +1,16 @@
 import os
 import unittest
+from types import MethodType
 
-from mitr_pipecat_gateway.auth import DeviceAuthContext
+from pipecat.frames.frames import (
+    InputAudioRawFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection
+
 from mitr_pipecat_gateway import bot, bot_wake_phrase
+from mitr_pipecat_gateway.auth import DeviceAuthContext
 
 
 class WakePhraseConfigTests(unittest.TestCase):
@@ -61,20 +69,18 @@ class WakePhraseConfigTests(unittest.TestCase):
     def test_wake_phrase_strip_handles_hindi_stt_aliases(self):
         os.environ["MITR_GATEWAY_WAKE_PHRASES"] = "hi esp,hey esp,hi reca"
 
-        self.assertEqual(bot_wake_phrase._strip_leading_wake_phrase("हाय ईएसपी"), ("", True))
-        self.assertEqual(
-            bot_wake_phrase._strip_leading_wake_phrase("हाय ईएसपी weekly plan banao"),
-            ("weekly plan banao", True),
-        )
-        self.assertEqual(bot_wake_phrase._strip_leading_wake_phrase("हाय रेका।"), ("", True))
+        aliases = bot_wake_phrase._wake_phrase_aliases()
+
+        self.assertIn("हाय ईएसपी", aliases)
+        self.assertIn("हे ई एस पी", aliases)
+        self.assertIn("हाय रेका", aliases)
 
     def test_wake_phrase_aliases_do_not_enable_unconfigured_devices(self):
         os.environ["MITR_GATEWAY_WAKE_PHRASES"] = "hi reca"
 
-        self.assertEqual(
-            bot_wake_phrase._strip_leading_wake_phrase("हाय ईएसपी weekly plan banao"),
-            ("हाय ईएसपी weekly plan banao", False),
-        )
+        aliases = bot_wake_phrase._wake_phrase_aliases()
+
+        self.assertNotIn("हाय ईएसपी", aliases)
 
     def test_realtime2_session_options_are_explicit(self):
         os.environ["OPENAI_REALTIME_REASONING_EFFORT"] = "low"
@@ -132,6 +138,58 @@ class WakePhraseConfigTests(unittest.TestCase):
 
         self.assertIn("preferred language from hi-IN", prompt)
         self.assertNotIn("{auth.language}", prompt)
+
+
+class WakePhraseRealtimeGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wake_flushes_buffered_audio_and_keeps_forwarding_audio(self):
+        gate = bot_wake_phrase.WakePhraseRealtimeGate(preroll_sec=1.0)
+        pushed = []
+
+        async def capture_push(_self, frame, direction):
+            pushed.append((frame, direction))
+
+        gate.push_frame = MethodType(capture_push, gate)
+        buffered_audio = InputAudioRawFrame(
+            audio=b"\x01\x02" * 100,
+            sample_rate=16000,
+            num_channels=1,
+        )
+        live_audio = InputAudioRawFrame(audio=b"\x03\x04" * 100, sample_rate=16000, num_channels=1)
+
+        await gate.process_frame(buffered_audio, FrameDirection.DOWNSTREAM)
+        self.assertEqual(pushed, [])
+
+        await gate.wake("hi mitr")
+
+        self.assertIsInstance(pushed[0][0], UserStartedSpeakingFrame)
+        self.assertIs(pushed[1][0], buffered_audio)
+        self.assertEqual(pushed[1][1], FrameDirection.DOWNSTREAM)
+
+        await gate.process_frame(live_audio, FrameDirection.DOWNSTREAM)
+        self.assertIs(pushed[-1][0], live_audio)
+        self.assertEqual(pushed[-1][1], FrameDirection.DOWNSTREAM)
+
+    async def test_wake_replays_pending_stop_after_buffered_audio(self):
+        gate = bot_wake_phrase.WakePhraseRealtimeGate(preroll_sec=1.0)
+        pushed = []
+
+        async def capture_push(_self, frame, direction):
+            pushed.append((frame, direction))
+
+        gate.push_frame = MethodType(capture_push, gate)
+        buffered_audio = InputAudioRawFrame(
+            audio=b"\x01\x02" * 100,
+            sample_rate=16000,
+            num_channels=1,
+        )
+
+        await gate.process_frame(buffered_audio, FrameDirection.DOWNSTREAM)
+        await gate.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await gate.wake("hi mitr")
+
+        self.assertIsInstance(pushed[0][0], UserStartedSpeakingFrame)
+        self.assertIs(pushed[1][0], buffered_audio)
+        self.assertIsInstance(pushed[2][0], UserStoppedSpeakingFrame)
 
 
 if __name__ == "__main__":
