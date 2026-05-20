@@ -19,6 +19,26 @@ from pipecat.frames.frames import (
 from pipecat.serializers.base_serializer import FrameSerializer
 
 
+def _float_env(name: str, fallback: float) -> float:
+    try:
+        return float(os.getenv(name, str(fallback)))
+    except ValueError:
+        return fallback
+
+
+def _apply_pcm16_gain(audio: bytes, gain: float) -> bytes:
+    if gain == 1.0:
+        return audio
+
+    output = bytearray(audio)
+    for index in range(0, len(output) - 1, 2):
+        sample = int.from_bytes(output[index:index + 2], "little", signed=True)
+        scaled = round(sample * gain)
+        clipped = max(-32768, min(32767, scaled))
+        output[index:index + 2] = int(clipped).to_bytes(2, "little", signed=True)
+    return bytes(output)
+
+
 class Esp32PCMSerializer(FrameSerializer):
     """Small ESP32 protocol: text JSON for control, binary PCM16 mono for audio."""
 
@@ -29,6 +49,7 @@ class Esp32PCMSerializer(FrameSerializer):
         self._channels = 1
         self._audio_frame_count = 0
         self._output_audio_frame_count = 0
+        self._output_gain = max(0.0, min(1.0, _float_env("ESP32_AUDIO_OUTPUT_GAIN", 1.0)))
 
     async def setup(self, frame: StartFrame):
         await super().setup(frame)
@@ -75,11 +96,12 @@ class Esp32PCMSerializer(FrameSerializer):
             self._output_audio_frame_count += 1
             if self._output_audio_frame_count == 1 or self._output_audio_frame_count % 100 == 0:
                 logger.info(
-                    "Gateway output audio frame #{}: {} bytes",
+                    "Gateway output audio frame #{}: {} bytes gain={}",
                     self._output_audio_frame_count,
                     len(frame.audio),
+                    self._output_gain,
                 )
-            return frame.audio
+            return _apply_pcm16_gain(frame.audio, self._output_gain)
 
         if isinstance(frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)):
             if self.should_ignore_frame(frame):

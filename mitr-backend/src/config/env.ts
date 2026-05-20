@@ -66,8 +66,8 @@ const baseEnvSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_CHAT_MODEL: z.string().default('gpt-4.1-mini'),
-  OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime'),
-  OPENAI_REALTIME_VOICE: z.string().default('alloy'),
+  OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime-2'),
+  OPENAI_REALTIME_VOICE: z.string().default('marin'),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_BASE_URL: z.string().url().default('https://openrouter.ai/api/v1'),
   OPENROUTER_MODEL: z.string().default('openai/gpt-4o-mini'),

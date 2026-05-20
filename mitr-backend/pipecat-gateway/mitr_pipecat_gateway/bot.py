@@ -82,7 +82,7 @@ def _optional_timeout_env(name: str) -> int | None:
 
 
 def _openai_realtime_model() -> str:
-    return os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5").strip()
+    return os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2").strip()
 
 
 def _openai_realtime2_session_extra_fields(model: str) -> dict[str, object]:
@@ -419,7 +419,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
                     ),
                     output=AudioOutput(
                         format=PCMAudioFormat(),
-                        voice=os.getenv("OPENAI_REALTIME_VOICE", "alloy"),
+                        voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                     ),
                 ),
                 max_output_tokens=_openai_realtime_max_output_tokens(),

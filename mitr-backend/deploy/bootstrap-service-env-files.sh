@@ -304,6 +304,7 @@ set_env_value "${gateway_env}" OPENAI_REALTIME_TURN_DETECTION "manual"
 set_from_env "${gateway_env}" OPENAI_REALTIME_INTERRUPT_RESPONSE OPENAI_REALTIME_INTERRUPT_RESPONSE
 set_from_env "${gateway_env}" ESP32_AUDIO_IN_SAMPLE_RATE ESP32_AUDIO_IN_SAMPLE_RATE
 set_from_env "${gateway_env}" ESP32_AUDIO_OUT_SAMPLE_RATE ESP32_AUDIO_OUT_SAMPLE_RATE
+set_from_env "${gateway_env}" ESP32_AUDIO_OUTPUT_GAIN ESP32_AUDIO_OUTPUT_GAIN
 
 reminder_env="${SCRIPT_DIR}/.env.prod.reminder-worker"
 ensure_from_template "${reminder_env}" "${SCRIPT_DIR}/.env.prod.reminder-worker.template" "reminder-worker"

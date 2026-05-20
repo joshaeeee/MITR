@@ -516,7 +516,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
                     ),
                     output=AudioOutput(
                         format=PCMAudioFormat(),
-                        voice=os.getenv("OPENAI_REALTIME_VOICE", "alloy"),
+                        voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                     ),
                 ),
                 max_output_tokens=_openai_realtime_max_output_tokens(),
