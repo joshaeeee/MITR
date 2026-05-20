@@ -5,6 +5,7 @@ import { requireAuth } from '../services/auth/auth-middleware.js';
 import { verifyOAuthIdToken } from '../services/auth/oauth-verifier.js';
 import { logger } from '../lib/logger.js';
 import { createRateLimit, bodyFieldKey } from '../lib/rate-limit.js';
+import { SwiggyMcpService } from '../services/commerce/swiggy-mcp-service.js';
 
 const otpStartSchema = z.object({
   phone: z.string().min(6)
@@ -52,6 +53,7 @@ const escapeHtml = (value: string): string =>
     .replace(/'/g, '&#39;');
 
 export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): void => {
+  const swiggy = new SwiggyMcpService();
   const otpStartLimit = createRateLimit({
     keyPrefix: 'auth:otp-start',
     windowMs: 10 * 60 * 1000,
@@ -179,6 +181,24 @@ export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): voi
     return reply.send({ user: request.auth!.user });
   });
 
+  app.post('/auth/swiggy/start', { preHandler: requireAuth(auth) }, async (request, reply) => {
+    try {
+      const result = await swiggy.startAuthorization(request.auth!.user.id);
+      return reply.send(result);
+    } catch (error) {
+      return reply.status(503).send({ error: (error as Error).message });
+    }
+  });
+
+  app.get('/auth/swiggy/status', { preHandler: requireAuth(auth) }, async (request, reply) => {
+    return reply.send(await swiggy.status(request.auth!.user.id));
+  });
+
+  app.post('/auth/swiggy/logout', { preHandler: requireAuth(auth) }, async (request, reply) => {
+    await swiggy.disconnect(request.auth!.user.id);
+    return reply.send({ ok: true });
+  });
+
   app.get('/auth/swiggy/callback', async (request, reply) => {
     const parsed = swiggyCallbackSchema.safeParse(request.query);
     if (!parsed.success) {
@@ -196,6 +216,23 @@ export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): voi
         .status(400)
         .type('text/html; charset=utf-8')
         .send(`<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${escapeHtml(error)}</p></body></html>`);
+    }
+    if (!code || !state) {
+      return reply
+        .status(400)
+        .type('text/html; charset=utf-8')
+        .send('<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>Missing authorization code or state.</p></body></html>');
+    }
+    try {
+      await swiggy.completeAuthorization({ code, state });
+    } catch (completeError) {
+      logger.warn('Swiggy OAuth callback completion failed', { error: (completeError as Error).message });
+      return reply
+        .status(400)
+        .type('text/html; charset=utf-8')
+        .send(
+          `<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${escapeHtml((completeError as Error).message)}</p></body></html>`
+        );
     }
     return reply
       .status(200)

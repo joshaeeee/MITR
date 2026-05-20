@@ -566,6 +566,52 @@ export const authSessions = pgTable('auth_sessions', {
   userCreatedIdx: index('auth_sessions_user_created_idx').on(table.userId, table.createdAt)
 }));
 
+export const swiggyOAuthStates = pgTable('swiggy_oauth_states', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  stateHash: text('state_hash').notNull(),
+  codeVerifier: text('code_verifier').notNull(),
+  redirectUri: text('redirect_uri').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  stateHashUnique: uniqueIndex('swiggy_oauth_states_state_hash_uq').on(table.stateHash),
+  userCreatedIdx: index('swiggy_oauth_states_user_created_idx').on(table.userId, table.createdAt)
+}));
+
+export const swiggyConnections = pgTable('swiggy_connections', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  accessTokenCiphertext: text('access_token_ciphertext').notNull(),
+  scope: text('scope'),
+  tokenType: text('token_type').default('Bearer').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  status: text('status').$type<'active' | 'expired' | 'revoked'>().default('active').notNull(),
+  lastAuthorizedAt: timestamp('last_authorized_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  userUnique: uniqueIndex('swiggy_connections_user_uq').on(table.userId),
+  userStatusIdx: index('swiggy_connections_user_status_idx').on(table.userId, table.status)
+}));
+
+export const swiggyDeliveryPreferences = pgTable('swiggy_delivery_preferences', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  addressId: text('address_id').notNull(),
+  label: text('label'),
+  displayText: text('display_text'),
+  selectedAt: timestamp('selected_at', { withTimezone: true }).defaultNow().notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  userUnique: uniqueIndex('swiggy_delivery_preferences_user_uq').on(table.userId)
+}));
+
 export const devices = pgTable('devices', {
   id: uuid('id').defaultRandom().primaryKey(),
   deviceId: text('device_id').notNull(),

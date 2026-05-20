@@ -13,6 +13,7 @@ import { createPanchangTool } from './panchang-tools.js';
 import { createReligiousRetrieveTool } from './religious-tools.js';
 import { createStoryRetrieveTool } from './story-tools.js';
 import { createYoutubeMediaTool } from './youtube-tools.js';
+import { createSwiggyTools } from './swiggy-tools.js';
 import { selectMemoryTools } from './memory-tools.js';
 import { selectNudgeTools } from './nudge-tools.js';
 import { selectFlowTools } from './flow-tools.js';
@@ -37,7 +38,8 @@ const createToolDefinitionsV2 = (deps: ToolDeps): AgentToolDefinition[] => {
     ...selectFlowTools(legacySync),
     ...pickTools(legacySync, ['pranayama_guide_get', 'brain_game_get', 'festival_context_get']),
     ...pickTools(legacySync, ['conversation_planner_get', 'prompt_outcome_record', 'medication_response_record']),
-    ...pickTools(legacySync, ['medication_adherence_setup'])
+    ...pickTools(legacySync, ['medication_adherence_setup']),
+    ...createSwiggyTools()
   ];
 
   const asyncDefinitions: AgentToolDefinition[] = [
@@ -63,7 +65,10 @@ export const createToolDefinitions = (deps: ToolDeps): AgentToolDefinition[] => 
     return createToolDefinitionsV2(deps);
   }
 
-  const definitions = createLegacyToolDefinitions(deps, { includeAsyncTools: true, logRegistration: false });
+  const definitions = [
+    ...createLegacyToolDefinitions(deps, { includeAsyncTools: true, logRegistration: false }),
+    ...createSwiggyTools()
+  ];
   logger.info('Agent tools registered', {
     tools: definitions.map((tool) => tool.name),
     runtime: 'legacy'

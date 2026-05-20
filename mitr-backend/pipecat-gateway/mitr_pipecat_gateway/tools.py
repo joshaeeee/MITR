@@ -52,6 +52,9 @@ _DEFAULT_ASYNC_ACK_TOOLS = {
     "web_search",
     "panchang_get",
     "youtube_media_get",
+    "swiggy_get_addresses",
+    "swiggy_select_delivery_address",
+    "swiggy_mcp_call",
 }
 _DEFAULT_SYNC_TOOLS = {
     "memory_get",
@@ -91,6 +94,10 @@ _BACKEND_REQUIRED_TOOLS = {
     "prompt_outcome_record",
     "medication_response_record",
     "medication_adherence_setup",
+    "swiggy_auth_status",
+    "swiggy_get_addresses",
+    "swiggy_select_delivery_address",
+    "swiggy_mcp_call",
 }
 
 
@@ -373,6 +380,40 @@ def _web_search_schema() -> FunctionSchema:
     )
 
 
+def _swiggy_select_delivery_address_schema() -> FunctionSchema:
+    return FunctionSchema(
+        name="swiggy_select_delivery_address",
+        description=(
+            "Remember the Swiggy delivery address selected by the user. Use only after "
+            "swiggy_get_addresses returns saved addresses and the user chooses one."
+        ),
+        properties={
+            "addressId": {"type": "string", "description": "Swiggy addressId returned by swiggy_get_addresses."},
+            "label": {"type": "string", "description": "Optional address label such as Home or Work."},
+            "displayText": {"type": "string", "description": "Voice-safe address summary. Do not include raw coordinates."},
+        },
+        required=["addressId"],
+    )
+
+
+def _swiggy_mcp_call_schema() -> FunctionSchema:
+    return FunctionSchema(
+        name="swiggy_mcp_call",
+        description=(
+            "Call an allowlisted Swiggy MCP tool for food, groceries, or dineout. Resolve and select "
+            "a delivery address first for Food/Instamart. For place_food_order, checkout, book_table, "
+            "or delete_address, call only after explicit user confirmation and set userConfirmed=true."
+        ),
+        properties={
+            "server": {"type": "string", "enum": ["food", "im", "dineout"], "description": "Swiggy MCP server."},
+            "toolName": {"type": "string", "description": "Swiggy MCP tool name, e.g. search_restaurants or search_products."},
+            "toolArguments": {"type": "object", "description": "Arguments for the selected Swiggy MCP tool."},
+            "userConfirmed": {"type": "boolean", "description": "True only after the user confirms the exact final action."},
+        },
+        required=["server", "toolName"],
+    )
+
+
 def build_tools_schema() -> ToolsSchema:
     tools = [
         _tool_schema("memory_add", "Store a useful personal memory from the conversation."),
@@ -412,6 +453,10 @@ def build_tools_schema() -> ToolsSchema:
         _web_search_schema(),
         _tool_schema("panchang_get", "Retrieve panchang context."),
         _tool_schema("youtube_media_get", "Find YouTube media for playback."),
+        _tool_schema("swiggy_auth_status", "Check whether Swiggy is connected for this user."),
+        _tool_schema("swiggy_get_addresses", "Get saved Swiggy delivery addresses. Let the user choose before search/cart operations."),
+        _swiggy_select_delivery_address_schema(),
+        _swiggy_mcp_call_schema(),
     ]
     return ToolsSchema(standard_tools=tools)
 
