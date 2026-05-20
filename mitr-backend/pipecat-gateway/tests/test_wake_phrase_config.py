@@ -82,6 +82,13 @@ class WakePhraseConfigTests(unittest.TestCase):
 
         self.assertNotIn("हाय ईएसपी", aliases)
 
+    def test_unicode_wake_phrase_alias_patterns_stay_aligned_with_phrases(self):
+        strategy = bot_wake_phrase.UnicodeWakePhraseUserTurnStartStrategy(phrases=["hi reca"])
+
+        self.assertEqual(len(strategy._patterns), len(strategy._phrases))
+        alias_index = strategy._phrases.index("हे रेका")
+        self.assertRegex("हे रेका", strategy._patterns[alias_index])
+
     def test_realtime2_session_options_are_explicit(self):
         os.environ["OPENAI_REALTIME_REASONING_EFFORT"] = "low"
         os.environ["OPENAI_REALTIME_TRUNCATION"] = "auto"

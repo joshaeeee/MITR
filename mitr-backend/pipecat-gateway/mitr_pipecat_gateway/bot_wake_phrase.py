@@ -195,7 +195,8 @@ def _wake_phrase_aliases(phrases: list[str] | None = None) -> list[str]:
 class UnicodeWakePhraseUserTurnStartStrategy(WakePhraseUserTurnStartStrategy):
     def __init__(self, *, phrases: list[str], **kwargs):
         super().__init__(phrases=phrases, **kwargs)
-        self._patterns = [_wake_phrase_pattern(phrase) for phrase in _wake_phrase_aliases(phrases)]
+        self._phrases = _wake_phrase_aliases(phrases)
+        self._patterns = [_wake_phrase_pattern(phrase) for phrase in self._phrases]
 
     @staticmethod
     def _strip_punctuation(text: str) -> str:
