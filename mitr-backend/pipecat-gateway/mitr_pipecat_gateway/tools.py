@@ -14,7 +14,7 @@ from fastapi import WebSocket
 from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.frames.frames import FunctionCallResultProperties
+from pipecat.frames.frames import FunctionCallResultProperties, LLMRunFrame
 from pipecat.services.llm_service import FunctionCallParams, LLMService
 
 from .auth import DeviceAuthContext
@@ -25,34 +25,9 @@ _REMINDERS: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _DIARY: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _CONTEXT_CARDS: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _FLOWS: dict[str, dict[str, Any]] = {}
-ToolHook = Callable[[str], Awaitable[None]]
-_DEFAULT_ASYNC_ACK_TOOLS = {
-    "memory_add",
-    "mem0_memory_add",
-    "mem0_memory_update",
-    "mem0_memory_delete",
-    "reminder_create",
-    "reminder_list",
-    "nudge_pending_get",
-    "nudge_mark_listened",
-    "devotional_playlist_get",
-    "daily_briefing_get",
-    "diary_add",
-    "diary_list",
-    "flow_start",
-    "flow_next",
-    "flow_stop",
-    "pranayama_guide_get",
-    "brain_game_get",
-    "festival_context_get",
-    "medication_adherence_setup",
-    "religious_retrieve",
-    "story_retrieve",
-    "news_retrieve",
-    "web_search",
-    "panchang_get",
-    "youtube_media_get",
-}
+ToolStartHook = Callable[[str], Awaitable[None]]
+ToolEndHook = Callable[[str, dict[str, Any] | None], Awaitable[None]]
+_DEFAULT_ASYNC_ACK_TOOLS: set[str] = set()
 _DEFAULT_SYNC_TOOLS = {
     "memory_get",
     "reca_skill_get",
@@ -66,6 +41,10 @@ _DEFAULT_SYNC_TOOLS = {
     "conversation_planner_get",
     "prompt_outcome_record",
     "medication_response_record",
+    "swiggy_auth_status",
+    "swiggy_get_addresses",
+    "swiggy_select_delivery_address",
+    "swiggy_mcp_call",
 }
 _BACKEND_REQUIRED_TOOLS = {
     "memory_add",
@@ -91,6 +70,10 @@ _BACKEND_REQUIRED_TOOLS = {
     "prompt_outcome_record",
     "medication_response_record",
     "medication_adherence_setup",
+    "swiggy_auth_status",
+    "swiggy_get_addresses",
+    "swiggy_select_delivery_address",
+    "swiggy_mcp_call",
 }
 
 
@@ -135,6 +118,10 @@ def _matches_tool_name(name: str, names: set[str]) -> bool:
     return "*" in names or name in names
 
 
+def _is_swiggy_tool(name: str) -> bool:
+    return name.startswith("swiggy_")
+
+
 def _configured_async_ack_tools() -> set[str]:
     value = os.getenv("MITR_GATEWAY_ASYNC_ACK_TOOLS")
     if value is not None:
@@ -160,6 +147,16 @@ def _user_key(auth: DeviceAuthContext) -> str:
     return auth.user_id or auth.elder_id or auth.device_id
 
 
+def _async_start_runs_llm(name: str) -> bool:
+    return not _is_swiggy_tool(name)
+
+
+def _async_followup_delay_sec(name: str) -> float:
+    if _is_swiggy_tool(name):
+        return 0.0
+    return _float_env("MITR_GATEWAY_TOOL_FOLLOWUP_MIN_DELAY_SEC", 1.2)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -172,162 +169,144 @@ def _string_arg(args: dict[str, Any], *names: str) -> str:
     return ""
 
 
+_TOOL_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "memory_add": {"text": {"type": "string", "description": "Fact the user asked to remember."}},
+    "reca_skill_get": {"skillName": {"type": "string", "enum": ["memory_protocol"]}},
+    "mem0_memory_add": {
+        "text": {"type": "string"},
+        "metadata": {"type": "object"},
+        "infer": {"type": "boolean"},
+    },
+    "mem0_memory_search": {
+        "query": {"type": "string"},
+        "filters": {"type": "object"},
+        "limit": {"type": "integer"},
+    },
+    "mem0_memory_list": {"filters": {"type": "object"}, "limit": {"type": "integer"}},
+    "mem0_memory_get": {"memoryId": {"type": "string"}, "memory_id": {"type": "string"}},
+    "mem0_memory_update": {
+        "memoryId": {"type": "string"},
+        "memory_id": {"type": "string"},
+        "text": {"type": "string"},
+        "metadata": {"type": "object"},
+    },
+    "mem0_memory_delete": {"memoryId": {"type": "string"}, "memory_id": {"type": "string"}},
+    "memory_get": {"query": {"type": "string"}, "k": {"type": "integer"}},
+    "context_packet_get": {"triggerType": {"type": "string"}, "includeDebug": {"type": "boolean"}},
+    "context_memory_add": {
+        "memoryType": {"type": "string"},
+        "subject": {"type": "string"},
+        "summary": {"type": "string"},
+        "text": {"type": "string"},
+        "visibility": {"type": "string"},
+        "importance": {"type": "integer"},
+        "confidence": {"type": "integer"},
+        "metadata": {"type": "object"},
+    },
+    "context_card_upsert": {
+        "cardType": {"type": "string"},
+        "subject": {"type": "string"},
+        "summary": {"type": "string"},
+        "dedupeKey": {"type": "string"},
+        "dueAtISO": {"type": "string"},
+        "expiresAtISO": {"type": "string"},
+        "mentionPolicy": {"type": "string"},
+        "importance": {"type": "integer"},
+    },
+    "context_card_outcome_record": {
+        "cardId": {"type": "string"},
+        "eventType": {"type": "string"},
+        "responseText": {"type": "string"},
+    },
+    "reminder_create": {
+        "title": {"type": "string"},
+        "time": {"type": "string"},
+        "datetimeISO": {"type": "string"},
+        "recurrence": {"type": "string"},
+        "locale": {"type": "string"},
+    },
+    "reminder_list": {"status": {"type": "string"}, "limit": {"type": "integer"}},
+    "nudge_pending_get": {"limit": {"type": "integer"}},
+    "nudge_mark_listened": {
+        "nudgeId": {"type": "string"},
+        "nudgeIds": {"type": "array", "items": {"type": "string"}},
+        "nudgeShortId": {"type": "string"},
+        "nudgeShortIds": {"type": "array", "items": {"type": "string"}},
+        "nudgeOrdinal": {"type": "integer"},
+    },
+    "diary_add": {"text": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}},
+    "diary_list": {"limit": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}}},
+    "flow_start": {
+        "flowType": {"type": "string"},
+        "topic": {"type": "string"},
+        "targetDurationSec": {"type": "integer"},
+        "paceMode": {"type": "string"},
+        "resumeIfRunning": {"type": "boolean"},
+        "restart": {"type": "boolean"},
+        "autoLoop": {"type": "boolean"},
+    },
+    "flow_next": {"flowId": {"type": "string"}, "auto": {"type": "boolean"}, "skipToNext": {"type": "boolean"}},
+    "flow_stop": {"flowId": {"type": "string"}, "reason": {"type": "string"}},
+    "pranayama_guide_get": {"minutes": {"type": "integer"}},
+    "brain_game_get": {"type": {"type": "string"}},
+    "festival_context_get": {"city": {"type": "string"}, "date": {"type": "string"}, "language": {"type": "string"}},
+    "conversation_planner_get": {
+        "triggerType": {"type": "string"},
+        "reminderId": {"type": "string"},
+        "reminderTitle": {"type": "string"},
+        "routineKey": {"type": "string"},
+        "routineTitle": {"type": "string"},
+        "recordPrompt": {"type": "boolean"},
+    },
+    "prompt_outcome_record": {
+        "promptHistoryId": {"type": "string"},
+        "promptType": {"type": "string"},
+        "promptKey": {"type": "string"},
+        "responseState": {"type": "string"},
+        "sentiment": {"type": "string"},
+        "responseText": {"type": "string"},
+    },
+    "medication_response_record": {
+        "status": {"type": "string"},
+        "medicine": {"type": "string"},
+        "reminderId": {"type": "string"},
+        "scheduledAt": {"type": "string"},
+        "responseText": {"type": "string"},
+    },
+    "medication_adherence_setup": {
+        "medicine": {"type": "string"},
+        "time": {"type": "string"},
+        "recurrence": {"type": "string"},
+    },
+    "religious_retrieve": {"query": {"type": "string"}, "topic": {"type": "string"}},
+    "story_retrieve": {"query": {"type": "string"}, "topic": {"type": "string"}},
+    "panchang_get": {"date": {"type": "string"}, "city": {"type": "string"}, "language": {"type": "string"}},
+    "youtube_media_get": {
+        "query": {"type": "string"},
+        "topic": {"type": "string"},
+        "preferLive": {"type": "boolean"},
+        "preferLatest": {"type": "boolean"},
+    },
+}
+
+
+_TOOL_REQUIRED_ARGS: dict[str, list[str]] = {
+    "memory_add": ["text"],
+    "reca_skill_get": ["skillName"],
+    "mem0_memory_add": ["text"],
+    "mem0_memory_get": ["memoryId"],
+    "mem0_memory_update": ["memoryId", "text"],
+    "mem0_memory_delete": ["memoryId"],
+    "reminder_create": ["title"],
+}
+
+
 def _tool_schema(name: str, description: str) -> FunctionSchema:
     return FunctionSchema(
         name=name,
         description=description,
-        properties={
-            "query": {"type": "string", "description": "User query or search text."},
-            "text": {"type": "string", "description": "Text content from the user."},
-            "skillName": {"type": "string", "enum": ["memory_protocol"], "description": "Reca runtime skill name."},
-            "memoryId": {"type": "string", "description": "Mem0 memory identifier returned by search/list/get."},
-            "memory_id": {"type": "string", "description": "Mem0 memory identifier returned by search/list/get."},
-            "filters": {"type": "object", "description": "Mem0 metadata filters such as category, status, domain, or record_kind."},
-            "metadata": {"type": "object", "description": "Mem0 metadata such as category, status, domain, record_kind, date, or version."},
-            "infer": {"type": "boolean", "description": "Whether Mem0 should infer/extract facts from raw text. Use false for structured protocol records."},
-            "title": {"type": "string", "description": "Optional title."},
-            "time": {"type": "string", "description": "Requested reminder or schedule time."},
-            "datetimeISO": {"type": "string", "description": "ISO datetime for reminders."},
-            "recurrence": {"type": "string", "description": "Optional recurrence rule or natural recurrence."},
-            "locale": {"type": "string", "description": "Optional locale for date parsing or display."},
-            "language": {"type": "string", "description": "Preferred response/content language."},
-            "action": {"type": "string", "description": "Flow or control action."},
-            "topic": {"type": "string", "description": "Topic requested by the user."},
-            "id": {"type": "string", "description": "Identifier returned by a previous tool call."},
-            "k": {"type": "integer", "description": "Maximum number of retrieval results."},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Memory or diary tags."},
-            "sourceTurnId": {"type": "string", "description": "Optional source turn identifier."},
-            "nudgeId": {"type": "string", "description": "Nudge identifier."},
-            "nudgeIds": {"type": "array", "items": {"type": "string"}, "description": "Nudge identifiers."},
-            "nudgeShortId": {"type": "string", "description": "Short nudge identifier."},
-            "nudgeShortIds": {"type": "array", "items": {"type": "string"}, "description": "Short nudge identifiers."},
-            "nudgeOrdinal": {"type": "integer", "description": "1-based pending nudge ordinal."},
-            "preferLive": {"type": "boolean", "description": "Prefer live media or news."},
-            "preferLatest": {"type": "boolean", "description": "Prefer latest/current media."},
-            "regionHint": {"type": "string", "description": "Optional region hint."},
-            "limit": {"type": "integer", "description": "Maximum number of entries."},
-            "flowType": {"type": "string", "enum": ["satsang", "story", "companion"]},
-            "targetDurationSec": {"type": "integer", "description": "Target guided-flow duration."},
-            "paceMode": {"type": "string", "enum": ["interactive", "continuous"]},
-            "targetShlokaCount": {"type": "integer", "description": "Target shloka count for satsang."},
-            "resumeIfRunning": {"type": "boolean", "description": "Resume existing flow when possible."},
-            "restart": {"type": "boolean", "description": "Restart existing flow."},
-            "autoLoop": {"type": "boolean", "description": "Continue automatically when possible."},
-            "flowId": {"type": "string", "description": "Guided flow identifier."},
-            "auto": {"type": "boolean", "description": "Advance automatically."},
-            "skipToNext": {"type": "boolean", "description": "Skip to the next major item."},
-            "reason": {"type": "string", "description": "Reason for stopping or changing state."},
-            "minutes": {"type": "integer", "description": "Requested guide duration in minutes."},
-            "type": {"type": "string", "description": "Requested brain-game type."},
-            "medicine": {"type": "string", "description": "Medicine name."},
-            "city": {"type": "string", "description": "City for local context."},
-            "date": {"type": "string", "description": "Date for panchang or current context."},
-            "triggerType": {
-                "type": "string",
-                "enum": [
-                    "session_start",
-                    "first_use",
-                    "reminder_fired",
-                    "reminder_acknowledged",
-                    "medication_taken",
-                    "medication_delayed",
-                    "routine_time",
-                    "morning",
-                    "evening",
-                    "caregiver_nudge",
-                    "user_quiet",
-                    "user_requested",
-                    "manual",
-                ],
-                "description": "Why the assistant is planning this proactive turn.",
-            },
-            "reminderId": {"type": "string", "description": "Medication or reminder identifier."},
-            "reminderTitle": {"type": "string", "description": "Human-readable reminder title."},
-            "routineKey": {"type": "string", "description": "Routine anchor key."},
-            "routineTitle": {"type": "string", "description": "Human-readable routine title."},
-            "recordPrompt": {"type": "boolean", "description": "Whether to record this planned prompt."},
-            "promptHistoryId": {"type": "string", "description": "Identifier returned by conversation_planner_get."},
-            "promptType": {"type": "string", "description": "Prompt category for the freshness ledger."},
-            "promptKey": {"type": "string", "description": "Stable prompt key for cooldowns."},
-            "responseState": {
-                "type": "string",
-                "enum": ["accepted", "refused", "ignored", "unclear", "completed"],
-                "description": "How the elder responded to the prompt.",
-            },
-            "sentiment": {
-                "type": "string",
-                "enum": ["positive", "neutral", "negative"],
-                "description": "Optional sentiment of the elder response.",
-            },
-            "status": {
-                "type": "string",
-                "enum": ["taken", "delayed", "refused", "no_response", "unclear"],
-                "description": "Medication reminder response status.",
-            },
-            "visibility": {
-                "type": "string",
-                "enum": ["private", "caregiver_visible", "internal_only"],
-                "description": "Memory visibility policy. Use private by default; caregiver_visible only for care, routines, medication, or safety context.",
-            },
-            "scheduledAt": {"type": "string", "description": "Scheduled medication/reminder datetime."},
-            "responseText": {"type": "string", "description": "Short transcript of the elder response."},
-            "memoryType": {
-                "type": "string",
-                "enum": [
-                    "profile",
-                    "preference",
-                    "routine",
-                    "relationship",
-                    "health_context",
-                    "semantic",
-                    "episodic",
-                    "procedural",
-                    "boundary",
-                ],
-                "description": "Typed memory class for first-party context memory.",
-            },
-            "subject": {"type": "string", "description": "Short memory subject."},
-            "summary": {"type": "string", "description": "Short memory or context-card summary."},
-            "importance": {"type": "integer", "description": "Memory/card importance, 0-100."},
-            "confidence": {"type": "integer", "description": "Memory confidence, 0-100."},
-            "cardId": {"type": "string", "description": "Context card identifier."},
-            "cardType": {
-                "type": "string",
-                "enum": [
-                    "medication_followup",
-                    "reminder_followup",
-                    "event_followup",
-                    "family_nudge",
-                    "routine_checkin",
-                    "preference_learning",
-                    "care_signal",
-                    "content_offer",
-                    "conversation_repair",
-                ],
-                "description": "Context card type.",
-            },
-            "dedupeKey": {"type": "string", "description": "Stable context card dedupe key."},
-            "mentionPolicy": {
-                "type": "string",
-                "enum": [
-                    "immediate",
-                    "first_safe_user_turn",
-                    "after_current_request",
-                    "when_conversational",
-                    "only_if_user_asks",
-                ],
-            },
-            "eventType": {
-                "type": "string",
-                "enum": ["mentioned", "answered", "completed", "dismissed", "ignored", "snoozed", "expired"],
-            },
-            "dueAtISO": {"type": "string", "description": "Context card due time as ISO timestamp."},
-            "expiresAtISO": {"type": "string", "description": "Context card expiry as ISO timestamp."},
-            "maxMentions": {"type": "integer", "description": "Maximum context card mentions."},
-            "cooldownMinutes": {"type": "integer", "description": "Minutes before this context card may be mentioned again."},
-            "includeDebug": {"type": "boolean", "description": "Include context packet debug ids."},
-        },
-        required=[],
+        properties=_TOOL_ARGUMENTS.get(name, {}),
+        required=_TOOL_REQUIRED_ARGS.get(name, []),
     )
 
 
@@ -335,10 +314,16 @@ def _news_retrieve_schema() -> FunctionSchema:
     return FunctionSchema(
         name="news_retrieve",
         description=(
-            "Retrieve current-affairs news using Exa. Always use this for latest/current/today/news/"
-            "headlines/taaza khabar requests before answering. For generic news, use query "
-            "'top news in India today' with freshness='latest'. Summarize ready results with headline, "
-            "source, why it matters, and one concrete detail."
+            "Retrieve current-affairs news using Exa before answering any latest, current, "
+            "today, headlines, or taaza khabar request. Write the query in plain language "
+            "from the user's actual intent; for generic news use query='top news in India "
+            "today' and freshness='latest'. Do not default to local news unless the user "
+            "asks for local/regional news or names a place; if local news is requested "
+            "without a place, ask one short clarification question instead of calling. If "
+            "the result is pending, acknowledge briefly and wait for the ready result. "
+            "When ready, summarize only from tool output with headline, source, why it "
+            "matters, and one concrete detail; collapse duplicate coverage of the same "
+            "story."
         ),
         properties={
             "query": {"type": "string", "description": "Plain-language news query."},
@@ -357,8 +342,13 @@ def _web_search_schema() -> FunctionSchema:
     return FunctionSchema(
         name="web_search",
         description=(
-            "Search the web using Exa for current factual context. Prefer news_retrieve for news briefings; "
-            "use this for non-news current facts, websites, comparisons, and research links."
+            "Search the web using Exa for current factual context, websites, comparisons, "
+            "official pages, recommendations, or research links. Use news_retrieve instead "
+            "for news briefings, headlines, latest/current events, or taaza khabar. Include "
+            "domains only when the user asks for a specific site/source or when official "
+            "sources are required. If results are pending, acknowledge briefly and wait; "
+            "when ready, answer from the returned source links/summaries and do not invent "
+            "missing details."
         ),
         properties={
             "query": {"type": "string", "description": "Plain-language web search query."},
@@ -373,25 +363,198 @@ def _web_search_schema() -> FunctionSchema:
     )
 
 
+def _swiggy_select_delivery_address_schema() -> FunctionSchema:
+    return FunctionSchema(
+        name="swiggy_select_delivery_address",
+        description=(
+            "Remember the Swiggy delivery address selected by the user. Use only after "
+            "swiggy_get_addresses returns saved addresses and the user clearly chooses "
+            "one by label, ordinal, or short description. Pass the exact addressId "
+            "returned by swiggy_get_addresses; never invent or read the raw ID aloud. "
+            "After this succeeds, continue the original Food/Instamart ordering request "
+            "without asking for final order confirmation yet."
+        ),
+        properties={
+            "addressId": {"type": "string", "description": "Swiggy addressId returned by swiggy_get_addresses."},
+            "label": {"type": "string", "description": "Optional address label such as Home or Work."},
+            "displayText": {"type": "string", "description": "Voice-safe address summary. Do not include raw coordinates."},
+        },
+        required=["addressId"],
+    )
+
+
+def _swiggy_mcp_call_schema() -> FunctionSchema:
+    return FunctionSchema(
+        name="swiggy_mcp_call",
+        description=(
+            "Call an allowlisted Swiggy MCP tool for Food, Instamart, or Dineout after "
+            "swiggy_auth_status confirms Swiggy is connected. Choose server=food for "
+            "restaurants/meals/snacks, server=im for groceries/essentials/Instamart, and "
+            "server=dineout for table bookings. For Food/Instamart, a delivery address "
+            "must be selected before search, cart, or checkout. Offer at most three "
+            "voice-friendly options from results and never read raw restaurantId, spinId, "
+            "cart IDs, tokens, or internal codes aloud. For place_food_order, checkout, "
+            "book_table, or delete_address, call only after the user explicitly confirms "
+            "the exact action, total amount, address, and payment method if applicable; "
+            "set userConfirmed=true only after that confirmation. If a final paid action "
+            "fails or times out, check the relevant order/status tool before retrying."
+        ),
+        properties={
+            "server": {"type": "string", "enum": ["food", "im", "dineout"], "description": "Swiggy MCP server."},
+            "toolName": {"type": "string", "description": "Swiggy MCP tool name, e.g. search_restaurants or search_products."},
+            "toolArguments": {"type": "object", "description": "Arguments for the selected Swiggy MCP tool."},
+            "userConfirmed": {"type": "boolean", "description": "True only after the user confirms the exact final action."},
+        },
+        required=["server", "toolName"],
+    )
+
+
 def build_tools_schema() -> ToolsSchema:
     tools = [
-        _tool_schema("memory_add", "Store a useful personal memory from the conversation."),
-        _tool_schema("reca_skill_get", "Load a Reca runtime skill such as memory_protocol."),
-        _tool_schema("mem0_memory_add", "Add a structured Mem0-backed memory in the current Reca user scope. Use for durable plans/documents, logs, summaries, and canvas records."),
-        _tool_schema("mem0_memory_search", "Search Mem0-backed memories in the current Reca user scope."),
-        _tool_schema("mem0_memory_list", "List Mem0-backed memories by metadata filters in the current Reca user scope."),
-        _tool_schema("mem0_memory_get", "Get one Mem0-backed memory by memory ID after scoped search/list."),
-        _tool_schema("mem0_memory_update", "Update one Mem0-backed memory by memory ID."),
-        _tool_schema("mem0_memory_delete", "Delete one Mem0-backed memory by memory ID only on explicit user request."),
-        _tool_schema("memory_get", "Retrieve relevant personal memories."),
-        _tool_schema("context_packet_get", "Retrieve the compact ranked memory/context packet for this turn."),
-        _tool_schema("context_memory_add", "Store typed first-party Reca memory."),
-        _tool_schema("context_card_upsert", "Create or refresh a pending context card/open loop."),
-        _tool_schema("context_card_outcome_record", "Record how a context card mention went."),
-        _tool_schema("reminder_create", "Create a reminder requested by the user."),
-        _tool_schema("reminder_list", "List reminders known for the user."),
-        _tool_schema("nudge_pending_get", "Get pending family nudges for the user."),
-        _tool_schema("nudge_mark_listened", "Mark a nudge as listened to."),
+        _tool_schema(
+            "memory_add",
+            "Store a single personal fact the user has explicitly asked you to remember. "
+            "Explicit remember requests always use this tool, not context_memory_add. "
+            "Call when the user says something like 'yaad rakhna', 'remember this', "
+            "'note kar lo', 'isko save kar lo', or 'bhoolna mat'. Save only the fact "
+            "they asked you to remember. Do not use for structured artifacts like plans "
+            "or routines - those use mem0_memory_add. Do not use for silent relationship "
+            "memory like preferences and habits when the user did not ask you to remember "
+            "them - those use context_memory_add.",
+        ),
+        _tool_schema(
+            "reca_skill_get",
+            "Load a Reca runtime skill that returns instructions for a structured workflow. "
+            "Call with skillName='memory_protocol' before generating any reusable artifact "
+            "for the user - a fitness plan, diet plan, study schedule, routine, budget, "
+            "tracker, or recipe. You must wait for the returned instructions before "
+            "generating the artifact. The returned MD file tells you what to do next, "
+            "including how to save the artifact to Mem0.",
+        ),
+        _tool_schema(
+            "mem0_memory_add",
+            "Save a structured memory to Mem0. Call this immediately after generating any "
+            "reusable artifact (plan, routine, schedule, tracker, budget, recipe). Save "
+            "the full artifact text, not a summary. Use infer=false and set category to "
+            "match the artifact type (fitness_plan, meal_plan, study_plan, etc.). Also "
+            "call this to append a log entry when the user reports progress, completion, "
+            "or a skip - use the corresponding log category (workout_log, food_log, "
+            "study_log). Do not announce the save to the user.",
+        ),
+        _tool_schema(
+            "mem0_memory_search",
+            "Search structured Mem0 memories in the current Reca user scope. Use this "
+            "when the user asks to recall, continue, update, or inspect a saved plan, "
+            "routine, schedule, tracker, budget, recipe, or log and you do not yet know "
+            "the memory ID. Provide a specific query and metadata filters such as category, "
+            "status, domain, object_type, or record_kind when known. Do not use this for "
+            "general conversation context; use memory_get or context_packet_get instead.",
+        ),
+        _tool_schema(
+            "mem0_memory_list",
+            "List structured Mem0 memories by metadata filters in the current Reca user "
+            "scope. Use when browsing a known category/domain before updating a document, "
+            "creating a rollup, or finding the active version of a saved artifact. Keep "
+            "limits small unless the user explicitly asks to see many records.",
+        ),
+        _tool_schema(
+            "mem0_memory_get",
+            "Get one structured Mem0 memory by memory ID after scoped search/list found "
+            "it. Use before updating or quoting a saved artifact so you have the exact "
+            "current content. Do not invent memory IDs.",
+        ),
+        _tool_schema(
+            "mem0_memory_update",
+            "Update one structured Mem0 memory by memory ID. Use for living documents, "
+            "active snapshots, plans, routines, trackers, budgets, recipes, or rollups. "
+            "Do not use for append-only logs unless correcting a mistake; append progress "
+            "or completion logs with mem0_memory_add instead. Save the full updated text "
+            "rather than a terse summary.",
+        ),
+        _tool_schema(
+            "mem0_memory_delete",
+            "Delete one Mem0 memory by memory ID only when the user explicitly asks to "
+            "delete, remove, or forget that specific saved artifact or memory. Search/list "
+            "first if the memory ID is unknown. Do not delete based on vague dissatisfaction "
+            "or inferred preference changes.",
+        ),
+        _tool_schema(
+            "memory_get",
+            "Retrieve relevant personal memories when the user asks what you remember, "
+            "asks to recall a saved detail, or a direct answer depends on explicit saved "
+            "memory. If no memory is returned, say only that you could not confirm it from "
+            "saved memory right now; never claim the user never said it.",
+        ),
+        _tool_schema(
+            "context_packet_get",
+            "Retrieve the compact ranked memory/context packet for this turn. Use before "
+            "assistant-initiated greetings, proactive topics, routine check-ins, missed "
+            "reminder follow-ups, or gently mentioning pending context cards. Do not use "
+            "to answer a direct user request when the current conversation already has "
+            "enough information. Handle mustHandle items first and mention at most one "
+            "mayMention item in a spoken turn.",
+        ),
+        _tool_schema(
+            "context_memory_add",
+            "Silently save durable personal context the user reveals in passing. This is "
+            "a background capture tool: call it even when the user did not ask you to "
+            "remember anything, and continue the spoken conversation naturally without "
+            "announcing the save. Decision rule: if the user reveals a durable "
+            "preference, routine, identity detail, relationship, habit, belief, or "
+            "meaningful interest without explicitly asking you to remember it, call this "
+            "tool before or alongside your normal reply. "
+            "Examples that should call this tool: 'mujhe Krishnamurti ki talks roz "
+            "sunna achcha lagta hai', 'main har subah mandir jata hoon', 'meri beti "
+            "Bangalore mein rehti hai', 'mujhe chai bina chini pasand hai'. Never call "
+            "this when the user says 'yaad rakhna', 'remember this', 'note kar lo', "
+            "'save this', or otherwise explicitly asks you to remember; use memory_add "
+            "instead. Do not call for one-off statements with no personal weight. Do not "
+            "call for plans or artifacts (use mem0_memory_add instead).",
+        ),
+        _tool_schema(
+            "context_card_upsert",
+            "Create or refresh a future conversational open loop such as a doctor visit "
+            "follow-up tomorrow, a pending family callback, or a routine check-in. Use "
+            "only for specific future context that should be remembered and surfaced later, "
+            "not for casual chat or general preferences. Set a stable dedupeKey when the "
+            "same open loop may be refreshed.",
+        ),
+        _tool_schema(
+            "context_card_outcome_record",
+            "Record what happened after a context card was mentioned so Mitr does not "
+            "repeat it awkwardly. Call with eventType='mentioned' when you bring up the "
+            "card, then call again after the user responds with completed, dismissed, "
+            "ignored, snoozed, answered, or another matching outcome. Do not announce this "
+            "recording to the user.",
+        ),
+        _tool_schema(
+            "reminder_create",
+            "Create a schedule reminder or alarm only when the user asks to be reminded "
+            "about medicine, appointments, routines, calls, or time-bound tasks. Ask a "
+            "short clarification if the time/date is missing or ambiguous. Do not use for "
+            "family nudges/messages or for silently inferred follow-ups.",
+        ),
+        _tool_schema(
+            "reminder_list",
+            "List schedule/alarm reminders known for the current user. Use when the user "
+            "asks what reminders they have, whether a reminder exists, or wants to manage "
+            "reminders. Not for retrieving family messages or context cards.",
+        ),
+        _tool_schema(
+            "nudge_pending_get",
+            "Get unheard family nudges/messages for the user in playback order: urgent, "
+            "important, gentle, then queue order. Use before handling family nudges or "
+            "starting deeper proactive usage, not during ordinary chat. Handle one nudge "
+            "at a time and use the returned nudgeId/nudgeShortId/nudgeOrdinal for follow-up "
+            "calls.",
+        ),
+        _tool_schema(
+            "nudge_mark_listened",
+            "Mark only the family nudge(s) just played or read as listened. Use the ID, "
+            "short ID, or ordinal returned by nudge_pending_get; omit args only when you "
+            "intentionally want the first pending nudge auto-selected. For voice nudges, "
+            "respect returned playback fields and do not mark unrelated pending nudges.",
+        ),
         _tool_schema("devotional_playlist_get", "Suggest a devotional playlist."),
         _tool_schema("daily_briefing_get", "Provide a short daily briefing."),
         _tool_schema("diary_add", "Add a diary entry."),
@@ -402,16 +565,70 @@ def build_tools_schema() -> ToolsSchema:
         _tool_schema("pranayama_guide_get", "Provide a short pranayama guide."),
         _tool_schema("brain_game_get", "Provide a simple voice-friendly brain game."),
         _tool_schema("festival_context_get", "Provide concise festival context."),
-        _tool_schema("conversation_planner_get", "Plan the next elder-aware proactive conversation move."),
-        _tool_schema("prompt_outcome_record", "Record the elder response to a planned proactive prompt."),
-        _tool_schema("medication_response_record", "Record an elder medication reminder response."),
-        _tool_schema("medication_adherence_setup", "Capture a medication adherence setup request."),
+        _tool_schema(
+            "conversation_planner_get",
+            "Plan the next elder-aware proactive conversation move. Use before proactive "
+            "greetings, routine check-ins, reminder follow-ups, family bridge prompts, "
+            "or assistant-initiated questions that were not already determined by "
+            "context_packet_get. Treat returned promptSeed, allowedQuestionCount, "
+            "followupPolicy, and constraints as planning guidance, then speak naturally "
+            "instead of reading it as a script.",
+        ),
+        _tool_schema(
+            "prompt_outcome_record",
+            "Record the elder's response to a planned proactive prompt. Call after the "
+            "user responds to a prompt from conversation_planner_get, using the returned "
+            "promptHistoryId and the closest responseState. Do not call for ordinary "
+            "user-initiated conversation.",
+        ),
+        _tool_schema(
+            "medication_response_record",
+            "Record how the elder responded to a medication reminder or medication "
+            "check-in before continuing the conversation. Decision rule: when the "
+            "previous assistant turn asked about a medicine/reminder, or the user says "
+            "they took, skipped, refused, delayed, forgot, or are unsure about a medicine "
+            "dose, call this tool even if reminderId is unavailable. Examples that should "
+            "call this tool: 'haan, maine BP ki dawai le li', 'abhi nahi li, thodi der "
+            "mein lunga', 'aaj skip kar di', 'pata nahi li thi ya nahi'. Use "
+            "status=taken, delayed, refused, no_response, or unclear based on what the "
+            "user said. Keep responseText short and factual. Do not diagnose or add "
+            "medical interpretation.",
+        ),
+        _tool_schema(
+            "medication_adherence_setup",
+            "Capture a medication adherence setup request when the user wants recurring "
+            "medicine reminders or medication tracking configured. Use only for setup or "
+            "configuration intent, not for recording a single reminder response; use "
+            "medication_response_record for that.",
+        ),
         _tool_schema("religious_retrieve", "Retrieve religious context for a question."),
         _tool_schema("story_retrieve", "Retrieve a suitable story."),
         _news_retrieve_schema(),
         _web_search_schema(),
         _tool_schema("panchang_get", "Retrieve panchang context."),
         _tool_schema("youtube_media_get", "Find YouTube media for playback."),
+        _tool_schema(
+            "swiggy_auth_status",
+            "Check whether Swiggy is connected for this user. Call this silently before "
+            "any Swiggy Food, Instamart, Dineout, cart, checkout, address, or order "
+            "tracking action. If connected=false, briefly tell the user Swiggy must be "
+            "connected in the Mitr app and do not ask for OTPs, passwords, or tokens by "
+            "voice. If connected=true but selectedAddress is missing for Food/Instamart, "
+            "call swiggy_get_addresses next without speaking. If connected=true and "
+            "selectedAddress is present, call the next Swiggy tool when the original "
+            "request has enough details; otherwise ask one short clarification question.",
+        ),
+        _tool_schema(
+            "swiggy_get_addresses",
+            "Get saved Swiggy delivery addresses for Food and Instamart. Call after "
+            "swiggy_auth_status when no selected delivery address is available, before "
+            "search/cart/checkout, or when the user changes delivery location. Present at "
+            "most three voice-safe labels or short summaries and ask the user to choose "
+            "one. If there are no usable addresses, tell the user to add or select an "
+            "address in Swiggy or the Mitr app.",
+        ),
+        _swiggy_select_delivery_address_schema(),
+        _swiggy_mcp_call_schema(),
     ]
     return ToolsSchema(standard_tools=tools)
 
@@ -447,25 +664,215 @@ def _started_tool_result(name: str, args: dict[str, Any], auth: DeviceAuthContex
     }
 
 
+def _swiggy_inner_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload = result.get("result")
+    if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+        return payload["result"]
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _swiggy_finished_context(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    inner = _swiggy_inner_result(result)
+    context: dict[str, Any] = {
+        "tool": name,
+        "mustRespond": True,
+        "status": inner.get("status") or result.get("status"),
+    }
+
+    if name == "swiggy_auth_status":
+        auth_result = result.get("result") if isinstance(result.get("result"), dict) else result
+        selected_address = auth_result.get("selectedAddress") if isinstance(auth_result, dict) else None
+        connected = bool(auth_result.get("connected")) if isinstance(auth_result, dict) else False
+        if isinstance(auth_result, dict) and connected and not selected_address:
+            next_action = "call_swiggy_get_addresses"
+        elif connected and selected_address:
+            next_action = "continue_original_ordering_request_or_ask_missing_details"
+        else:
+            next_action = "explain_auth_status"
+        context.update(
+            {
+                "connected": connected,
+                "selectedAddress": selected_address,
+                "nextAction": next_action,
+                "nextTool": "swiggy_get_addresses" if next_action == "call_swiggy_get_addresses" else None,
+                "speakToUser": next_action != "call_swiggy_get_addresses",
+            }
+        )
+        return context
+
+    if name == "swiggy_get_addresses":
+        addresses = inner.get("addresses") if isinstance(inner.get("addresses"), list) else []
+        has_addresses = len(addresses) > 0
+        context.update(
+            {
+                "addresses": addresses,
+                "addressCount": len(addresses),
+                "nextAction": "ask_user_to_choose_address" if has_addresses else "ask_user_to_add_or_select_address",
+                "nextTool": None,
+                "speakToUser": True,
+            }
+        )
+        return context
+
+    if name == "swiggy_select_delivery_address":
+        context.update(
+            {
+                "selectedAddress": result.get("result") if isinstance(result.get("result"), dict) else inner,
+                "nextAction": "continue_original_ordering_request",
+                "nextTool": None,
+                "speakToUser": False,
+            }
+        )
+        return context
+
+    if name == "swiggy_mcp_call":
+        for key in (
+            "restaurants",
+            "items",
+            "cart",
+            "orders",
+            "order",
+            "booking",
+            "coupons",
+            "locations",
+            "slots",
+        ):
+            value = inner.get(key)
+            if value is not None:
+                context[key] = value
+        context["nextAction"] = "present_options_or_request_confirmation"
+        context["nextTool"] = None
+        context["speakToUser"] = True
+        return context
+
+    context["nextAction"] = "respond_with_next_step"
+    context["nextTool"] = None
+    context["speakToUser"] = True
+    return context
+
+
+def _swiggy_finished_message(name: str, result: dict[str, Any]) -> str:
+    context = _swiggy_finished_context(name, result)
+
+    if name == "swiggy_auth_status":
+        if context.get("connected") and context.get("nextAction") == "call_swiggy_get_addresses":
+            return (
+                "Swiggy auth is active but no delivery address is selected. "
+                "Do not speak to the user yet. Do not ask for order confirmation. "
+                "Do not say confirmation is missing. Immediately call swiggy_get_addresses now."
+            )
+        if context.get("connected"):
+            return (
+                "Swiggy auth is active and a delivery address is selected. If the original user "
+                "request has enough details to order, search, manage a cart, track an order, or "
+                "book Dineout, immediately call the next Swiggy tool for that request. If required "
+                "details are missing, ask one short clarification question. Only if the user's "
+                "entire request was to check Swiggy connection status, answer briefly. Do not ask "
+                "for final order confirmation until a cart/action and amount are ready."
+            )
+        return (
+            "Swiggy is not connected or the session expired. Tell the user briefly to connect Swiggy "
+            "in the Mitr app. Do not ask for OTPs, passwords, tokens, or order confirmation."
+        )
+
+    if name == "swiggy_get_addresses":
+        if int(context.get("addressCount") or 0) > 0:
+            return (
+                "Swiggy returned saved delivery addresses. Read the available address labels or short "
+                "summaries and ask the user to choose one. Do not ask for order confirmation yet."
+            )
+        return (
+            "Swiggy returned no usable saved delivery addresses. Tell the user to add or select an "
+            "address in Swiggy or the Mitr app. Do not ask for order confirmation."
+        )
+
+    if name == "swiggy_select_delivery_address":
+        return (
+            "The user-selected Swiggy address was saved. Continue the original ordering request now. "
+            "Search or manage the cart as needed. Do not ask for final order confirmation until a "
+            "specific cart/action and amount are ready."
+        )
+
+    if name == "swiggy_mcp_call":
+        return (
+            "The Swiggy MCP result is ready. Present matching restaurants/items, summarize cart/order "
+            "status, or ask for final confirmation only if the next action is checkout, place_food_order, "
+            "book_table, or delete_address with the exact amount/action/address ready. Never stay silent."
+        )
+
+    return "The Swiggy tool result is ready. Continue the user's request with the next concrete step."
+
+
 def _finished_tool_result(
     name: str,
     args: dict[str, Any],
     auth: DeviceAuthContext,
     result: dict[str, Any],
 ) -> dict[str, Any]:
+    message = (
+        "The async tool result is ready. Answer the user's earlier request now from this result. "
+        "If ok is true, confirm the completed action. If ok is false, say briefly that it could not be completed."
+    )
+    if _is_swiggy_tool(name):
+        message = _swiggy_finished_message(name, result)
     return {
         "ok": bool(result.get("ok", False)),
         "tool": name,
         "status": "finished",
         "acknowledgementOnly": False,
         "language": auth.language,
-        "message": (
-            "The async tool result is ready. Answer the user's earlier request now from this result. "
-            "If ok is true, confirm the completed action. If ok is false, say briefly that it could not be completed."
-        ),
+        "message": message,
         "request": args,
+        **({"swiggy": _swiggy_finished_context(name, result)} if _is_swiggy_tool(name) else {}),
         "result": result,
     }
+
+
+def _sync_tool_result(
+    name: str,
+    args: dict[str, Any],
+    auth: DeviceAuthContext,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    if name == "reca_skill_get":
+        return {
+            "ok": bool(result.get("ok", False)),
+            "tool": name,
+            "status": "finished",
+            "acknowledgementOnly": False,
+            "language": auth.language,
+            "message": (
+                "The requested Reca skill instructions are loaded. Follow the returned "
+                "instructions now and generate the user's requested artifact in this turn. "
+                "Do not stop after loading the skill. If the skill says to save the artifact "
+                "after generation, call the appropriate memory tool after generating it."
+            ),
+            "request": args,
+            "result": result,
+        }
+    if _is_swiggy_tool(name):
+        return _finished_tool_result(name, args, auth, result)
+    return result
+
+
+def _finished_tool_result_properties(
+    name: str,
+    params: FunctionCallParams | None = None,
+) -> FunctionCallResultProperties | None:
+    llm = getattr(params, "llm", None)
+    if llm is None:
+        return FunctionCallResultProperties(run_llm=True)
+
+    async def run_after_context_update() -> None:
+        logger.info("Triggering LLM run after tool result context update: {}", name)
+        await llm.push_frame(LLMRunFrame())
+
+    return FunctionCallResultProperties(
+        run_llm=False,
+        on_context_updated=run_after_context_update,
+    )
 
 
 async def _execute_backend_tool(
@@ -792,12 +1199,13 @@ def register_mitr_tools(
     auth: DeviceAuthContext,
     websocket: WebSocket | None,
     *,
-    on_tool_start: ToolHook | None = None,
-    on_tool_end: ToolHook | None = None,
+    on_tool_start: ToolStartHook | None = None,
+    on_tool_end: ToolEndHook | None = None,
 ):
     async def handler(params: FunctionCallParams):
         args = dict(params.arguments or {})
         name = params.function_name
+        tool_end_result: dict[str, Any] | None = None
         logger.info("Pipecat tool call started: {} arg_keys={}", name, sorted(args.keys()))
         should_async_ack = _tool_execution_policy(name).async_ack
         if on_tool_start:
@@ -805,15 +1213,25 @@ def register_mitr_tools(
         try:
             await _send_tool_event(websocket, name, "start", args)
             if should_async_ack:
-                logger.info("Pipecat async tool call acknowledging start: {}", name)
-                await params.result_callback(
-                    _started_tool_result(name, args, auth),
-                    properties=FunctionCallResultProperties(is_final=False, run_llm=True),
-                )
-                min_delay = _float_env("MITR_GATEWAY_TOOL_FOLLOWUP_MIN_DELAY_SEC", 1.2)
+                if _async_start_runs_llm(name):
+                    logger.info("Pipecat async tool call acknowledging start: {}", name)
+                    await params.result_callback(
+                        _started_tool_result(name, args, auth),
+                        properties=FunctionCallResultProperties(
+                            is_final=False,
+                            run_llm=True,
+                        ),
+                    )
+                else:
+                    logger.info(
+                        "Pipecat async tool call running without intermediate model callback: {}",
+                        name,
+                    )
+                min_delay = _async_followup_delay_sec(name)
                 if min_delay > 0:
                     await asyncio.sleep(min_delay)
                 result = await _execute_tool(name, args, auth)
+                tool_end_result = result
                 logger.info("Pipecat async tool call completed: {} ok={}", name, result.get("ok"))
                 await _send_tool_event(websocket, name, "end", result)
                 await params.result_callback(
@@ -823,13 +1241,19 @@ def register_mitr_tools(
                 return
 
             result = await _execute_tool(name, args, auth)
+            tool_end_result = result
             logger.info("Pipecat tool call completed: {} ok={}", name, result.get("ok"))
             await _send_tool_event(websocket, name, "end", result)
-            await params.result_callback(result)
+            callback_result = _sync_tool_result(name, args, auth, result)
+            await params.result_callback(
+                callback_result,
+                properties=_finished_tool_result_properties(name, params),
+            )
         except asyncio.CancelledError:
             raise
         except Exception as error:
             payload = {"ok": False, "error": str(error)}
+            tool_end_result = payload
             logger.warning("Pipecat tool call failed: {} error={}", name, str(error))
             await _send_tool_event(websocket, name, "error", payload)
             if should_async_ack:
@@ -838,10 +1262,14 @@ def register_mitr_tools(
                     properties=FunctionCallResultProperties(run_llm=True),
                 )
             else:
-                await params.result_callback(payload)
+                callback_result = _sync_tool_result(name, args, auth, payload)
+                await params.result_callback(
+                    callback_result,
+                    properties=_finished_tool_result_properties(name, params),
+                )
         finally:
             if on_tool_end:
-                await on_tool_end(name)
+                await on_tool_end(name, tool_end_result)
 
     timeout_sec = _int_env("MITR_GATEWAY_TOOL_TIMEOUT_SEC", 65)
     for schema in build_tools_schema().standard_tools:

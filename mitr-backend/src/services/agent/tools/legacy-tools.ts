@@ -789,7 +789,7 @@ export const createLegacyToolDefinitions = (
   const memoryAdd: AgentToolDefinition = {
     name: 'memory_add',
     description:
-      'Store explicit long-term user memory for future recall. Use when the user explicitly asks you to remember a fact, preference, or context. Do not use for generated reusable artifacts such as plans, routines, trackers, or study schedules; use reca_skill_get(memory_protocol) and mem0_memory_* so the full artifact is saved. Passive behavior capture should use context_memory_add. Never claim you remembered it unless this tool was called successfully in the same turn.',
+      "Store a single personal fact the user has explicitly asked you to remember. Explicit remember requests always use this tool, not context_memory_add. Call when the user says something like 'yaad rakhna', 'remember this', 'note kar lo', 'isko save kar lo', or 'bhoolna mat'. Save only the fact they asked you to remember. Do not use for structured artifacts like plans or routines - those use mem0_memory_add. Do not use for silent relationship memory like preferences and habits when the user did not ask you to remember them - those use context_memory_add.",
     parameters: z.object({
       text: z.string(),
       tags: z.array(z.string()).optional(),
@@ -895,7 +895,7 @@ export const createLegacyToolDefinitions = (
   const recaSkillGet: AgentToolDefinition = {
     name: 'reca_skill_get',
     description:
-      'Load a Reca runtime skill markdown file. Use memory_protocol before using Mem0 as a flexible memory layer for plans, logs, summaries, tracking, or custom user systems.',
+      "Load a Reca runtime skill that returns instructions for a structured workflow. Call with skillName='memory_protocol' before generating any reusable artifact for the user - a fitness plan, diet plan, study schedule, routine, budget, tracker, or recipe. You must wait for the returned instructions before generating the artifact. The returned MD file tells you what to do next, including how to save the artifact to Mem0.",
     parameters: z.object({
       skillName: z.enum(['memory_protocol'])
     }),
@@ -911,7 +911,7 @@ export const createLegacyToolDefinitions = (
   const mem0MemoryAdd: AgentToolDefinition = {
     name: 'mem0_memory_add',
     description:
-      'Add a Mem0-backed memory directly using Reca user scope. Use for structured Mem0 protocol documents, full generated plans, logs, summaries, and facts. Prefer infer=false when text is already structured.',
+      'Save a structured memory to Mem0. Call this immediately after generating any reusable artifact (plan, routine, schedule, tracker, budget, recipe). Save the full artifact text, not a summary. Use infer=false and set category to match the artifact type (fitness_plan, meal_plan, study_plan, etc.). Also call this to append a log entry when the user reports progress, completion, or a skip - use the corresponding log category (workout_log, food_log, study_log). Do not announce the save to the user.',
     parameters: z.object({
       text: z.string().min(1),
       metadata: z.record(z.unknown()).optional(),
@@ -941,7 +941,7 @@ export const createLegacyToolDefinitions = (
   const mem0MemorySearch: AgentToolDefinition = {
     name: 'mem0_memory_search',
     description:
-      'Search Mem0-backed memories in the current Reca user scope. Use query plus metadata filters such as category, status, domain, object_type, or record_kind.',
+      'Search structured Mem0 memories in the current Reca user scope. Use this when the user asks to recall, continue, update, or inspect a saved plan, routine, schedule, tracker, budget, recipe, or log and you do not yet know the memory ID. Provide a specific query and metadata filters such as category, status, domain, object_type, or record_kind when known. Do not use this for general conversation context; use memory_get or context_packet_get instead.',
     parameters: z.object({
       query: z.string().min(1),
       filters: z.record(z.unknown()).optional(),
@@ -963,7 +963,7 @@ export const createLegacyToolDefinitions = (
   const mem0MemoryList: AgentToolDefinition = {
     name: 'mem0_memory_list',
     description:
-      'List Mem0-backed memories in the current Reca user scope by metadata filters. Use when exact domain/category browsing is needed before update or rollup.',
+      'List structured Mem0 memories by metadata filters in the current Reca user scope. Use when browsing a known category/domain before updating a document, creating a rollup, or finding the active version of a saved artifact. Keep limits small unless the user explicitly asks to see many records.',
     parameters: z.object({
       filters: z.record(z.unknown()).optional(),
       limit: z.number().int().min(1).max(100).optional(),
@@ -984,7 +984,8 @@ export const createLegacyToolDefinitions = (
 
   const mem0MemoryGet: AgentToolDefinition = {
     name: 'mem0_memory_get',
-    description: 'Get one Mem0-backed memory by memory ID after it has been found through scoped search or list.',
+    description:
+      'Get one structured Mem0 memory by memory ID after scoped search/list found it. Use before updating or quoting a saved artifact so you have the exact current content. Do not invent memory IDs.',
     parameters: z.object({
       memoryId: optionalStringArg(),
       memory_id: optionalStringArg()
@@ -1007,7 +1008,7 @@ export const createLegacyToolDefinitions = (
   const mem0MemoryUpdate: AgentToolDefinition = {
     name: 'mem0_memory_update',
     description:
-      'Update one Mem0-backed memory by memory ID. Use for documents, active snapshots, and rollups; do not use for append-only logs unless correcting a mistake.',
+      'Update one structured Mem0 memory by memory ID. Use for living documents, active snapshots, plans, routines, trackers, budgets, recipes, or rollups. Do not use for append-only logs unless correcting a mistake; append progress or completion logs with mem0_memory_add instead. Save the full updated text rather than a terse summary.',
     parameters: z.object({
       memoryId: optionalStringArg(),
       memory_id: optionalStringArg(),
@@ -1034,7 +1035,7 @@ export const createLegacyToolDefinitions = (
   const mem0MemoryDelete: AgentToolDefinition = {
     name: 'mem0_memory_delete',
     description:
-      'Delete one Mem0-backed memory by memory ID. Use only when the user explicitly asks to delete/forget a specific memory.',
+      'Delete one Mem0 memory by memory ID only when the user explicitly asks to delete, remove, or forget that specific saved artifact or memory. Search/list first if the memory ID is unknown. Do not delete based on vague dissatisfaction or inferred preference changes.',
     parameters: z.object({
       memoryId: optionalStringArg(),
       memory_id: optionalStringArg()
@@ -1054,7 +1055,7 @@ export const createLegacyToolDefinitions = (
   const memoryGet: AgentToolDefinition = {
     name: 'memory_get',
     description:
-      'Search long-term memories relevant to user query. If memories is empty or memoryAvailable is false, do not claim the user never said it; say only that you could not confirm it from saved memory right now.',
+      'Retrieve relevant personal memories when the user asks what you remember, asks to recall a saved detail, or a direct answer depends on explicit saved memory. If no memory is returned, say only that you could not confirm it from saved memory right now; never claim the user never said it.',
     parameters: z.object({
       query: z.string(),
       k: z.number().int().min(1).max(20).optional()
@@ -1096,7 +1097,7 @@ export const createLegacyToolDefinitions = (
   const contextPacketGet: AgentToolDefinition = {
     name: 'context_packet_get',
     description:
-      'Get the compact ranked memory/context packet for this turn. Use before proactive greetings, after missed reminders, before sliding in pending follow-ups, and before any assistant-initiated topic.',
+      'Retrieve the compact ranked memory/context packet for this turn. Use before assistant-initiated greetings, proactive topics, routine check-ins, missed reminder follow-ups, or gently mentioning pending context cards. Do not use to answer a direct user request when the current conversation already has enough information. Handle mustHandle items first and mention at most one mayMention item in a spoken turn.',
     parameters: z.object({
       triggerType: conversationTriggerSchema.nullish(),
       includeDebug: z.boolean().nullish()
@@ -1150,7 +1151,7 @@ export const createLegacyToolDefinitions = (
   const contextMemoryAdd: AgentToolDefinition = {
     name: 'context_memory_add',
     description:
-      'Store typed Reca memory in Mem0 with a first-party Postgres policy registry row. Use silently for durable preferences, routines, relationships, boundaries, behavior patterns, and event memories that should shape future context packets.',
+      "Silently save durable personal context the user reveals in passing. This is a background capture tool: call it even when the user did not ask you to remember anything, and continue the spoken conversation naturally without announcing the save. Decision rule: if the user reveals a durable preference, routine, identity detail, relationship, habit, belief, or meaningful interest without explicitly asking you to remember it, call this tool before or alongside your normal reply. Examples that should call this tool: 'mujhe Krishnamurti ki talks roz sunna achcha lagta hai', 'main har subah mandir jata hoon', 'meri beti Bangalore mein rehti hai', 'mujhe chai bina chini pasand hai'. Never call this when the user says 'yaad rakhna', 'remember this', 'note kar lo', 'save this', or otherwise explicitly asks you to remember; use memory_add instead. Do not call for one-off statements with no personal weight. Do not call for plans or artifacts (use mem0_memory_add instead).",
     parameters: z.object({
       memoryType: memoryTypeSchema,
       subject: z.string(),
@@ -1246,7 +1247,7 @@ export const createLegacyToolDefinitions = (
   const contextCardUpsert: AgentToolDefinition = {
     name: 'context_card_upsert',
     description:
-      'Create or refresh a future conversational context card/open loop, such as a doctor visit follow-up tomorrow or a pending routine check-in. Use only for specific future context, not casual chat.',
+      'Create or refresh a future conversational open loop such as a doctor visit follow-up tomorrow, a pending family callback, or a routine check-in. Use only for specific future context that should be remembered and surfaced later, not for casual chat or general preferences. Set a stable dedupeKey when the same open loop may be refreshed.',
     parameters: z.object({
       cardType: contextCardTypeSchema,
       dedupeKey: optionalStringArg(),
@@ -1280,7 +1281,7 @@ export const createLegacyToolDefinitions = (
   const contextCardOutcomeRecord: AgentToolDefinition = {
     name: 'context_card_outcome_record',
     description:
-      'Record what happened after Reca used a context card, so future context stays fresh and does not repeat awkwardly.',
+      "Record what happened after a context card was mentioned so Mitr does not repeat it awkwardly. Call with eventType='mentioned' when you bring up the card, then call again after the user responds with completed, dismissed, ignored, snoozed, answered, or another matching outcome. Do not announce this recording to the user.",
     parameters: z.object({
       cardId: optionalStringArg(),
       dedupeKey: optionalStringArg(),
@@ -1309,7 +1310,7 @@ export const createLegacyToolDefinitions = (
   const reminderCreate: AgentToolDefinition = {
     name: 'reminder_create',
     description:
-      'Create alarm/reminder items for medicine, appointments, routines, or schedule tasks only. Do not use this for family nudges/messages.',
+      'Create a schedule reminder or alarm only when the user asks to be reminded about medicine, appointments, routines, calls, or time-bound tasks. Ask a short clarification if the time/date is missing or ambiguous. Do not use for family nudges/messages or for silently inferred follow-ups.',
     parameters: z.object({
       title: z.string(),
       datetimeISO: z.string(),
@@ -1333,7 +1334,8 @@ export const createLegacyToolDefinitions = (
 
   const reminderList: AgentToolDefinition = {
     name: 'reminder_list',
-    description: 'List schedule/alarm reminders for the current user. Not for family message retrieval.',
+    description:
+      'List schedule/alarm reminders known for the current user. Use when the user asks what reminders they have, whether a reminder exists, or wants to manage reminders. Not for retrieving family messages or context cards.',
     parameters: z.object({}),
     timeoutMs: 1000,
     execute: async (_input, context) => {
@@ -1345,7 +1347,7 @@ export const createLegacyToolDefinitions = (
   const nudgePendingGet: AgentToolDefinition = {
     name: 'nudge_pending_get',
     description:
-      'Get unheard family nudges/messages in playback order: urgent > important > gentle, then queue order. Call once at new session start before deep tools. Returns firstNudge, pendingCount, and both nudgeId+nudgeShortId.',
+      'Get unheard family nudges/messages for the user in playback order: urgent, important, gentle, then queue order. Use before handling family nudges or starting deeper proactive usage, not during ordinary chat. Handle one nudge at a time and use the returned nudgeId/nudgeShortId/nudgeOrdinal for follow-up calls.',
     parameters: z.object({}),
     timeoutMs: 3000,
     execute: async (_input, context) => {
@@ -1375,7 +1377,7 @@ export const createLegacyToolDefinitions = (
   const nudgeMarkListened: AgentToolDefinition = {
     name: 'nudge_mark_listened',
     description:
-      'Mark only the nudge(s) just played/read as listened and return payload for conversation. Accepts full IDs, short IDs, or nudgeOrdinal from nudge_pending_get; omit args to auto-select first pending. For voice nudges, response may include pendingVoiceAck + voiceUrl for playback flow.',
+      'Mark only the family nudge(s) just played or read as listened. Use the ID, short ID, or ordinal returned by nudge_pending_get; omit args only when you intentionally want the first pending nudge auto-selected. For voice nudges, respect returned playback fields and do not mark unrelated pending nudges.',
     parameters: z.object({
       nudgeId: z.preprocess((value) => (value == null ? undefined : value), z.string().optional()),
       nudgeIds: z.preprocess(
@@ -1525,7 +1527,7 @@ export const createLegacyToolDefinitions = (
   const newsRetrieve: AgentToolDefinition = {
     name: 'news_retrieve',
     description:
-      'Retrieve current-affairs news (regional or global). The agent must write the query in plain language based on user intent; do not rely on a canned wrapper. If the user asks for generic news with no place or topic, use an India-wide query such as "top news in India today". Do not default to local news unless the user explicitly asks for local/regional news or names a place. If local news is requested and a place is known, include that place directly in the query text, for example "latest local news in Jaipur, Rajasthan". If local news is requested but the place is missing, ask one short clarification question first. Use freshness=latest for today/latest requests. For multi-part questions (for example two different conflicts), make multiple focused calls if needed. If result is pending, acknowledge briefly and wait for follow-up data; do not ask unrelated "anything else" prompts. When ready, summarize with headline + source + why it matters + one concrete detail, and collapse near-duplicate coverage of the same story into a single update.',
+      'Retrieve current-affairs news before answering any latest, current, today, headlines, or taaza khabar request. Write the query in plain language from the user intent; for generic news use an India-wide query such as "top news in India today" with freshness=latest. Do not default to local news unless the user asks for local/regional news or names a place; if local news is requested without a place, ask one short clarification question before calling. For multi-part questions, make multiple focused calls if needed. If result is pending, acknowledge briefly and wait for follow-up data; do not ask unrelated "anything else" prompts. When ready, summarize only from tool output with headline, source, why it matters, and one concrete detail; collapse duplicate coverage of the same story.',
     parameters: z.object({
       query: z.string(),
       freshness: z.enum(['latest', 'recent', 'general']).nullish(),
@@ -1649,7 +1651,7 @@ export const createLegacyToolDefinitions = (
   const webSearch: AgentToolDefinition = {
     name: 'web_search',
     description:
-      'General internet search for facts/websites/comparisons/research links. Prefer this for broad web lookups; use news_retrieve for news briefings. Returns ready|pending with source links/summaries.',
+      'Search the web for current factual context, websites, comparisons, official pages, recommendations, or research links. Use news_retrieve instead for news briefings, headlines, latest/current events, or taaza khabar. Include domains only when the user asks for a specific site/source or official sources are required. If results are pending, acknowledge briefly and wait; when ready, answer from returned source links/summaries and do not invent missing details.',
     parameters: z.object({
       query: z.string(),
       numResults: z.number().int().min(1).max(8).nullish(),
@@ -2433,7 +2435,7 @@ export const createLegacyToolDefinitions = (
   const conversationPlannerGet: AgentToolDefinition = {
     name: 'conversation_planner_get',
     description:
-      'Get the next elder-aware conversation move based on account/device age, routines, recent prompt history, and trigger context. Use before proactive greetings, reminder follow-ups, routine prompts, or any assistant-initiated question.',
+      'Plan the next elder-aware proactive conversation move. Use before proactive greetings, routine check-ins, reminder follow-ups, family bridge prompts, or assistant-initiated questions that were not already determined by context_packet_get. Treat returned promptSeed, allowedQuestionCount, followupPolicy, and constraints as planning guidance, then speak naturally instead of reading it as a script.',
     parameters: z.object({
       triggerType: conversationTriggerSchema.nullish(),
       reminderId: optionalStringArg(),
@@ -2460,7 +2462,7 @@ export const createLegacyToolDefinitions = (
   const promptOutcomeRecord: AgentToolDefinition = {
     name: 'prompt_outcome_record',
     description:
-      'Record how the elder responded to a planned prompt so future questions stay fresh and respectful. Use when the elder accepts, refuses, ignores, completes, or gives an unclear response to a proactive prompt.',
+      "Record the elder's response to a planned proactive prompt. Call after the user responds to a prompt from conversation_planner_get, using the returned promptHistoryId and the closest responseState. Do not call for ordinary user-initiated conversation.",
     parameters: z.object({
       promptHistoryId: optionalStringArg(),
       triggerType: conversationTriggerSchema.nullish(),
@@ -2490,7 +2492,7 @@ export const createLegacyToolDefinitions = (
   const medicationResponseRecord: AgentToolDefinition = {
     name: 'medication_response_record',
     description:
-      'Record the elder response to a medication reminder and acknowledge the reminder when medicine was taken. Use after medication confirmation turns: taken, delayed, refused, no_response, or unclear.',
+      "Record how the elder responded to a medication reminder or medication check-in before continuing the conversation. Decision rule: when the previous assistant turn asked about a medicine/reminder, or the user says they took, skipped, refused, delayed, forgot, or are unsure about a medicine dose, call this tool even if reminderId is unavailable. Examples that should call this tool: 'haan, maine BP ki dawai le li', 'abhi nahi li, thodi der mein lunga', 'aaj skip kar di', 'pata nahi li thi ya nahi'. Use status=taken, delayed, refused, no_response, or unclear based on what the user said. Keep responseText short and factual. Do not diagnose or add medical interpretation.",
     parameters: z.object({
       reminderId: optionalStringArg(),
       medicine: optionalStringArg(),
@@ -2516,7 +2518,7 @@ export const createLegacyToolDefinitions = (
   const medicationAdherenceSetup: AgentToolDefinition = {
     name: 'medication_adherence_setup',
     description:
-      'Create medication reminder plus two follow-up reminders (after 10 and 20 minutes) to improve adherence.',
+      'Capture a medication adherence setup request when the user wants recurring medicine reminders or medication tracking configured. Use only for setup or configuration intent, not for recording a single reminder response; use medication_response_record for that. This creates the base medication reminder plus follow-up reminders.',
     parameters: z.object({
       medicine: z.string(),
       datetimeISO: z.string(),

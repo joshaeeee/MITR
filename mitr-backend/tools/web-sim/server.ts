@@ -83,28 +83,18 @@ const contentTypeFor = (path: string): string => {
 };
 
 const server = createServer(async (req, res) => {
-  if (!req.url || req.url === '/' || req.url.startsWith('/index')) {
-    try {
-      const html = await readFile(indexPath, 'utf8');
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(html);
-      return;
-    } catch (error) {
-      res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end(`Failed to load simulator page: ${(error as Error).message}`);
-      return;
-    }
-  }
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const pathname = url.pathname;
 
-  if (req.url === '/health') {
+  if (pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
   }
 
-  if (req.url.startsWith('/assets/')) {
+  if (pathname.startsWith('/assets/')) {
     try {
-      const decoded = decodeURIComponent(req.url.slice('/assets/'.length));
+      const decoded = decodeURIComponent(pathname.slice('/assets/'.length));
       const normalized = decoded.replace(/^\/+/, '');
       const filePath = resolve(assetsRoot, normalized);
       if (!filePath.startsWith(assetsRoot)) {
@@ -119,6 +109,19 @@ const server = createServer(async (req, res) => {
     } catch (error) {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
       res.end(`Asset not found: ${(error as Error).message}`);
+      return;
+    }
+  }
+
+  if (req.method === 'GET') {
+    try {
+      const html = await readFile(indexPath, 'utf8');
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    } catch (error) {
+      res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(`Failed to load simulator page: ${(error as Error).message}`);
       return;
     }
   }

@@ -28,6 +28,37 @@ class WakePhraseConfigTests(unittest.TestCase):
             "OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT": os.environ.get(
                 "OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT"
             ),
+            "MITR_GATEWAY_CONTEXT_SUMMARIZATION": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARIZATION"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_MODEL": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_MODEL"
+            ),
+            "OPENAI_CONTEXT_SUMMARY_MODEL": os.environ.get("OPENAI_CONTEXT_SUMMARY_MODEL"),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_MAX_CONTEXT_TOKENS": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_MAX_CONTEXT_TOKENS"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_MAX_UNSUMMARIZED_MESSAGES": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_MAX_UNSUMMARIZED_MESSAGES"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_TARGET_TOKENS": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_TARGET_TOKENS"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_KEEP_MESSAGES": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_KEEP_MESSAGES"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_TIMEOUT_SEC": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_TIMEOUT_SEC"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_TEMPERATURE": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_TEMPERATURE"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_LOG_CONTENT": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_LOG_CONTENT"
+            ),
+            "MITR_GATEWAY_CONTEXT_SUMMARY_LOG_MAX_CHARS": os.environ.get(
+                "MITR_GATEWAY_CONTEXT_SUMMARY_LOG_MAX_CHARS"
+            ),
         }
         for key in self._saved_env:
             os.environ.pop(key, None)
@@ -131,6 +162,68 @@ class WakePhraseConfigTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             bot._openai_realtime2_session_extra_fields("gpt-realtime-2")
+
+    def test_context_summarization_uses_pipecat_auto_defaults_with_dedicated_llm(self):
+        params = bot._context_summarization_assistant_params("test-openai-key")
+
+        self.assertTrue(params.enable_auto_context_summarization)
+        config = params.auto_context_summarization_config
+        self.assertIsNotNone(config)
+        self.assertEqual(config.max_context_tokens, 8000)
+        self.assertEqual(config.max_unsummarized_messages, 20)
+        self.assertEqual(config.summary_config.target_context_tokens, 6000)
+        self.assertEqual(config.summary_config.min_messages_after_summary, 4)
+        self.assertEqual(config.summary_config.summarization_timeout, 120.0)
+        self.assertIsNotNone(config.summary_config.llm)
+        self.assertEqual(config.summary_config.llm._settings.model, "gpt-4.1-mini")
+
+    def test_context_summarization_can_be_disabled(self):
+        os.environ["MITR_GATEWAY_CONTEXT_SUMMARIZATION"] = "false"
+
+        params = bot._context_summarization_assistant_params("test-openai-key")
+
+        self.assertFalse(params.enable_auto_context_summarization)
+        self.assertIsNone(params.auto_context_summarization_config)
+
+    def test_context_summarization_env_overrides_thresholds(self):
+        os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_MODEL"] = "gpt-4.1"
+        os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_MAX_CONTEXT_TOKENS"] = "12000"
+        os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_MAX_UNSUMMARIZED_MESSAGES"] = "12"
+        os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_TARGET_TOKENS"] = "3000"
+        os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_KEEP_MESSAGES"] = "6"
+        os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_TIMEOUT_SEC"] = "30"
+
+        config = bot._context_summarization_assistant_params(
+            "test-openai-key"
+        ).auto_context_summarization_config
+
+        self.assertEqual(config.max_context_tokens, 12000)
+        self.assertEqual(config.max_unsummarized_messages, 12)
+        self.assertEqual(config.summary_config.target_context_tokens, 3000)
+        self.assertEqual(config.summary_config.min_messages_after_summary, 6)
+        self.assertEqual(config.summary_config.summarization_timeout, 30.0)
+        self.assertEqual(config.summary_config.llm._settings.model, "gpt-4.1")
+
+    def test_latest_context_summary_text_finds_inserted_summary(self):
+        self.assertEqual(
+            bot._latest_context_summary_text(
+                [
+                    {"role": "user", "content": "Conversation summary: user wants yoga"},
+                    {"role": "assistant", "content": "Sure."},
+                ]
+            ),
+            "Conversation summary: user wants yoga",
+        )
+
+    def test_latest_context_summary_text_ignores_non_summary_messages(self):
+        self.assertIsNone(
+            bot._latest_context_summary_text(
+                [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                ]
+            )
+        )
 
     def test_system_prompt_template_renders_runtime_variables(self):
         prompt = bot._system_instruction(

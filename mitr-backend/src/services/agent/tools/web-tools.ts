@@ -12,7 +12,7 @@ export const createWebSearchTool = (
 ): AgentToolDefinition => ({
   name: 'web_search',
   description:
-    'General internet search for facts/websites/comparisons/research links. Prefer this for broad web lookups; use news_retrieve for news briefings. Returns ready|pending with source links/summaries.',
+    'Search the web for current factual context, websites, comparisons, official pages, recommendations, or research links. Use news_retrieve instead for news briefings, headlines, latest/current events, or taaza khabar. Include domains only when the user asks for a specific site/source or official sources are required. If results are pending, acknowledge briefly and wait; when ready, answer from returned source links/summaries and do not invent missing details.',
   parameters: z.object({
     query: z.string(),
     numResults: z.number().int().min(1).max(8).nullish(),

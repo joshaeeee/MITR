@@ -91,7 +91,7 @@
       <section class="panel">
         <label>
           API base URL
-          <input id="apiBase" value="http://127.0.0.1:8081" />
+          <input id="apiBase" value="http://127.0.0.1:8080" />
         </label>
         <label>
           User bearer token
@@ -102,6 +102,9 @@
           <input id="language" value="hi-IN" />
         </label>
         <div class="row">
+          <button id="loginTest" class="secondary">Login test user</button>
+          <button id="swiggyStatus" class="secondary">Swiggy status</button>
+          <button id="swiggyConnect" class="secondary">Connect Swiggy</button>
           <button id="connect">Connect</button>
           <button id="disconnect" class="secondary" disabled>Disconnect</button>
         </div>
@@ -114,6 +117,9 @@
       const apiBaseInput = document.getElementById("apiBase");
       const tokenInput = document.getElementById("token");
       const languageInput = document.getElementById("language");
+      const loginTestButton = document.getElementById("loginTest");
+      const swiggyStatusButton = document.getElementById("swiggyStatus");
+      const swiggyConnectButton = document.getElementById("swiggyConnect");
       const connectButton = document.getElementById("connect");
       const disconnectButton = document.getElementById("disconnect");
       const logEl = document.getElementById("log");
@@ -129,6 +135,82 @@
         const line = `${new Date().toISOString()} ${event} ${typeof payload === "string" ? payload : JSON.stringify(payload)}`;
         logEl.textContent += `${line}\n`;
         logEl.scrollTop = logEl.scrollHeight;
+      };
+
+      const params = new URLSearchParams(window.location.search);
+      const initialApiHost = params.get("apiHost") || params.get("host") || localStorage.getItem("mitr_websim_host");
+      if (initialApiHost) apiBaseInput.value = initialApiHost;
+      const savedToken = localStorage.getItem("mitr_websim_token");
+      if (savedToken) tokenInput.value = savedToken;
+      if (params.get("swiggy")) log("swiggy_redirect", Object.fromEntries(params.entries()));
+
+      const apiBase = () => {
+        const value = apiBaseInput.value.trim().replace(/\/+$/, "");
+        localStorage.setItem("mitr_websim_host", value);
+        return value;
+      };
+
+      const bearerToken = () => {
+        const value = tokenInput.value.trim();
+        if (value) localStorage.setItem("mitr_websim_token", value);
+        return value;
+      };
+
+      const requireToken = () => {
+        const token = bearerToken();
+        if (!token) {
+          log("error", "missing bearer token");
+          return null;
+        }
+        return token;
+      };
+
+      loginTestButton.onclick = async () => {
+        try {
+          const res = await fetch(`${apiBase()}/auth/email/login`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ email: "tester@gmail.com", password: "12345678910" }),
+          });
+          if (!res.ok) throw new Error(await res.text());
+          const payload = await res.json();
+          tokenInput.value = payload.session.accessToken;
+          localStorage.setItem("mitr_websim_token", payload.session.accessToken);
+          log("login", { userId: payload.user.id, email: payload.user.email });
+        } catch (error) {
+          log("error", error.message || String(error));
+        }
+      };
+
+      swiggyStatusButton.onclick = async () => {
+        const token = requireToken();
+        if (!token) return;
+        try {
+          const res = await fetch(`${apiBase()}/auth/swiggy/status`, {
+            headers: { authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) throw new Error(await res.text());
+          log("swiggy_status", await res.json());
+        } catch (error) {
+          log("error", error.message || String(error));
+        }
+      };
+
+      swiggyConnectButton.onclick = async () => {
+        const token = requireToken();
+        if (!token) return;
+        try {
+          const res = await fetch(`${apiBase()}/auth/swiggy/start`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) throw new Error(await res.text());
+          const payload = await res.json();
+          log("swiggy_start", payload);
+          window.location.href = payload.authorizeUrl;
+        } catch (error) {
+          log("error", error.message || String(error));
+        }
       };
 
       const floatToPcm16 = (input) => {
@@ -202,8 +284,8 @@
       };
 
       connectButton.onclick = async () => {
-        const apiBase = apiBaseInput.value.trim();
-        const token = tokenInput.value.trim();
+        const base = apiBase();
+        const token = bearerToken();
         const language = languageInput.value.trim() || "hi-IN";
         if (!token) {
           log("error", "missing bearer token");
@@ -212,7 +294,7 @@
 
         connectButton.disabled = true;
         try {
-          const connectRes = await fetch(`${apiBase}/pipecat/connect`, {
+          const connectRes = await fetch(`${base}/pipecat/connect`, {
             method: "POST",
             headers: {
               "content-type": "application/json",

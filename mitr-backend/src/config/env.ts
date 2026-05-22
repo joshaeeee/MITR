@@ -172,6 +172,16 @@ const baseEnvSchema = z.object({
   GEOCODING_TIMEOUT_MS: z.coerce.number().default(3000),
   GEOCODING_DEFAULT_COUNTRY: z.string().default('IN'),
 
+  SWIGGY_MCP_ENABLED: envBoolean(false),
+  SWIGGY_MCP_MODE: z.enum(['live', 'stub']).default('live'),
+  SWIGGY_MCP_BASE_URL: z.string().url().default('https://mcp.swiggy.com'),
+  SWIGGY_CLIENT_ID: z.string().optional(),
+  SWIGGY_REDIRECT_URI: z.string().url().optional(),
+  SWIGGY_POST_AUTH_REDIRECT_URL: z.string().url().optional(),
+  SWIGGY_TOKEN_ENCRYPTION_KEY_B64: z.string().optional(),
+  SWIGGY_OAUTH_STATE_TTL_SEC: z.coerce.number().default(10 * 60),
+  SWIGGY_MCP_TIMEOUT_MS: z.coerce.number().default(15_000),
+
   PROKERALA_CLIENT_ID: z.string().optional(),
   PROKERALA_CLIENT_SECRET: z.string().optional(),
   PROKERALA_BASE_URL: z.string().url().default('https://api.prokerala.com/v2'),
@@ -392,6 +402,26 @@ const apiEnvSchema = baseEnvSchema.superRefine((env, ctx) => {
       code: z.ZodIssueCode.custom,
       path: ['QDRANT_API_KEY'],
       message: 'QDRANT_API_KEY is required in production when QDRANT_URL uses https'
+    });
+  }
+
+  if (env.SWIGGY_MCP_ENABLED && env.SWIGGY_MCP_MODE === 'live') {
+    for (const key of ['SWIGGY_CLIENT_ID', 'SWIGGY_REDIRECT_URI', 'SWIGGY_TOKEN_ENCRYPTION_KEY_B64'] as const) {
+      if (!env[key]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} is required when SWIGGY_MCP_ENABLED=true`
+        });
+      }
+    }
+  }
+
+  if (env.SWIGGY_TOKEN_ENCRYPTION_KEY_B64 && Buffer.from(env.SWIGGY_TOKEN_ENCRYPTION_KEY_B64, 'base64').length !== 32) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SWIGGY_TOKEN_ENCRYPTION_KEY_B64'],
+      message: 'SWIGGY_TOKEN_ENCRYPTION_KEY_B64 must decode to 32 bytes'
     });
   }
 });
