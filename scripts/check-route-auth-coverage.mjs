@@ -15,6 +15,7 @@ const authGuardPatterns = [
 ];
 
 const intentionallyPublic = new Set([
+  'GET /auth/swiggy/dev-authorize',
   'GET /auth/swiggy/callback',
   'GET /onboarding/questions',
   'GET /healthz'
