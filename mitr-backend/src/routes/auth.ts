@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { AuthService } from '../services/auth/auth-service.js';
 import { requireAuth } from '../services/auth/auth-middleware.js';
@@ -6,6 +6,7 @@ import { verifyOAuthIdToken } from '../services/auth/oauth-verifier.js';
 import { logger } from '../lib/logger.js';
 import { createRateLimit, bodyFieldKey } from '../lib/rate-limit.js';
 import { SwiggyMcpService } from '../services/commerce/swiggy-mcp-service.js';
+import { env } from '../config/env.js';
 
 const otpStartSchema = z.object({
   phone: z.string().min(6)
@@ -44,6 +45,11 @@ const swiggyCallbackSchema = z.object({
   error_description: z.string().optional()
 });
 
+const swiggyDevAuthorizeSchema = z.object({
+  state: z.string().min(1),
+  approve: z.string().optional()
+});
+
 const escapeHtml = (value: string): string =>
   value
     .replace(/&/g, '&amp;')
@@ -51,6 +57,25 @@ const escapeHtml = (value: string): string =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+
+const postAuthRedirect = (status: 'connected' | 'error', error?: string): string | null => {
+  if (!env.SWIGGY_POST_AUTH_REDIRECT_URL) return null;
+  const url = new URL(env.SWIGGY_POST_AUTH_REDIRECT_URL);
+  url.searchParams.set('swiggy', status);
+  if (error) url.searchParams.set('error', error);
+  return url.toString();
+};
+
+const redirectOrHtml = (
+  reply: FastifyReply,
+  status: 'connected' | 'error',
+  html: string,
+  error?: string
+) => {
+  const redirectUrl = postAuthRedirect(status, error);
+  if (redirectUrl) return reply.redirect(redirectUrl);
+  return reply.status(status === 'connected' ? 200 : 400).type('text/html; charset=utf-8').send(html);
+};
 
 export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): void => {
   const swiggy = new SwiggyMcpService();
@@ -199,6 +224,44 @@ export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): voi
     return reply.send({ ok: true });
   });
 
+  app.get('/auth/swiggy/dev-authorize', async (request, reply) => {
+    const parsed = swiggyDevAuthorizeSchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    if (env.SWIGGY_MCP_MODE !== 'stub') {
+      return reply.status(404).send({ error: 'Swiggy dev authorization is available only in stub mode' });
+    }
+
+    const { state, approve } = parsed.data;
+    if (approve !== '1') {
+      const approvePath = `/auth/swiggy/dev-authorize?state=${encodeURIComponent(state)}&approve=1`;
+      return reply.type('text/html; charset=utf-8').send(`<!doctype html>
+<html>
+  <body>
+    <h1>Mitr &times; Swiggy Stub</h1>
+    <p>This local-only page approves a test Swiggy connection.</p>
+    <p><a href="${escapeHtml(approvePath)}">Approve test Swiggy connection</a></p>
+  </body>
+</html>`);
+    }
+
+    try {
+      await swiggy.completeStubAuthorization(state);
+    } catch (completeError) {
+      logger.warn('Swiggy stub callback completion failed', { error: (completeError as Error).message });
+      return redirectOrHtml(
+        reply,
+        'error',
+        `<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${escapeHtml((completeError as Error).message)}</p></body></html>`,
+        (completeError as Error).message
+      );
+    }
+    return redirectOrHtml(
+      reply,
+      'connected',
+      '<!doctype html><html><body><h1>Mitr &times; Swiggy</h1><p>Authorization received. You can close this window.</p></body></html>'
+    );
+  });
+
   app.get('/auth/swiggy/callback', async (request, reply) => {
     const parsed = swiggyCallbackSchema.safeParse(request.query);
     if (!parsed.success) {
@@ -212,31 +275,36 @@ export const registerAuthRoutes = (app: FastifyInstance, auth: AuthService): voi
       errorDescription: errorDescription ?? null
     });
     if (error) {
-      return reply
-        .status(400)
-        .type('text/html; charset=utf-8')
-        .send(`<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${escapeHtml(error)}</p></body></html>`);
+      return redirectOrHtml(
+        reply,
+        'error',
+        `<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${escapeHtml(error)}</p></body></html>`,
+        error
+      );
     }
     if (!code || !state) {
-      return reply
-        .status(400)
-        .type('text/html; charset=utf-8')
-        .send('<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>Missing authorization code or state.</p></body></html>');
+      return redirectOrHtml(
+        reply,
+        'error',
+        '<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>Missing authorization code or state.</p></body></html>',
+        'missing_code_or_state'
+      );
     }
     try {
       await swiggy.completeAuthorization({ code, state });
     } catch (completeError) {
       logger.warn('Swiggy OAuth callback completion failed', { error: (completeError as Error).message });
-      return reply
-        .status(400)
-        .type('text/html; charset=utf-8')
-        .send(
-          `<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${escapeHtml((completeError as Error).message)}</p></body></html>`
-        );
+      return redirectOrHtml(
+        reply,
+        'error',
+        `<!doctype html><html><body><h1>Swiggy authorization failed</h1><p>${escapeHtml((completeError as Error).message)}</p></body></html>`,
+        (completeError as Error).message
+      );
     }
-    return reply
-      .status(200)
-      .type('text/html; charset=utf-8')
-      .send('<!doctype html><html><body><h1>Mitr &times; Swiggy</h1><p>Authorization received. You can close this window.</p></body></html>');
+    return redirectOrHtml(
+      reply,
+      'connected',
+      '<!doctype html><html><body><h1>Mitr &times; Swiggy</h1><p>Authorization received. You can close this window.</p></body></html>'
+    );
   });
 };

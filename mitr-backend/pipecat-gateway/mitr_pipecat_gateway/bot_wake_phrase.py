@@ -58,11 +58,13 @@ from .bot import (
     OPENAI_REALTIME_SAMPLE_RATE,
     MitrRealtime2SessionOptionsMixin,
     PCM16Resampler,
+    _context_summarization_assistant_params,
     _int_env,
     _openai_realtime_max_output_tokens,
     _openai_realtime_model,
     _optional_timeout_env,
     _queue_runtime_context_update,
+    _register_context_summarization_logging,
     _system_instruction,
 )
 from .serializer import Esp32PCMSerializer
@@ -364,7 +366,7 @@ class ToolActivityState:
         self._active_count += 1
         logger.info("Tool input suppression active: {} active_count={}", name, self._active_count)
 
-    async def finish(self, name: str):
+    async def finish(self, name: str, result: dict | None = None):
         self._active_count = max(0, self._active_count - 1)
         self._mute_until = time.monotonic() + self._tail_sec
         logger.info("Tool input suppression released: {} active_count={}", name, self._active_count)
@@ -528,6 +530,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     tool_activity = ToolActivityState(
         tail_ms=_int_env("MITR_GATEWAY_TOOL_INPUT_SUPPRESSION_TAIL_MS", 500),
     )
+
     register_mitr_tools(
         llm,
         auth,
@@ -576,7 +579,9 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
                 stop=[ExternalUserTurnStopStrategy()],
             ),
         ),
+        assistant_params=_context_summarization_assistant_params(api_key),
     )
+    _register_context_summarization_logging(context_aggregator)
 
     logger.info("Pipecat wake phrase mode enabled; phrases={}", _wake_phrases())
     logger.info(

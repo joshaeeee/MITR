@@ -93,10 +93,136 @@ const asServer = (server: string): SwiggyServer => {
   throw new Error(`Unsupported Swiggy MCP server: ${server}`);
 };
 
+const isStubMode = (): boolean => env.SWIGGY_MCP_MODE === 'stub';
+
+const localApiBaseUrl = (): string => env.API_PUBLIC_BASE_URL ?? `http://localhost:${env.PORT}`;
+
+const upsertStubConnection = async (userId: string): Promise<{ userId: string; expiresAt: string }> => {
+  const now = new Date();
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  await db
+    .insert(swiggyConnections)
+    .values({
+      userId,
+      accessTokenCiphertext: `stub-token:${userId}`,
+      scope: 'mcp:tools',
+      tokenType: 'Stub',
+      expiresAt,
+      status: 'active',
+      lastAuthorizedAt: now,
+      revokedAt: null,
+      metadataJson: { mode: 'stub' },
+      updatedAt: now
+    })
+    .onConflictDoUpdate({
+      target: swiggyConnections.userId,
+      set: {
+        accessTokenCiphertext: `stub-token:${userId}`,
+        scope: 'mcp:tools',
+        tokenType: 'Stub',
+        expiresAt,
+        status: 'active',
+        lastAuthorizedAt: now,
+        revokedAt: null,
+        metadataJson: { mode: 'stub' },
+        updatedAt: now
+      }
+    });
+  return { userId, expiresAt: expiresAt.toISOString() };
+};
+
+const stubAddresses = [
+  {
+    addressId: 'stub-home',
+    label: 'Home',
+    displayText: 'Home, Koramangala 5th Block, Bengaluru',
+    city: 'Bengaluru'
+  },
+  {
+    addressId: 'stub-work',
+    label: 'Work',
+    displayText: 'Work, Indiranagar, Bengaluru',
+    city: 'Bengaluru'
+  }
+];
+
+const stubToolResult = (server: SwiggyServer, toolName: string, toolArguments: Record<string, unknown>): unknown => {
+  if (toolName === 'get_addresses') {
+    return { jsonrpc: '2.0', result: { status: 'ready', addresses: stubAddresses } };
+  }
+
+  if (server === 'im' && toolName === 'search_products') {
+    const query = typeof toolArguments.query === 'string' ? toolArguments.query : 'milk';
+    return {
+      jsonrpc: '2.0',
+      result: {
+        status: 'ready',
+        query,
+        items: [
+          { itemId: 'stub-milk-1', name: 'Amul Taaza Toned Milk', quantity: '1 L', price: 72, inStock: true },
+          { itemId: 'stub-milk-2', name: 'Nandini Goodlife Milk', quantity: '1 L', price: 70, inStock: true },
+          { itemId: 'stub-bread-1', name: 'Britannia Whole Wheat Bread', quantity: '400 g', price: 55, inStock: true }
+        ]
+      }
+    };
+  }
+
+  if (server === 'im' && (toolName === 'update_cart' || toolName === 'get_cart')) {
+    return {
+      jsonrpc: '2.0',
+      result: {
+        status: 'ready',
+        cartId: 'stub-im-cart',
+        items: [{ itemId: 'stub-milk-1', name: 'Amul Taaza Toned Milk', quantity: 1, unitPrice: 72 }],
+        total: 72,
+        currency: 'INR'
+      }
+    };
+  }
+
+  if (server === 'im' && toolName === 'clear_cart') {
+    return { jsonrpc: '2.0', result: { status: 'ready', cartId: 'stub-im-cart', items: [], total: 0, currency: 'INR' } };
+  }
+
+  if (server === 'food' && toolName === 'search_restaurants') {
+    const query = typeof toolArguments.query === 'string' ? toolArguments.query : 'idli';
+    return {
+      jsonrpc: '2.0',
+      result: {
+        status: 'ready',
+        query,
+        restaurants: [
+          { restaurantId: 'stub-darshini', name: 'Mitr Darshini', cuisine: 'South Indian', rating: 4.4, etaMinutes: 25 },
+          { restaurantId: 'stub-cafe', name: 'Neighbourhood Cafe', cuisine: 'Snacks', rating: 4.2, etaMinutes: 30 }
+        ]
+      }
+    };
+  }
+
+  if (server === 'food' && toolName === 'get_food_cart') {
+    return { jsonrpc: '2.0', result: { status: 'ready', cartId: 'stub-food-cart', items: [], total: 0, currency: 'INR' } };
+  }
+
+  if (server === 'dineout' && toolName === 'get_saved_locations') {
+    return { jsonrpc: '2.0', result: { status: 'ready', locations: [{ locationId: 'stub-blr', name: 'Bengaluru' }] } };
+  }
+
+  return {
+    jsonrpc: '2.0',
+    result: {
+      status: 'ready',
+      mode: 'stub',
+      server,
+      toolName,
+      toolArguments
+    }
+  };
+};
+
 export class SwiggyMcpService {
   async startAuthorization(userId: string): Promise<{ authorizeUrl: string; expiresAt: string }> {
     assertEnabled();
-    if (!env.SWIGGY_CLIENT_ID || !env.SWIGGY_REDIRECT_URI) throw new Error('Swiggy OAuth is not configured');
+    if (!isStubMode() && (!env.SWIGGY_CLIENT_ID || !env.SWIGGY_REDIRECT_URI)) throw new Error('Swiggy OAuth is not configured');
 
     const state = randomBytes(32).toString('base64url');
     const verifier = randomBytes(32).toString('base64url');
@@ -106,14 +232,20 @@ export class SwiggyMcpService {
       userId,
       stateHash: stateHash(state),
       codeVerifier: verifier,
-      redirectUri: env.SWIGGY_REDIRECT_URI,
+      redirectUri: env.SWIGGY_REDIRECT_URI ?? new URL('/auth/swiggy/callback', localApiBaseUrl()).toString(),
       expiresAt
     });
 
+    if (isStubMode()) {
+      const url = new URL('/auth/swiggy/dev-authorize', localApiBaseUrl());
+      url.searchParams.set('state', state);
+      return { authorizeUrl: url.toString(), expiresAt: expiresAt.toISOString() };
+    }
+
     const url = new URL('/auth/authorize', env.SWIGGY_MCP_BASE_URL);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('client_id', env.SWIGGY_CLIENT_ID);
-    url.searchParams.set('redirect_uri', env.SWIGGY_REDIRECT_URI);
+    url.searchParams.set('client_id', env.SWIGGY_CLIENT_ID!);
+    url.searchParams.set('redirect_uri', env.SWIGGY_REDIRECT_URI!);
     url.searchParams.set('code_challenge', codeChallenge(verifier));
     url.searchParams.set('code_challenge_method', 'S256');
     url.searchParams.set('state', state);
@@ -184,6 +316,22 @@ export class SwiggyMcpService {
     return { userId: stateRow.userId, expiresAt: expiresAt.toISOString() };
   }
 
+  async completeStubAuthorization(state: string): Promise<{ userId: string; expiresAt: string }> {
+    assertEnabled();
+    if (!isStubMode()) throw new Error('Swiggy stub authorization is not enabled');
+
+    const [stateRow] = await db
+      .select()
+      .from(swiggyOAuthStates)
+      .where(and(eq(swiggyOAuthStates.stateHash, stateHash(state)), isNull(swiggyOAuthStates.consumedAt), gt(swiggyOAuthStates.expiresAt, new Date())))
+      .limit(1);
+    if (!stateRow) throw new Error('Invalid or expired Swiggy OAuth state');
+
+    const result = await upsertStubConnection(stateRow.userId);
+    await db.update(swiggyOAuthStates).set({ consumedAt: new Date() }).where(eq(swiggyOAuthStates.id, stateRow.id));
+    return result;
+  }
+
   async status(userId: string): Promise<{ connected: boolean; status: string; expiresAt?: string; selectedAddress?: unknown; connectPath: string }> {
     if (!env.SWIGGY_MCP_ENABLED) return { connected: false, status: 'disabled', connectPath: '/auth/swiggy/start' };
 
@@ -213,13 +361,15 @@ export class SwiggyMcpService {
   async disconnect(userId: string): Promise<void> {
     const [connection] = await db.select().from(swiggyConnections).where(eq(swiggyConnections.userId, userId)).limit(1);
     if (!connection) return;
-    try {
-      await fetch(new URL('/auth/logout', env.SWIGGY_MCP_BASE_URL), {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${decryptToken(connection.accessTokenCiphertext)}` }
-      });
-    } catch (error) {
-      logger.warn('Swiggy logout call failed', { userId, error: (error as Error).message });
+    if (!isStubMode()) {
+      try {
+        await fetch(new URL('/auth/logout', env.SWIGGY_MCP_BASE_URL), {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${decryptToken(connection.accessTokenCiphertext)}` }
+        });
+      } catch (error) {
+        logger.warn('Swiggy logout call failed', { userId, error: (error as Error).message });
+      }
     }
     await db
       .update(swiggyConnections)
@@ -283,6 +433,8 @@ export class SwiggyMcpService {
     if (!connection || connection.status !== 'active' || connection.expiresAt <= new Date()) {
       return { status: 'auth_required', message: 'Swiggy is not connected or the session expired.', connectPath: '/auth/swiggy/start' };
     }
+
+    if (isStubMode()) return stubToolResult(server, input.toolName, input.toolArguments ?? {});
 
     const response = await fetch(new URL(SERVER_PATH[server], env.SWIGGY_MCP_BASE_URL), {
       method: 'POST',

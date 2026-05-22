@@ -7,7 +7,6 @@ from typing import Any
 
 from fastapi import WebSocket
 from loguru import logger
-
 from pipecat.audio.utils import create_stream_resampler
 from pipecat.frames.frames import Frame, InputAudioRawFrame, LLMUpdateSettingsFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -15,10 +14,12 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
+    LLMAssistantAggregatorParams,
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
     AudioInput,
@@ -34,6 +35,10 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketTransport,
 )
 from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
+from pipecat.utils.context.llm_context_summarization import (
+    LLMAutoContextSummarizationConfig,
+    LLMContextSummaryConfig,
+)
 
 from .auth import DeviceAuthContext
 from .serializer import Esp32PCMSerializer
@@ -42,6 +47,12 @@ from .tools import build_tools_schema, execute_backend_tool_once, register_mitr_
 OPENAI_REALTIME_SAMPLE_RATE = 24000
 _REALTIME2_REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
 _REALTIME2_TRUNCATION_MODES = {"auto", "disabled"}
+_CONTEXT_SUMMARY_DEFAULT_MODEL = "gpt-4.1-mini"
+_CONTEXT_SUMMARY_DEFAULT_MAX_CONTEXT_TOKENS = 8000
+_CONTEXT_SUMMARY_DEFAULT_MAX_UNSUMMARIZED_MESSAGES = 20
+_CONTEXT_SUMMARY_DEFAULT_TARGET_TOKENS = 6000
+_CONTEXT_SUMMARY_DEFAULT_KEEP_MESSAGES = 4
+_CONTEXT_SUMMARY_DEFAULT_TIMEOUT_SEC = 120.0
 
 
 def _int_env(name: str, fallback: int) -> int:
@@ -52,7 +63,7 @@ def _int_env(name: str, fallback: int) -> int:
 
 
 def _openai_realtime_max_output_tokens() -> int | str:
-    value = os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "inf").strip().lower()
+    value = os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "1024").strip().lower()
     if value in {"inf", "infinite", "unlimited"}:
         return "inf"
     try:
@@ -73,6 +84,68 @@ def _float_env(name: str, fallback: float) -> float:
         return fallback
 
 
+def _bool_env(name: str, fallback: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return fallback
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _positive_int_env(name: str, fallback: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return fallback
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be a positive integer.") from error
+    if parsed <= 0:
+        raise RuntimeError(f"{name} must be a positive integer.")
+    return parsed
+
+
+def _nonnegative_int_env(name: str, fallback: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return fallback
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be zero or a positive integer.") from error
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be zero or a positive integer.")
+    return parsed
+
+
+def _optional_positive_int_env(name: str, fallback: int | None) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return fallback
+    normalized = value.strip().lower()
+    if normalized in {"none", "off", "false", "disabled"}:
+        return None
+    try:
+        parsed = int(normalized)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be a positive integer or none.") from error
+    if parsed <= 0:
+        raise RuntimeError(f"{name} must be a positive integer or none.")
+    return parsed
+
+
+def _positive_float_env(name: str, fallback: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return fallback
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be a positive number.") from error
+    if parsed <= 0:
+        raise RuntimeError(f"{name} must be a positive number.")
+    return parsed
+
+
 def _optional_timeout_env(name: str) -> int | None:
     try:
         value = int(os.getenv(name, "0"))
@@ -83,6 +156,111 @@ def _optional_timeout_env(name: str) -> int | None:
 
 def _openai_realtime_model() -> str:
     return os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2").strip()
+
+
+def _context_summary_model() -> str:
+    return (
+        os.getenv("MITR_GATEWAY_CONTEXT_SUMMARY_MODEL")
+        or os.getenv("OPENAI_CONTEXT_SUMMARY_MODEL")
+        or _CONTEXT_SUMMARY_DEFAULT_MODEL
+    ).strip()
+
+
+def _context_summary_llm(api_key: str) -> OpenAILLMService:
+    return OpenAILLMService(
+        api_key=api_key,
+        settings=OpenAILLMService.Settings(
+            model=_context_summary_model(),
+            temperature=_float_env("MITR_GATEWAY_CONTEXT_SUMMARY_TEMPERATURE", 0.2),
+        ),
+    )
+
+
+def _context_summarization_assistant_params(api_key: str) -> LLMAssistantAggregatorParams:
+    if not _bool_env("MITR_GATEWAY_CONTEXT_SUMMARIZATION", True):
+        return LLMAssistantAggregatorParams()
+
+    summary_config = LLMContextSummaryConfig(
+        target_context_tokens=_positive_int_env(
+            "MITR_GATEWAY_CONTEXT_SUMMARY_TARGET_TOKENS",
+            _CONTEXT_SUMMARY_DEFAULT_TARGET_TOKENS,
+        ),
+        min_messages_after_summary=_nonnegative_int_env(
+            "MITR_GATEWAY_CONTEXT_SUMMARY_KEEP_MESSAGES",
+            _CONTEXT_SUMMARY_DEFAULT_KEEP_MESSAGES,
+        ),
+        llm=_context_summary_llm(api_key),
+        summarization_timeout=_positive_float_env(
+            "MITR_GATEWAY_CONTEXT_SUMMARY_TIMEOUT_SEC",
+            _CONTEXT_SUMMARY_DEFAULT_TIMEOUT_SEC,
+        ),
+    )
+    auto_config = LLMAutoContextSummarizationConfig(
+        max_context_tokens=_optional_positive_int_env(
+            "MITR_GATEWAY_CONTEXT_SUMMARY_MAX_CONTEXT_TOKENS",
+            _CONTEXT_SUMMARY_DEFAULT_MAX_CONTEXT_TOKENS,
+        ),
+        max_unsummarized_messages=_optional_positive_int_env(
+            "MITR_GATEWAY_CONTEXT_SUMMARY_MAX_UNSUMMARIZED_MESSAGES",
+            _CONTEXT_SUMMARY_DEFAULT_MAX_UNSUMMARIZED_MESSAGES,
+        ),
+        summary_config=summary_config,
+    )
+
+    logger.info(
+        "Pipecat auto context summarization enabled: model={} max_context_tokens={} "
+        "max_unsummarized_messages={} target_tokens={} keep_messages={}",
+        _context_summary_model(),
+        auto_config.max_context_tokens,
+        auto_config.max_unsummarized_messages,
+        auto_config.summary_config.target_context_tokens,
+        auto_config.summary_config.min_messages_after_summary,
+    )
+    return LLMAssistantAggregatorParams(
+        enable_auto_context_summarization=True,
+        auto_context_summarization_config=auto_config,
+    )
+
+
+def _register_context_summarization_logging(context_aggregator: LLMContextAggregatorPair) -> None:
+    @context_aggregator.assistant().event_handler("on_summary_applied")
+    async def on_summary_applied(aggregator, _summarizer, event):
+        logger.info(
+            "Pipecat context summary applied: original_messages={} new_messages={} "
+            "summarized_messages={} preserved_messages={}",
+            event.original_message_count,
+            event.new_message_count,
+            event.summarized_message_count,
+            event.preserved_message_count,
+        )
+        if not _bool_env("MITR_GATEWAY_CONTEXT_SUMMARY_LOG_CONTENT", False):
+            return
+
+        summary = _latest_context_summary_text(aggregator.context.get_messages())
+        if not summary:
+            logger.info("Pipecat context summary content logging requested, but no summary found")
+            return
+
+        max_chars = _positive_int_env("MITR_GATEWAY_CONTEXT_SUMMARY_LOG_MAX_CHARS", 1200)
+        preview = summary[:max_chars]
+        if len(summary) > max_chars:
+            preview += "...[truncated]"
+        logger.info(
+            "Pipecat context summary content: chars={} logged_chars={} text={}",
+            len(summary),
+            len(preview),
+            preview,
+        )
+
+
+def _latest_context_summary_text(messages: list[Any]) -> str | None:
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.startswith("Conversation summary:"):
+            return content
+    return None
 
 
 def _openai_realtime2_session_extra_fields(model: str) -> dict[str, object]:
@@ -401,8 +579,9 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         ),
     )
 
+    api_key = os.getenv("OPENAI_API_KEY", "")
     llm = MitrOpenAIRealtimeLLMService(
-        api_key=os.getenv("OPENAI_API_KEY", ""),
+        api_key=api_key,
         settings=OpenAIRealtimeLLMService.Settings(
             model=_openai_realtime_model(),
             system_instruction=_system_instruction(auth),
@@ -435,7 +614,9 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         user_params=LLMUserAggregatorParams(
             user_turn_strategies=ExternalUserTurnStrategies(),
         ),
+        assistant_params=_context_summarization_assistant_params(api_key),
     )
+    _register_context_summarization_logging(context_aggregator)
 
     pipeline = Pipeline(
         [

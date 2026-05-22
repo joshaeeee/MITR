@@ -60,6 +60,35 @@ MITR_GATEWAY_SYNC_TOOLS=             # optional comma-list for forced sync tools
 MITR_GATEWAY_TOOL_FOLLOWUP_MIN_DELAY_SEC=1.2
 ```
 
+## Context Summarization
+
+The gateway enables Pipecat auto context summarization by default. Pipecat
+compresses older conversation history when the built-in token or message
+threshold is reached, while preserving the newest messages and function-call
+sequences. Because OpenAI Realtime does not provide Pipecat's out-of-band
+`run_inference()` hook, summaries are generated with a dedicated OpenAI text LLM.
+
+Controls:
+
+```text
+MITR_GATEWAY_CONTEXT_SUMMARIZATION=true
+MITR_GATEWAY_CONTEXT_SUMMARY_MODEL=gpt-4.1-mini
+MITR_GATEWAY_CONTEXT_SUMMARY_MAX_CONTEXT_TOKENS=8000
+MITR_GATEWAY_CONTEXT_SUMMARY_MAX_UNSUMMARIZED_MESSAGES=20
+MITR_GATEWAY_CONTEXT_SUMMARY_TARGET_TOKENS=6000
+MITR_GATEWAY_CONTEXT_SUMMARY_KEEP_MESSAGES=4
+MITR_GATEWAY_CONTEXT_SUMMARY_TIMEOUT_SEC=120
+MITR_GATEWAY_CONTEXT_SUMMARY_TEMPERATURE=0.2
+MITR_GATEWAY_CONTEXT_SUMMARY_LOG_CONTENT=false
+MITR_GATEWAY_CONTEXT_SUMMARY_LOG_MAX_CHARS=1200
+```
+
+Set `MITR_GATEWAY_CONTEXT_SUMMARY_MAX_CONTEXT_TOKENS` or
+`MITR_GATEWAY_CONTEXT_SUMMARY_MAX_UNSUMMARIZED_MESSAGES` to `none` to disable
+that trigger. At least one trigger must remain enabled. Set
+`MITR_GATEWAY_CONTEXT_SUMMARY_LOG_CONTENT=true` during local testing to log the
+inserted summary text after Pipecat applies compaction.
+
 ## System Prompt
 
 The canonical Mitr voice prompt lives in:
