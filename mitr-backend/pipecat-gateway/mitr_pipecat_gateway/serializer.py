@@ -18,6 +18,8 @@ from pipecat.frames.frames import (
 )
 from pipecat.serializers.base_serializer import FrameSerializer
 
+_MAX_OUTPUT_GAIN = 3.0
+
 
 def _float_env(name: str, fallback: float) -> float:
     try:
@@ -49,7 +51,10 @@ class Esp32PCMSerializer(FrameSerializer):
         self._channels = 1
         self._audio_frame_count = 0
         self._output_audio_frame_count = 0
-        self._output_gain = max(0.0, min(1.0, _float_env("ESP32_AUDIO_OUTPUT_GAIN", 1.0)))
+        self._output_gain = max(
+            0.0,
+            min(_MAX_OUTPUT_GAIN, _float_env("ESP32_AUDIO_OUTPUT_GAIN", 1.0)),
+        )
 
     async def setup(self, frame: StartFrame):
         await super().setup(frame)

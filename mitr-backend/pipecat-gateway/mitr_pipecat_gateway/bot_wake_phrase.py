@@ -60,6 +60,8 @@ from .bot import (
     PCM16Resampler,
     _context_summarization_assistant_params,
     _int_env,
+    _openai_input_noise_reduction,
+    _openai_input_noise_reduction_mode,
     _openai_realtime_max_output_tokens,
     _openai_realtime_model,
     _optional_timeout_env,
@@ -469,6 +471,8 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     packet_ms = _int_env("ESP32_AUDIO_PACKET_MS", 20)
     out_rate = _int_env("ESP32_AUDIO_OUT_SAMPLE_RATE", 16000)
     packet_bytes = int(out_rate * packet_ms / 1000) * 2
+    noise_reduction_mode = _openai_input_noise_reduction_mode()
+    logger.info("OpenAI realtime input noise reduction: {}", noise_reduction_mode or "disabled")
 
     async def send_state(state: str, **payload):
         try:
@@ -500,6 +504,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         settings=OpenAIRealtimeSTTService.Settings(
             model=os.getenv("OPENAI_REALTIME_STT_MODEL", "gpt-4o-transcribe"),
             language=_language(stt_language),
+            noise_reduction=noise_reduction_mode,
         ),
     )
 
@@ -514,6 +519,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
                 audio=AudioConfiguration(
                     input=AudioInput(
                         format=PCMAudioFormat(),
+                        noise_reduction=_openai_input_noise_reduction(),
                         turn_detection=turn_detection,
                     ),
                     output=AudioOutput(
