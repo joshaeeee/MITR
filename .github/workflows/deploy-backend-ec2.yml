@@ -366,6 +366,8 @@ jobs:
             update_env "API_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
             update_env "PIPECAT_GATEWAY_IMAGE" "${{ needs.build-pipecat-gateway.outputs.image_ref }}"
             update_env "REMINDER_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
+            update_env "OPENAI_REALTIME_INPUT_NOISE_REDUCTION" "far_field"
+            update_env "ESP32_AUDIO_OUTPUT_GAIN" "2.0"
 
             GHCR_USER="${{ github.actor }}"
             GHCR_TOKEN_VALUE="${{ github.token }}"
