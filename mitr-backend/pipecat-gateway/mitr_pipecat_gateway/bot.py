@@ -24,7 +24,6 @@ from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
     AudioInput,
     AudioOutput,
-    InputAudioNoiseReduction,
     PCMAudioFormat,
     SemanticTurnDetection,
     SessionProperties,
@@ -90,24 +89,6 @@ def _bool_env(name: str, fallback: bool) -> bool:
     if value is None:
         return fallback
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _openai_input_noise_reduction_mode() -> str | None:
-    value = os.getenv("OPENAI_REALTIME_INPUT_NOISE_REDUCTION", "").strip().lower()
-    if value in {"", "0", "false", "no", "none", "off", "disabled"}:
-        return None
-    if value not in {"near_field", "far_field"}:
-        raise RuntimeError(
-            "OPENAI_REALTIME_INPUT_NOISE_REDUCTION must be near_field, far_field, or off."
-        )
-    return value
-
-
-def _openai_input_noise_reduction() -> InputAudioNoiseReduction | None:
-    mode = _openai_input_noise_reduction_mode()
-    if mode is None:
-        return None
-    return InputAudioNoiseReduction(type=mode)
 
 
 def _positive_int_env(name: str, fallback: int) -> int:
@@ -582,8 +563,6 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     packet_ms = _int_env("ESP32_AUDIO_PACKET_MS", 20)
     out_rate = _int_env("ESP32_AUDIO_OUT_SAMPLE_RATE", 16000)
     packet_bytes = int(out_rate * packet_ms / 1000) * 2
-    noise_reduction_mode = _openai_input_noise_reduction_mode()
-    logger.info("OpenAI realtime input noise reduction: {}", noise_reduction_mode or "disabled")
 
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
@@ -611,7 +590,6 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
                 audio=AudioConfiguration(
                     input=AudioInput(
                         format=PCMAudioFormat(),
-                        noise_reduction=_openai_input_noise_reduction(),
                         turn_detection=SemanticTurnDetection(
                             eagerness=os.getenv("OPENAI_REALTIME_VAD_EAGERNESS", "high"),
                             create_response=True,
