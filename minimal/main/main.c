@@ -17,7 +17,9 @@
 #include "network.h"
 #include "ota_manager.h"
 #include "sounds.h"
+#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
 #include "wake_word.h"
+#endif
 
 static const char *TAG = "mitr_device_main";
 #if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
@@ -35,7 +37,7 @@ static int64_t now_ms(void)
 
 static void log_boot_state(const char *state)
 {
-    ESP_LOGW(TAG, "[BOOT] t=%lldms state=%s", now_ms(), state);
+    ESP_LOGI(TAG, "Boot state: %s (%lldms)", state, now_ms());
 }
 
 static void sleep_seconds(int seconds)
@@ -68,6 +70,18 @@ static bool ensure_device_bootstrapped(void)
     return true;
 }
 
+static void configure_runtime_logging(void)
+{
+    esp_log_level_set("*", ESP_LOG_WARN);
+    esp_log_level_set(TAG, ESP_LOG_INFO);
+    esp_log_level_set("mitr_gateway", ESP_LOG_INFO);
+    esp_log_level_set("network", ESP_LOG_INFO);
+    esp_log_level_set("ota_manager", ESP_LOG_INFO);
+#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
+    esp_log_level_set("wake_word", ESP_LOG_INFO);
+#endif
+}
+
 #if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY
 #if !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
 static bool transport_conversation_active(void)
@@ -87,21 +101,20 @@ static void start_wake_detection(EventGroupHandle_t wake_event_group, bool wake_
 
 static void run_gateway_mode(EventGroupHandle_t wake_event_group, bool wake_word_ready)
 {
-    ESP_LOGW(TAG, "[GATEWAY] Using Pipecat gateway prototype transport");
+    ESP_LOGI(TAG, "Starting Pipecat gateway transport");
     while (mitr_gateway_client_start() != ESP_OK) {
-        ESP_LOGW(TAG, "[GATEWAY] connect failed; retrying in %d seconds", NETWORK_RETRY_SEC);
+        ESP_LOGW(TAG, "Gateway connect failed; retrying in %d seconds", NETWORK_RETRY_SEC);
         mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
         sleep_seconds(NETWORK_RETRY_SEC);
     }
 
     mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
     log_boot_state("gateway_ready");
-    esp_log_level_set("*", ESP_LOG_INFO);
 
 #if CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
     (void)wake_event_group;
     (void)wake_word_ready;
-    ESP_LOGW(TAG, "[GATEWAY] Pipecat wake phrase mode enabled; local WakeNet detection skipped");
+    ESP_LOGI(TAG, "Wake phrase handled by Pipecat backend");
     while (true) {
         sleep_seconds(60);
     }
@@ -126,6 +139,7 @@ static void run_gateway_mode(EventGroupHandle_t wake_event_group, bool wake_word
 static void mitr_device_task(void *arg)
 {
     (void)arg;
+    configure_runtime_logging();
 
     esp_ota_mark_app_valid_cancel_rollback();
 
@@ -136,10 +150,11 @@ static void mitr_device_task(void *arg)
 #if CONFIG_MITR_MIC_LOOPBACK_PROBE
     media_run_mic_loopback_probe();
 #endif
-    esp_log_level_set("wake_word", ESP_LOG_INFO);
-    esp_log_level_set("media", ESP_LOG_INFO);
-    esp_log_level_set("preconnect_audio", ESP_LOG_INFO);
+#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
     const bool wake_word_ready = wake_word_init() == 0;
+#else
+    const bool wake_word_ready = false;
+#endif
     sounds_init();
     mitr_boot_feedback_init();
 
@@ -150,16 +165,21 @@ static void mitr_device_task(void *arg)
         mitr_device_firmware_version(),
         mitr_device_hardware_rev(),
         mitr_device_language());
+#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
     if (!wake_word_ready) {
         ESP_LOGE(TAG, "wake_word_init() failed; local wake detection disabled");
     }
+#endif
 
-    EventGroupHandle_t wake_event_group = xEventGroupCreate();
+    EventGroupHandle_t wake_event_group = NULL;
+#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
+    wake_event_group = xEventGroupCreate();
     if (wake_event_group == NULL) {
         ESP_LOGE(TAG, "Failed to create wake event group");
         vTaskDelete(NULL);
         return;
     }
+#endif
 
     esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
         2,

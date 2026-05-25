@@ -492,7 +492,7 @@ void mitr_preconnect_audio_src_set_muted(bool muted)
         reset_ring_locked(s_src);
     }
     xSemaphoreGive(s_src->lock);
-    ESP_LOGI(TAG, "[MIC] muted=%d", muted ? 1 : 0);
+    ESP_LOGD(TAG, "Mic muted=%d", muted ? 1 : 0);
 }
 
 bool mitr_preconnect_audio_src_is_muted(void)
