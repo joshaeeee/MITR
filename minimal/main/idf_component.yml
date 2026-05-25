@@ -4,4 +4,3 @@ dependencies:
   tempotian/av_render: "0.9.1"
   tempotian/media_lib_sal: "0.9.1"
   tempotian/codec_board: ~1.0.0
-  espressif/esp-sr: ">=2.1.5"

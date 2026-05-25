@@ -16,11 +16,11 @@ void board_init()
 {
     ESP_LOGI(TAG, "Initializing board");
 
-    if (strcmp(CONFIG_LK_EXAMPLE_CODEC_BOARD_TYPE, "MITR_ESP32_S3_RAW_I2S") == 0) {
+    if (strcmp(CONFIG_MITR_CODEC_BOARD_TYPE, "MITR_ESP32_S3_RAW_I2S") == 0) {
         ESP_LOGI(TAG, "Using inline raw I2S board config for Mitr ESP32-S3");
         ESP_ERROR_CHECK(codec_board_parse_all_config(MITR_ESP32_S3_RAW_I2S_CFG) == 0 ? ESP_OK : ESP_FAIL);
     } else {
-        set_codec_board_type(CONFIG_LK_EXAMPLE_CODEC_BOARD_TYPE);
+        set_codec_board_type(CONFIG_MITR_CODEC_BOARD_TYPE);
     }
     codec_init_cfg_t cfg = {
         .in_mode = CODEC_I2S_MODE_STD,
@@ -29,6 +29,6 @@ void board_init()
         .reuse_dev = false
     };
     int ret = init_codec(&cfg);
-    ESP_LOGI(TAG, "Codec board type: %s", CONFIG_LK_EXAMPLE_CODEC_BOARD_TYPE);
+    ESP_LOGI(TAG, "Codec board type: %s", CONFIG_MITR_CODEC_BOARD_TYPE);
     ESP_ERROR_CHECK(ret == 0 ? ESP_OK : ESP_FAIL);
 }

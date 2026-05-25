@@ -283,7 +283,6 @@ set_from_env "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN INTERNAL_SERVICE_TOKEN
 set_from_env "${gateway_env}" MITR_GATEWAY_AUTH_MODE MITR_GATEWAY_AUTH_MODE
 set_from_env "${gateway_env}" MITR_GATEWAY_PUBLIC_WS_URL PIPECAT_GATEWAY_PUBLIC_WS_URL
 set_from_env "${gateway_env}" MITR_GATEWAY_CORS_ORIGINS CORS_ORIGINS
-set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_MODE MITR_GATEWAY_WAKE_MODE
 set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_PHRASES MITR_GATEWAY_WAKE_PHRASES
 ensure_current_wake_phrases "${gateway_env}"
 set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC

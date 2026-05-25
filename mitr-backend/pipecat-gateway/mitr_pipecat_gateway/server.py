@@ -136,11 +136,7 @@ async def websocket_endpoint(websocket: WebSocket):
         }
     )
 
-    wake_mode = os.getenv("MITR_GATEWAY_WAKE_MODE", "pipecat_phrase").lower()
-    if wake_mode in {"local_wakenet", "esp_wake", "legacy"}:
-        from .bot import run_bot
-    else:
-        from .bot_wake_phrase import run_bot
+    from .bot_wake_phrase import run_bot
 
     try:
         while True:

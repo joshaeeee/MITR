@@ -1,7 +1,5 @@
 dependencies:
   cmake_utilities: 0.*
-  espressif/esp-sr:
-    version: 2.1.5
   espressif/esp32-camera:
     require: public
     rules:

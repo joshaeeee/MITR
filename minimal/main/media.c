@@ -10,7 +10,6 @@
 #include "av_render_default.h"
 #include "esp_audio_dec_default.h"
 #include "esp_audio_enc_default.h"
-#include "esp_capture_defaults.h"
 #include "esp_capture_sink.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -116,8 +115,8 @@ static int build_renderer_system(void)
     renderer_system.render_device = render_device;
 
 #if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY
-    esp_codec_dev_set_out_vol(render_device, CONFIG_LK_EXAMPLE_SPEAKER_VOLUME);
-    renderer_system.output_volume = CONFIG_LK_EXAMPLE_SPEAKER_VOLUME;
+    esp_codec_dev_set_out_vol(render_device, CONFIG_MITR_SPEAKER_VOLUME);
+    renderer_system.output_volume = CONFIG_MITR_SPEAKER_VOLUME;
     renderer_system.output_muted = false;
     ESP_LOGD(TAG, "Gateway playback ready");
     return 0;
@@ -128,8 +127,8 @@ static int build_renderer_system(void)
     renderer_system.audio_renderer = av_render_alloc_i2s_render(&i2s_cfg);
     NULL_CHECK(renderer_system.audio_renderer, "Failed to create I2S renderer");
 
-    esp_codec_dev_set_out_vol(i2s_cfg.play_handle, CONFIG_LK_EXAMPLE_SPEAKER_VOLUME);
-    renderer_system.output_volume = CONFIG_LK_EXAMPLE_SPEAKER_VOLUME;
+    esp_codec_dev_set_out_vol(i2s_cfg.play_handle, CONFIG_MITR_SPEAKER_VOLUME);
+    renderer_system.output_volume = CONFIG_MITR_SPEAKER_VOLUME;
     renderer_system.output_muted = false;
 
     av_render_cfg_t render_cfg = {
@@ -199,12 +198,6 @@ void media_set_mic_muted(bool muted)
 bool media_is_mic_muted(void)
 {
     return mitr_preconnect_audio_src_is_muted();
-}
-
-void media_read_reference_pcm(int16_t *buf, int n_samples, int delay_samples)
-{
-    (void)delay_samples;
-    memset(buf, 0, (size_t)n_samples * sizeof(int16_t));
 }
 
 esp_err_t media_start_preconnect_capture(void)

@@ -39,7 +39,7 @@ grep_files 'gh[pousr]_[A-Za-z0-9_]{20,}' 'GitHub token'
 grep_files 'AIza[0-9A-Za-z_-]{35}' 'Google API key'
 grep_files 'AKIA[0-9A-Z]{16}' 'AWS access key id'
 grep_files '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' 'private key material'
-grep_files 'CONFIG_(MITR_DEVICE_(ACCESS_TOKEN|PAIRING_TOKEN)|LK_EXAMPLE_WIFI_PASSWORD)="[^"]+"' 'firmware-baked device token or Wi-Fi password'
+grep_files 'CONFIG_(MITR_DEVICE_(ACCESS_TOKEN|PAIRING_TOKEN)|MITR_WIFI_PASSWORD)="[^"]+"' 'firmware-baked device token or Wi-Fi password'
 grep_files 'VOICE_NOTES_ENCRYPTION_KEY_B64=[A-Za-z0-9+/=]{20,}' 'voice-note encryption key'
 
 scan_sensitive_env_assignments() {

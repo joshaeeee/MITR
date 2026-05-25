@@ -63,7 +63,6 @@ services:
       MITR_BACKEND_BASE_URL: http://api:8080
       MITR_GATEWAY_HOST: 0.0.0.0
       MITR_GATEWAY_PORT: 7860
-      MITR_GATEWAY_WAKE_MODE: pipecat_phrase
     command: ["uv", "run", "python", "-m", "mitr_pipecat_gateway.server"]
     expose:
       - "7860"

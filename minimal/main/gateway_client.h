@@ -11,8 +11,6 @@ extern "C" {
 esp_err_t mitr_gateway_client_start(void);
 void mitr_gateway_client_stop(void);
 bool mitr_gateway_client_is_connected(void);
-bool mitr_gateway_client_is_active(void);
-void mitr_gateway_client_on_wake_detected(void);
 
 #ifdef __cplusplus
 }

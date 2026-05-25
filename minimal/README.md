@@ -22,7 +22,7 @@ auth, bootstrap, heartbeat, telemetry, and OTA metadata.
 - Pipecat session metadata via `POST /devices/session/open` and
   `POST /devices/token`
 - PCM16 mono WebSocket transport to the Pipecat gateway
-- server wake phrase firmware mode
+- backend wake phrase mode
 - heartbeat via `POST /devices/heartbeat`
 - telemetry via `POST /devices/telemetry`
 - session end via `POST /devices/session/end`
@@ -44,7 +44,6 @@ Run the Pipecat gateway:
 
 ```sh
 cd /Users/shivanshjoshi/conductor/workspaces/Mitr/nairobi-v1/mitr-backend/pipecat-gateway
-MITR_GATEWAY_WAKE_MODE=pipecat_phrase \
 MITR_GATEWAY_WAKE_PHRASES="hi mitr,hey mitr,hi mitra,hey mitra,hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,hi reka,hey reka,hi esp,hey esp,hi e s p,हाय मित्र,हे मित्र,हाय रेका,हाय रेखा" \
 MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC=45 \
 OPENAI_REALTIME_STT_LANGUAGE=en \
@@ -96,11 +95,11 @@ CONFIG_MITR_GATEWAY_WS_URL="ws://192.168.x.x:7860/ws"
 
 ```sh
 source /Users/shivanshjoshi/esp-idf/export.sh
-idf.py -B build-gateway-server-wake \
-  -DSDKCONFIG=build-gateway-server-wake/sdkconfig \
-  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.gateway;sdkconfig.defaults.gateway-server-wake" \
+idf.py -B build-gateway \
+  -DSDKCONFIG=build-gateway/sdkconfig \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.gateway" \
   build
-idf.py -B build-gateway-server-wake -p /dev/cu.usbmodem101 flash monitor
+idf.py -B build-gateway -p /dev/cu.usbmodem101 flash monitor
 ```
 
 ## Expected Runtime

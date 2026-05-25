@@ -54,7 +54,6 @@ Audio sources are used to acquire audio data from audio input devices connected 
 Built-in sources:
 
 - `esp_capture_new_audio_dev_src`: Codec-based audio capture
-- `esp_capture_new_audio_aec_src`: Codec-based audio capture with Acoustic Echo Cancellation (AEC)
 
 ## 🎥 Video Sources
 

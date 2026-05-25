@@ -91,7 +91,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 "Disconnected: reason=%d attempt=%d ssid=%s",
                 event ? event->reason : -1,
                 state.retry_attempt + 1,
-                strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) > 0 ? CONFIG_LK_EXAMPLE_WIFI_SSID : "<saved>");
+                strlen(CONFIG_MITR_WIFI_SSID) > 0 ? CONFIG_MITR_WIFI_SSID : "<saved>");
 
             if (event && wifi_reason_invalidates_hint(event->reason)) {
                 (void)mitr_device_storage_clear_wifi_hint();
@@ -106,8 +106,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 return;
             }
 
-            if (CONFIG_LK_EXAMPLE_NETWORK_MAX_RETRIES < 0 ||
-                state.retry_attempt < CONFIG_LK_EXAMPLE_NETWORK_MAX_RETRIES) {
+            if (CONFIG_MITR_NETWORK_MAX_RETRIES < 0 ||
+                state.retry_attempt < CONFIG_MITR_NETWORK_MAX_RETRIES) {
                 state.retry_attempt++;
                 esp_wifi_connect();
                 return;
@@ -178,13 +178,13 @@ bool mitr_network_connect(void)
         state.handlers_registered = true;
     }
 
-    const bool has_static_wifi = strlen(CONFIG_LK_EXAMPLE_WIFI_SSID) > 0;
+    const bool has_static_wifi = strlen(CONFIG_MITR_WIFI_SSID) > 0;
     bool provisioning_started = false;
     wifi_config_t base_config = {0};
     if (has_static_wifi) {
-        strlcpy((char *)base_config.sta.ssid, CONFIG_LK_EXAMPLE_WIFI_SSID, sizeof(base_config.sta.ssid));
-        strlcpy((char *)base_config.sta.password, CONFIG_LK_EXAMPLE_WIFI_PASSWORD, sizeof(base_config.sta.password));
-        base_config.sta.threshold.authmode = strlen(CONFIG_LK_EXAMPLE_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
+        strlcpy((char *)base_config.sta.ssid, CONFIG_MITR_WIFI_SSID, sizeof(base_config.sta.ssid));
+        strlcpy((char *)base_config.sta.password, CONFIG_MITR_WIFI_PASSWORD, sizeof(base_config.sta.password));
+        base_config.sta.threshold.authmode = strlen(CONFIG_MITR_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
         base_config.sta.pmf_cfg.capable = true;
         base_config.sta.pmf_cfg.required = false;
     } else {

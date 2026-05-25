@@ -55,7 +55,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from .auth import DeviceAuthContext
 from .agnost import AgnostConfig, AgnostTurnRecorder
-from .bot import (
+from .bot_common import (
     OPENAI_REALTIME_SAMPLE_RATE,
     MitrRealtime2SessionOptionsMixin,
     PCM16Resampler,

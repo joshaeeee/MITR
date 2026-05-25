@@ -1,9 +1,3 @@
-if(CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE)
-    set(mitr_gateway_client_src "gateway_client_server_wake.c")
-else()
-    set(mitr_gateway_client_src "gateway_client.c")
-endif()
-
 set(mitr_device_srcs
     "main.c"
     "board.c"
@@ -17,7 +11,7 @@ set(mitr_device_srcs
     "ota_manager.c"
     "atomic_compat.c"
     "sounds.c"
-    ${mitr_gateway_client_src}
+    "gateway_client.c"
 )
 
 set(mitr_device_priv_requires
@@ -38,11 +32,6 @@ set(mitr_device_priv_requires
     tempotian__codec_board
     tempotian__media_lib_sal
 )
-
-if(NOT CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE)
-    list(APPEND mitr_device_srcs "wake_word.c")
-    list(APPEND mitr_device_priv_requires espressif__esp-sr)
-endif()
 
 idf_component_register(
     SRCS

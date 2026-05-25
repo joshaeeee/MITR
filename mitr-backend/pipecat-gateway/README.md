@@ -130,7 +130,6 @@ Start the gateway:
 
 ```sh
 cd /Users/shivanshjoshi/conductor/workspaces/Mitr/nairobi-v1/mitr-backend/pipecat-gateway
-MITR_GATEWAY_WAKE_MODE=pipecat_phrase \
 MITR_GATEWAY_WAKE_PHRASES="hi mitr,hey mitr,hi mitra,hey mitra,hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,hi reka,hey reka,hi esp,hey esp,hi e s p,हाय मित्र,हे मित्र,हाय रेका,हाय रेखा" \
 MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC=45 \
 OPENAI_REALTIME_TURN_DETECTION=manual \
@@ -167,12 +166,12 @@ CONFIG_MITR_GATEWAY_WS_URL="ws://192.168.x.x:7860/ws"
 CONFIG_MITR_DEVICE_BACKEND_BASE_URL="http://192.168.x.x:8081"
 ```
 
-Build the server wake phrase firmware:
+Build the gateway firmware:
 
 ```sh
-idf.py -B build-gateway-server-wake \
-  -DSDKCONFIG=build-gateway-server-wake/sdkconfig \
-  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.gateway;sdkconfig.defaults.gateway-server-wake" \
+idf.py -B build-gateway \
+  -DSDKCONFIG=build-gateway/sdkconfig \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.gateway" \
   -p /dev/cu.usbmodem101 flash monitor
 ```
 

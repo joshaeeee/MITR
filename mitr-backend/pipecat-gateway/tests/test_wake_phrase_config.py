@@ -9,7 +9,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 
-from mitr_pipecat_gateway import bot, bot_wake_phrase
+from mitr_pipecat_gateway import bot_common, bot_wake_phrase
 from mitr_pipecat_gateway.auth import DeviceAuthContext
 
 
@@ -125,7 +125,7 @@ class WakePhraseConfigTests(unittest.TestCase):
         os.environ["OPENAI_REALTIME_TRUNCATION"] = "auto"
 
         self.assertEqual(
-            bot._openai_realtime2_session_extra_fields("gpt-realtime-2"),
+            bot_common._openai_realtime2_session_extra_fields("gpt-realtime-2"),
             {"reasoning": {"effort": "low"}, "truncation": "auto"},
         )
 
@@ -133,7 +133,7 @@ class WakePhraseConfigTests(unittest.TestCase):
         os.environ["OPENAI_REALTIME_REASONING_EFFORT"] = "low"
 
         with self.assertRaises(RuntimeError):
-            bot._openai_realtime2_session_extra_fields("gpt-realtime")
+            bot_common._openai_realtime2_session_extra_fields("gpt-realtime")
 
     def test_realtime2_retention_ratio_truncation(self):
         os.environ["OPENAI_REALTIME_TRUNCATION"] = "retention_ratio"
@@ -141,7 +141,7 @@ class WakePhraseConfigTests(unittest.TestCase):
         os.environ["OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT"] = "8000"
 
         self.assertEqual(
-            bot._openai_realtime2_session_extra_fields("gpt-realtime-2"),
+            bot_common._openai_realtime2_session_extra_fields("gpt-realtime-2"),
             {
                 "truncation": {
                     "type": "retention_ratio",
@@ -155,16 +155,16 @@ class WakePhraseConfigTests(unittest.TestCase):
         os.environ["OPENAI_REALTIME_REASONING_EFFORT"] = "fast-ish"
 
         with self.assertRaises(RuntimeError):
-            bot._openai_realtime2_session_extra_fields("gpt-realtime-2")
+            bot_common._openai_realtime2_session_extra_fields("gpt-realtime-2")
 
     def test_realtime2_token_limit_requires_retention_ratio(self):
         os.environ["OPENAI_REALTIME_TRUNCATION_POST_INSTRUCTIONS_TOKEN_LIMIT"] = "8000"
 
         with self.assertRaises(RuntimeError):
-            bot._openai_realtime2_session_extra_fields("gpt-realtime-2")
+            bot_common._openai_realtime2_session_extra_fields("gpt-realtime-2")
 
     def test_context_summarization_uses_pipecat_auto_defaults_with_dedicated_llm(self):
-        params = bot._context_summarization_assistant_params("test-openai-key")
+        params = bot_common._context_summarization_assistant_params("test-openai-key")
 
         self.assertTrue(params.enable_auto_context_summarization)
         config = params.auto_context_summarization_config
@@ -180,7 +180,7 @@ class WakePhraseConfigTests(unittest.TestCase):
     def test_context_summarization_can_be_disabled(self):
         os.environ["MITR_GATEWAY_CONTEXT_SUMMARIZATION"] = "false"
 
-        params = bot._context_summarization_assistant_params("test-openai-key")
+        params = bot_common._context_summarization_assistant_params("test-openai-key")
 
         self.assertFalse(params.enable_auto_context_summarization)
         self.assertIsNone(params.auto_context_summarization_config)
@@ -193,7 +193,7 @@ class WakePhraseConfigTests(unittest.TestCase):
         os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_KEEP_MESSAGES"] = "6"
         os.environ["MITR_GATEWAY_CONTEXT_SUMMARY_TIMEOUT_SEC"] = "30"
 
-        config = bot._context_summarization_assistant_params(
+        config = bot_common._context_summarization_assistant_params(
             "test-openai-key"
         ).auto_context_summarization_config
 
@@ -206,7 +206,7 @@ class WakePhraseConfigTests(unittest.TestCase):
 
     def test_latest_context_summary_text_finds_inserted_summary(self):
         self.assertEqual(
-            bot._latest_context_summary_text(
+            bot_common._latest_context_summary_text(
                 [
                     {"role": "user", "content": "Conversation summary: user wants yoga"},
                     {"role": "assistant", "content": "Sure."},
@@ -217,7 +217,7 @@ class WakePhraseConfigTests(unittest.TestCase):
 
     def test_latest_context_summary_text_ignores_non_summary_messages(self):
         self.assertIsNone(
-            bot._latest_context_summary_text(
+            bot_common._latest_context_summary_text(
                 [
                     {"role": "user", "content": "hello"},
                     {"role": "assistant", "content": "hi"},
@@ -226,7 +226,7 @@ class WakePhraseConfigTests(unittest.TestCase):
         )
 
     def test_system_prompt_template_renders_runtime_variables(self):
-        prompt = bot._system_instruction(
+        prompt = bot_common._system_instruction(
             DeviceAuthContext(
                 device_id="mitr-esp32-002",
                 user_id="user-1",

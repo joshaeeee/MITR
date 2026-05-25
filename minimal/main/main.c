@@ -4,7 +4,6 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -17,14 +16,8 @@
 #include "network.h"
 #include "ota_manager.h"
 #include "sounds.h"
-#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-#include "wake_word.h"
-#endif
 
 static const char *TAG = "mitr_device_main";
-#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-static const EventBits_t WAKE_DETECTED_BIT = BIT0;
-#endif
 
 static const int BOOTSTRAP_RETRY_SEC = 10;
 static const int NETWORK_RETRY_SEC = 30;
@@ -77,29 +70,10 @@ static void configure_runtime_logging(void)
     esp_log_level_set("mitr_gateway", ESP_LOG_INFO);
     esp_log_level_set("network", ESP_LOG_INFO);
     esp_log_level_set("ota_manager", ESP_LOG_INFO);
-#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-    esp_log_level_set("wake_word", ESP_LOG_INFO);
-#endif
 }
 
 #if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY
-#if !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-static bool transport_conversation_active(void)
-{
-    return mitr_gateway_client_is_active();
-}
-
-static void start_wake_detection(EventGroupHandle_t wake_event_group, bool wake_word_ready)
-{
-    if (!wake_word_ready || wake_event_group == NULL || transport_conversation_active()) {
-        return;
-    }
-    xEventGroupClearBits(wake_event_group, WAKE_DETECTED_BIT);
-    wake_word_start(wake_event_group, WAKE_DETECTED_BIT);
-}
-#endif
-
-static void run_gateway_mode(EventGroupHandle_t wake_event_group, bool wake_word_ready)
+static void run_gateway_mode(void)
 {
     ESP_LOGI(TAG, "Starting Pipecat gateway transport");
     while (mitr_gateway_client_start() != ESP_OK) {
@@ -111,28 +85,10 @@ static void run_gateway_mode(EventGroupHandle_t wake_event_group, bool wake_word
     mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
     log_boot_state("gateway_ready");
 
-#if CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-    (void)wake_event_group;
-    (void)wake_word_ready;
     ESP_LOGI(TAG, "Wake phrase handled by Pipecat backend");
     while (true) {
         sleep_seconds(60);
     }
-#else
-    start_wake_detection(wake_event_group, wake_word_ready);
-
-    while (true) {
-        EventBits_t wake_bits = xEventGroupWaitBits(
-            wake_event_group,
-            WAKE_DETECTED_BIT,
-            pdTRUE,
-            pdFALSE,
-            pdMS_TO_TICKS(100));
-        if ((wake_bits & WAKE_DETECTED_BIT) != 0) {
-            mitr_gateway_client_on_wake_detected();
-        }
-    }
-#endif
 }
 #endif
 
@@ -150,11 +106,6 @@ static void mitr_device_task(void *arg)
 #if CONFIG_MITR_MIC_LOOPBACK_PROBE
     media_run_mic_loopback_probe();
 #endif
-#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-    const bool wake_word_ready = wake_word_init() == 0;
-#else
-    const bool wake_word_ready = false;
-#endif
     sounds_init();
     mitr_boot_feedback_init();
 
@@ -165,21 +116,6 @@ static void mitr_device_task(void *arg)
         mitr_device_firmware_version(),
         mitr_device_hardware_rev(),
         mitr_device_language());
-#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-    if (!wake_word_ready) {
-        ESP_LOGE(TAG, "wake_word_init() failed; local wake detection disabled");
-    }
-#endif
-
-    EventGroupHandle_t wake_event_group = NULL;
-#if CONFIG_MITR_TRANSPORT_PIPECAT_GATEWAY && !CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE
-    wake_event_group = xEventGroupCreate();
-    if (wake_event_group == NULL) {
-        ESP_LOGE(TAG, "Failed to create wake event group");
-        vTaskDelete(NULL);
-        return;
-    }
-#endif
 
     esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
         2,
@@ -224,7 +160,7 @@ static void mitr_device_task(void *arg)
         ESP_LOGW(TAG, "Preconnect capture failed to start; gateway capture may not receive audio immediately");
     }
 
-    run_gateway_mode(wake_event_group, wake_word_ready);
+    run_gateway_mode();
 }
 
 void app_main(void)

@@ -83,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           test -x minimal/check-production-config.sh
-          if grep -REn 'CONFIG_(MITR_DEVICE_(ACCESS_TOKEN|PAIRING_TOKEN)|LK_EXAMPLE_WIFI_PASSWORD)="[^"]+"' minimal/sdkconfig.defaults* minimal/main/Kconfig.projbuild; then
+          if grep -REn 'CONFIG_(MITR_DEVICE_(ACCESS_TOKEN|PAIRING_TOKEN)|MITR_WIFI_PASSWORD)="[^"]+"' minimal/sdkconfig.defaults* minimal/main/Kconfig.projbuild; then
             echo "Firmware defaults must not contain baked device tokens or Wi-Fi passwords." >&2
             exit 1
           fi

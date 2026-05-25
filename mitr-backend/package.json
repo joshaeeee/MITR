@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "pnpm dev:api",
     "dev:api": "tsx watch src/index.ts",
-    "dev:agent": "cd pipecat-gateway && MITR_GATEWAY_WAKE_MODE=pipecat_phrase uv run python -m mitr_pipecat_gateway.server",
+    "dev:agent": "cd pipecat-gateway && uv run python -m mitr_pipecat_gateway.server",
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "start": "pnpm start:api",
     "start:api": "node dist/src/index.js",

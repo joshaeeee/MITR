@@ -21,14 +21,6 @@
 #include "preconnect_audio_src.h"
 #include "sounds.h"
 
-#ifndef MITR_GATEWAY_SERVER_WAKE_MODE
-#define MITR_GATEWAY_SERVER_WAKE_MODE 0
-#endif
-
-#if !MITR_GATEWAY_SERVER_WAKE_MODE
-#include "wake_word.h"
-#endif
-
 static const char *TAG = "mitr_gateway";
 
 #define GATEWAY_MIC_SAMPLES      512
@@ -55,10 +47,6 @@ static TaskHandle_t s_sender_task = NULL;
 static TaskHandle_t s_playback_task = NULL;
 static volatile bool s_connected = false;
 static volatile bool s_started = false;
-static volatile bool s_active = false;
-#if !MITR_GATEWAY_SERVER_WAKE_MODE
-static uint32_t s_wake_generation = 0;
-#endif
 
 static int64_t now_ms(void)
 {
@@ -129,8 +117,7 @@ static void cleanup_start_failure(void)
 static void gateway_mic_tap(const int16_t *mono_pcm, size_t n_samples, void *ctx)
 {
     (void)ctx;
-    if (!s_started || !s_connected || (!MITR_GATEWAY_SERVER_WAKE_MODE && !s_active) ||
-        s_mic_queue == NULL || mono_pcm == NULL) {
+    if (!s_started || !s_connected || s_mic_queue == NULL || mono_pcm == NULL) {
         return;
     }
 
@@ -167,8 +154,7 @@ static void send_gateway_control(const char *type)
 
 static bool send_pcm_packet(const uint8_t *bytes, int byte_count)
 {
-    if (!s_ws || !s_connected || (!MITR_GATEWAY_SERVER_WAKE_MODE && !s_active) ||
-        bytes == NULL || byte_count <= 0) {
+    if (!s_ws || !s_connected || bytes == NULL || byte_count <= 0) {
         return false;
     }
     if (!esp_websocket_client_is_connected(s_ws)) {
@@ -197,12 +183,9 @@ static void sender_task(void *arg)
 
     while (s_started) {
         if (xQueueReceive(s_mic_queue, &frame, pdMS_TO_TICKS(100)) != pdTRUE) {
-            if (!MITR_GATEWAY_SERVER_WAKE_MODE && !s_active) {
-                packet_bytes = 0;
-            }
             continue;
         }
-        if (!s_connected || (!MITR_GATEWAY_SERVER_WAKE_MODE && !s_active) || s_ws == NULL) {
+        if (!s_connected || s_ws == NULL) {
             packet_bytes = 0;
             continue;
         }
@@ -211,8 +194,7 @@ static void sender_task(void *arg)
         int remaining = frame.sample_count * (int)sizeof(int16_t);
         int offset = 0;
 
-        while (remaining > 0 && s_started && s_connected &&
-               (MITR_GATEWAY_SERVER_WAKE_MODE || s_active)) {
+        while (remaining > 0 && s_started && s_connected) {
             int capacity = GATEWAY_PCM_PACKET_BYTES - packet_bytes;
             int copy_bytes = remaining < capacity ? remaining : capacity;
             memcpy(packet + packet_bytes, src + offset, (size_t)copy_bytes);
@@ -248,23 +230,6 @@ static void playback_task(void *arg)
     media_stream_playback_stop();
     vTaskDelete(NULL);
 }
-
-#if !MITR_GATEWAY_SERVER_WAKE_MODE
-static void conversation_window_task(void *arg)
-{
-    const uint32_t generation = (uint32_t)(uintptr_t)arg;
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_MITR_GATEWAY_TALK_WINDOW_SEC * 1000));
-    if (s_active && generation == s_wake_generation) {
-        s_active = false;
-        send_gateway_control("stop");
-        media_stream_playback_stop();
-        mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
-        wake_word_rearm();
-        ESP_LOGI(TAG, "Gateway talk window ended; local wake rearmed");
-    }
-    vTaskDelete(NULL);
-}
-#endif
 
 static void handle_ws_data(const esp_websocket_event_data_t *data)
 {
@@ -305,9 +270,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         {
             bool was_connected = s_connected;
             s_connected = true;
-            if (MITR_GATEWAY_SERVER_WAKE_MODE) {
-                reset_gateway_queues();
-            }
+            reset_gateway_queues();
             ESP_LOGI(TAG, "Gateway connected");
             send_gateway_control("hello");
             if (s_started && !was_connected) {
@@ -320,7 +283,6 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         {
             bool was_connected = s_connected;
             s_connected = false;
-            s_active = false;
             reset_gateway_queues();
             media_stream_playback_stop();
             if (s_started && was_connected) {
@@ -438,13 +400,11 @@ esp_err_t mitr_gateway_client_start(void)
     }
 
     s_started = true;
-    if (MITR_GATEWAY_SERVER_WAKE_MODE) {
-        ESP_LOGI(TAG, "Gateway audio stream ready: backend wake phrase mode");
-    }
+    ESP_LOGI(TAG, "Gateway audio stream ready: backend wake phrase mode");
     xTaskCreatePinnedToCore(
         sender_task,
         "gateway_send",
-        MITR_GATEWAY_SERVER_WAKE_MODE ? 8192 : 4096,
+        8192,
         NULL,
         5,
         &s_sender_task,
@@ -459,7 +419,6 @@ void mitr_gateway_client_stop(void)
         return;
     }
     s_started = false;
-    s_active = false;
     s_connected = false;
     mitr_preconnect_audio_src_unregister_tap(gateway_mic_tap, NULL);
     if (s_ws != NULL) {
@@ -481,45 +440,4 @@ void mitr_gateway_client_stop(void)
 bool mitr_gateway_client_is_connected(void)
 {
     return s_connected;
-}
-
-bool mitr_gateway_client_is_active(void)
-{
-    if (MITR_GATEWAY_SERVER_WAKE_MODE) {
-        return false;
-    }
-    return s_active;
-}
-
-void mitr_gateway_client_on_wake_detected(void)
-{
-#if MITR_GATEWAY_SERVER_WAKE_MODE
-    return;
-#else
-    if (!s_connected) {
-        ESP_LOGW(TAG, "Wake detected but gateway is not connected");
-        wake_word_rearm();
-        return;
-    }
-    if (s_active) {
-        ESP_LOGW(TAG, "Ignoring wake because gateway conversation is already active");
-        return;
-    }
-
-    s_wake_generation += 1;
-    xQueueReset(s_mic_queue);
-    xQueueReset(s_playback_queue);
-    s_active = true;
-    mitr_boot_feedback_set_state(MITR_BOOT_STATE_ACTIVE_SESSION);
-    send_gateway_control("wake");
-    ESP_LOGI(TAG, "Gateway wake started for %d seconds", CONFIG_MITR_GATEWAY_TALK_WINDOW_SEC);
-    xTaskCreatePinnedToCore(
-        conversation_window_task,
-        "gateway_window",
-        3072,
-        (void *)(uintptr_t)s_wake_generation,
-        5,
-        NULL,
-        tskNO_AFFINITY);
-#endif
 }

@@ -54,7 +54,6 @@ graph LR
 内置源：
 
 - `esp_capture_new_audio_dev_src`：基于编解码器的音频采集
-- `esp_capture_new_audio_aec_src`：基于编解码器并支持回声消除（AEC）的音频采集
 
 ## 🎥 视频源
 

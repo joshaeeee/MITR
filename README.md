@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Built with LiveKit Realtime Voice &middot; OpenAI &middot; Expo &middot; Node.js
+  Built with Pipecat &middot; OpenAI Realtime &middot; Expo &middot; Node.js
 </p>
 
 ---
@@ -47,7 +47,7 @@ Interactive scripture sessions with structured flow control. MITR can lead a use
 - Guided scripture walkthroughs with `flow_start` / `flow_next` / `flow_stop`
 - Covers all 18 Mahapuranas, Ramayana (regional versions), Mahabharata, Bhagavata
 - Multi-faith: Hinduism, Sikhism, Jainism, and Islam at depth
-- Auto-published ambient audio track during satsang via LiveKit
+- Voice-led ambient devotional sessions through the Pipecat gateway
 
 ### Stories & Oral Tradition
 Stories from Panchatantra, Jataka tales, lives of saints (Mirabai, Kabir, Tukaram, Guru Nanak, Vivekananda), and regional folk mythology. The same story can be told in 2 minutes or 20, depending on mood.
@@ -98,14 +98,14 @@ Voice-recorded journal entries. MITR prompts with questions and records answers 
 ## Architecture
 
 ```
-mitr-backend/          API server + LiveKit agent worker + all tools/services
+mitr-backend/          API server + Pipecat gateway + all tools/services
 mitr-mobile/           Family caregiver app (Expo Router, iOS)
 stories_curated.jsonl  Curated story corpus
 ```
 
 The backend runs two processes:
 1. **API Server** — REST endpoints for auth, elder management, family connections, device status, and health checks
-2. **Agent Worker** — LiveKit agent that handles real-time voice via OpenAI Realtime API, with 20+ async tools for low-latency response
+2. **Pipecat Gateway** — WebSocket voice gateway that handles wake phrase detection, OpenAI Realtime audio, and tool calls
 
 ### Tool Surface
 All tools are optimized for voice latency — async tools return a fast acknowledgment first, then deliver detailed results as a follow-up:
@@ -129,7 +129,6 @@ All tools are optimized for voice latency — async tools return a fast acknowle
 - pnpm
 - PostgreSQL & Redis
 - ffmpeg (for satsang ambience audio)
-- LiveKit server credentials
 - OpenAI API key
 
 ### Setup
@@ -140,7 +139,7 @@ pnpm install
 
 # Configure environment
 cp mitr-backend/.env.example mitr-backend/.env
-# Fill in API keys and LiveKit credentials
+# Fill in API keys and gateway credentials
 
 # Start API server
 pnpm dev:api

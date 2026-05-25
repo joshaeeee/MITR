@@ -10,24 +10,7 @@ menu "Mitr ESP32 Device"
             WebSocket URL for the Pipecat gateway. Set this in local/prod
             sdkconfig; do not ship production firmware with an empty value.
 
-    config MITR_GATEWAY_TALK_WINDOW_SEC
-        int "Pipecat gateway talk window after wake (seconds)"
-        default 60
-        range 3 120
-        help
-            Prototype simplification: after local wake detection, stream mic
-            audio to the gateway for this many seconds, then stop and re-arm
-            wake detection.
-
-    config MITR_GATEWAY_SERVER_WAKE_PHRASE
-        bool "Stream mic continuously and let Pipecat detect wake phrase"
-        default y
-        help
-            The ESP32 keeps the Pipecat gateway WebSocket open and streams mic
-            PCM continuously. Local WakeNet wake detection is skipped so the
-            backend can use Pipecat's wake phrase user turn start strategy.
-
-    config LK_EXAMPLE_CODEC_BOARD_TYPE
+    config MITR_CODEC_BOARD_TYPE
         string "Codec board type"
         default "MITR_ESP32_S3_RAW_I2S"
         help
@@ -35,28 +18,28 @@ menu "Mitr ESP32 Device"
             Defaults to the raw I2S wiring used by the Mitr ESP32-S3-WROOM
             bring-up board. Change this only when targeting different hardware.
 
-    config LK_EXAMPLE_SPEAKER_VOLUME
+    config MITR_SPEAKER_VOLUME
         int "Default speaker volume (0-100%)"
         default 100
         range 0 100
         help
             Initial output volume used by the local speaker renderer.
 
-    config LK_EXAMPLE_WIFI_SSID
+    config MITR_WIFI_SSID
         string "Wi-Fi SSID"
         default ""
         help
             Optional static Wi-Fi SSID for local firmware testing. Leave empty
             to use stored/provisioned Wi-Fi credentials.
 
-    config LK_EXAMPLE_WIFI_PASSWORD
+    config MITR_WIFI_PASSWORD
         string "Wi-Fi password"
         default ""
         help
             Password for the static Wi-Fi SSID. Leave empty for open networks
             or when using stored/provisioned credentials.
 
-    config LK_EXAMPLE_NETWORK_MAX_RETRIES
+    config MITR_NETWORK_MAX_RETRIES
         int "Wi-Fi max reconnect retries"
         default -1
         help
@@ -121,28 +104,6 @@ menu "Mitr ESP32 Device"
             How often the device reports liveness to POST /devices/heartbeat
             while the session remains active.
 
-    config MITR_AEC_REFERENCE_DELAY_MS
-        int "AEC reference signal delay (ms)"
-        default 60
-        range 10 200
-        help
-            Acoustic round-trip delay (ms) from when audio is written to the
-            I2S TX DMA buffer to when the microphone captures the echo. The
-            AFE also performs internal delay estimation so an approximate value
-            is sufficient. Increase if echo persists; decrease if AEC
-            convergence seems slow. Typical range for a small device: 30-100 ms.
-
-    config MITR_WAKEWORD_MODEL
-        string "WakeNet model name substring"
-        default "hiesp"
-        help
-            Substring matched case-insensitively against the model names stored
-            in the "model" flash partition via esp_srmodel_filter().
-            Falls back to the first available WakeNet model if no match is found.
-            The selected substring must match a model that actually exists in the
-            esp-sr model assets packed into the "model" partition.
-            Must also enable the matching CONFIG_SR_WN_* option in sdkconfig.
-
     config MITR_MIC_INPUT_CHANNEL
         int "Primary microphone I2S channel: 0=left, 1=right"
         default 0
@@ -165,7 +126,7 @@ menu "Mitr ESP32 Device"
         range 8 24
         help
             Right shift used when converting 32-bit I2S microphone samples to
-            signed 16-bit PCM for WakeNet and the Pipecat gateway.
+            signed 16-bit PCM for the Pipecat gateway.
 
     config MITR_MIC_LOOPBACK_PROBE
         bool "Run mic loopback probe instead of normal app"
@@ -173,7 +134,7 @@ menu "Mitr ESP32 Device"
         help
             Debug-only mode. On boot, routes the selected microphone channel
             directly to the speaker so raw I2S channel selection can be tested
-            by ear without the Pipecat gateway or WakeNet in the path.
+            by ear without the Pipecat gateway in the path.
 
     config MITR_MIC_LOOPBACK_CHANNEL
         int "Mic loopback channel: 0=left, 1=right, 2=stereo"

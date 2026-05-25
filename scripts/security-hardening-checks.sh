@@ -344,7 +344,7 @@ printf '%s\n' \
   'CONFIG_MITR_GATEWAY_WS_URL="wss://api.example.com/ws"' \
   'CONFIG_MITR_DEVICE_ACCESS_TOKEN=""' \
   'CONFIG_MITR_DEVICE_PAIRING_TOKEN=""' \
-  'CONFIG_LK_EXAMPLE_WIFI_PASSWORD=""' > "${sdkconfig_tmp}"
+  'CONFIG_MITR_WIFI_PASSWORD=""' > "${sdkconfig_tmp}"
 minimal/check-production-config.sh "${sdkconfig_tmp}"
 rm -f "${sdkconfig_tmp}"
 

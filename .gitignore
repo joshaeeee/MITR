@@ -38,6 +38,7 @@ pnpm-debug.log*
 # Build/test outputs
 coverage/
 *.tsbuildinfo
+minimal/.cache/
 
 # Local runtime data
 *.pid
