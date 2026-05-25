@@ -54,6 +54,7 @@ from pipecat.turns.user_stop.external_user_turn_stop_strategy import ExternalUse
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from .auth import DeviceAuthContext
+from .agnost import AgnostConfig, AgnostTurnRecorder
 from .bot import (
     OPENAI_REALTIME_SAMPLE_RATE,
     MitrRealtime2SessionOptionsMixin,
@@ -65,6 +66,7 @@ from .bot import (
     _optional_timeout_env,
     _queue_runtime_context_update,
     _register_context_summarization_logging,
+    _response_output_text,
     _system_instruction,
 )
 from .serializer import Esp32PCMSerializer
@@ -298,6 +300,20 @@ class TranscriptDebug(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class AgnostTranscriptCapture(FrameProcessor):
+    def __init__(self, recorder: AgnostTurnRecorder):
+        super().__init__()
+        self._recorder = recorder
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame):
+            await self._recorder.begin_user_turn(frame.text)
+
+        await self.push_frame(frame, direction)
+
+
 class EchoSuppressionState:
     def __init__(self, *, enabled: bool, tail_ms: int):
         self._enabled = enabled
@@ -362,11 +378,18 @@ class ToolActivityState:
     def tail_ms(self) -> int:
         return int(self._tail_sec * 1000)
 
-    async def start(self, name: str):
+    async def start(self, name: str, _args: dict | None = None):
         self._active_count += 1
         logger.info("Tool input suppression active: {} active_count={}", name, self._active_count)
 
-    async def finish(self, name: str, result: dict | None = None):
+    async def finish(
+        self,
+        name: str,
+        _args: dict | None = None,
+        _result: object | None = None,
+        _success: bool | None = None,
+        _latency_ms: int | None = None,
+    ):
         self._active_count = max(0, self._active_count - 1)
         self._mute_until = time.monotonic() + self._tail_sec
         logger.info("Tool input suppression released: {} active_count={}", name, self._active_count)
@@ -429,10 +452,11 @@ class MitrWakePhraseOpenAIRealtimeLLMService(
     MitrRealtime2SessionOptionsMixin,
     OpenAIRealtimeLLMService,
 ):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, agnost_recorder: AgnostTurnRecorder | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._mitr_input_audio_frames = 0
         self._mitr_output_audio_started = False
+        self._mitr_agnost_recorder = agnost_recorder
 
     async def _send_user_audio(self, frame: InputAudioRawFrame):
         self._mitr_input_audio_frames += 1
@@ -455,6 +479,23 @@ class MitrWakePhraseOpenAIRealtimeLLMService(
         self._mitr_output_audio_started = False
         logger.info("OpenAI wake-phrase output audio done")
         await super()._handle_evt_audio_done(evt)
+
+    async def _handle_evt_audio_transcript_delta(self, evt):
+        if self._mitr_agnost_recorder and evt.delta:
+            self._mitr_agnost_recorder.append_assistant_text(evt.delta)
+        await super()._handle_evt_audio_transcript_delta(evt)
+
+    async def _handle_evt_text_delta(self, evt):
+        if self._mitr_agnost_recorder and evt.delta:
+            self._mitr_agnost_recorder.append_assistant_text(evt.delta)
+        await super()._handle_evt_text_delta(evt)
+
+    async def _handle_evt_response_done(self, evt):
+        if self._mitr_agnost_recorder:
+            if not self._mitr_agnost_recorder.has_pending_assistant_text:
+                self._mitr_agnost_recorder.append_assistant_text(_response_output_text(evt))
+            self._mitr_agnost_recorder.mark_turn_output_complete()
+        await super()._handle_evt_response_done(evt)
 
     async def _handle_evt_speech_started(self, evt):
         logger.info("OpenAI wake-phrase turn detection: speech_started; interruption suppressed")
@@ -503,9 +544,11 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         ),
     )
 
+    agnost = AgnostTurnRecorder(auth=auth, config=AgnostConfig.from_env())
     turn_detection = _openai_turn_detection()
     llm = MitrWakePhraseOpenAIRealtimeLLMService(
         api_key=api_key,
+        agnost_recorder=agnost,
         settings=OpenAIRealtimeLLMService.Settings(
             model=_openai_realtime_model(),
             system_instruction=_system_instruction(auth),
@@ -531,12 +574,28 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         tail_ms=_int_env("MITR_GATEWAY_TOOL_INPUT_SUPPRESSION_TAIL_MS", 500),
     )
 
+    async def record_agnost_tool_end(
+        name: str,
+        args: dict,
+        result: object,
+        success: bool,
+        latency_ms: int,
+    ) -> None:
+        await tool_activity.finish(name, args, result, success, latency_ms)
+        agnost.record_tool_event(
+            name=name,
+            args=args,
+            result=result,
+            success=success,
+            latency_ms=latency_ms,
+        )
+
     register_mitr_tools(
         llm,
         auth,
         websocket,
         on_tool_start=tool_activity.start,
-        on_tool_end=tool_activity.finish,
+        on_tool_end=record_agnost_tool_end,
     )
 
     wake_phrase = UnicodeWakePhraseUserTurnStartStrategy(
@@ -549,6 +608,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
         preroll_sec=_float_env("MITR_GATEWAY_WAKE_PHRASE_PREROLL_SEC", 4.0),
     )
     transcript_debug = TranscriptDebug()
+    agnost_transcripts = AgnostTranscriptCapture(agnost)
     llm_resampler = PCM16Resampler(target_sample_rate=OPENAI_REALTIME_SAMPLE_RATE)
     echo_suppression = EchoSuppressionState(
         enabled=_bool_env("MITR_GATEWAY_ECHO_SUPPRESSION", True),
@@ -601,6 +661,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
             echo_input_gate,
             stt,
             transcript_debug,
+            agnost_transcripts,
             context_aggregator.user(),
             llm_resampler,
             gate,
@@ -626,18 +687,24 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
         logger.info("ESP32 connected to Pipecat wake phrase gateway", device_id=auth.device_id)
+        await agnost.start_session()
         asyncio.create_task(_queue_runtime_context_update(task, llm, auth))
         await send_state("listening", wakePhrases=_wake_phrases())
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
         logger.info("ESP32 disconnected from Pipecat wake phrase gateway", device_id=auth.device_id)
+        await agnost.close()
         await task.cancel()
 
     @transport.event_handler("on_session_timeout")
     async def on_session_timeout(_transport, _client):
         logger.info("ESP32 Pipecat wake phrase session timed out", device_id=auth.device_id)
+        await agnost.close()
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        await agnost.close()
