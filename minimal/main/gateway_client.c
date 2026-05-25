@@ -19,6 +19,7 @@
 #include "device_storage.h"
 #include "media.h"
 #include "preconnect_audio_src.h"
+#include "sounds.h"
 
 #ifndef MITR_GATEWAY_SERVER_WAKE_MODE
 #define MITR_GATEWAY_SERVER_WAKE_MODE 0
@@ -62,6 +63,39 @@ static uint32_t s_wake_generation = 0;
 static int64_t now_ms(void)
 {
     return esp_timer_get_time() / 1000;
+}
+
+typedef enum {
+    GATEWAY_CUE_CONNECTED = 1,
+    GATEWAY_CUE_DISCONNECTED = 2,
+} gateway_cue_t;
+
+static void gateway_cue_task(void *arg)
+{
+    gateway_cue_t cue = (gateway_cue_t)(uintptr_t)arg;
+    if (cue == GATEWAY_CUE_CONNECTED) {
+        if (s_connected) {
+            mitr_boot_feedback_set_state(MITR_BOOT_STATE_READY_CONNECTED);
+        }
+    } else if (cue == GATEWAY_CUE_DISCONNECTED) {
+        sounds_play_disconnected();
+    }
+    vTaskDelete(NULL);
+}
+
+static void play_gateway_cue_async(gateway_cue_t cue)
+{
+    BaseType_t created = xTaskCreatePinnedToCore(
+        gateway_cue_task,
+        "gateway_cue",
+        4096,
+        (void *)(uintptr_t)cue,
+        4,
+        NULL,
+        tskNO_AFFINITY);
+    if (created != pdPASS) {
+        ESP_LOGW(TAG, "Failed to create gateway cue task");
+    }
 }
 
 static void reset_gateway_queues(void)
@@ -268,21 +302,35 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
 
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
+        {
+            bool was_connected = s_connected;
             s_connected = true;
             if (MITR_GATEWAY_SERVER_WAKE_MODE) {
                 reset_gateway_queues();
             }
             ESP_LOGI(TAG, "Gateway connected");
             send_gateway_control("hello");
+            if (s_started && !was_connected) {
+                play_gateway_cue_async(GATEWAY_CUE_CONNECTED);
+            }
             break;
+        }
         case WEBSOCKET_EVENT_DISCONNECTED:
         case WEBSOCKET_EVENT_CLOSED:
+        {
+            bool was_connected = s_connected;
             s_connected = false;
             s_active = false;
             reset_gateway_queues();
             media_stream_playback_stop();
+            if (s_started && was_connected) {
+                mitr_boot_feedback_reset_ready_announcement();
+                mitr_boot_feedback_set_state(MITR_BOOT_STATE_RETRYING);
+                play_gateway_cue_async(GATEWAY_CUE_DISCONNECTED);
+            }
             ESP_LOGW(TAG, "Disconnected from Pipecat gateway");
             break;
+        }
         case WEBSOCKET_EVENT_DATA:
             handle_ws_data(data);
             break;

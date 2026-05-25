@@ -50,7 +50,8 @@ idf_component_register(
     INCLUDE_DIRS
         "."
     EMBED_FILES
-        "assets/boot_ready.raw"
+        "assets/voice_connected.raw"
+        "assets/voice_disconnected.raw"
     PRIV_REQUIRES
         ${mitr_device_priv_requires}
     WHOLE_ARCHIVE
