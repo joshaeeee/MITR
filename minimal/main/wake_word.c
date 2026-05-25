@@ -103,7 +103,7 @@ static void wake_word_tap_cb(const int16_t *mono_pcm, size_t sample_count, void 
 
 static void wake_word_task(void *arg)
 {
-    ESP_LOGI(TAG, "Wake word task started (chunk=%d samples, %d ms)",
+    ESP_LOGD(TAG, "Wake word task started (chunk=%d samples, %d ms)",
              s_chunk, s_chunk / 16);
 
     if (s_pcm_stream == NULL) {
@@ -151,7 +151,7 @@ static void wake_word_task(void *arg)
         wakenet_state_t state = s_wakenet->detect(s_model, buf);
 
         if (state == WAKENET_DETECTED) {
-            ESP_LOGI(TAG, "*** WAKE WORD DETECTED *** start_point=%d",
+            ESP_LOGI(TAG, "Local wake detected: start_point=%d",
                      s_wakenet->get_start_point(s_model));
             s_detection_pending_stop = true;
 
@@ -163,7 +163,7 @@ static void wake_word_task(void *arg)
 
     mitr_preconnect_audio_src_unregister_tap(wake_word_tap_cb, NULL);
     free(buf);
-    ESP_LOGI(TAG, "Wake word task exiting cleanly");
+    ESP_LOGD(TAG, "Wake word task exiting cleanly");
     s_task = NULL;
     vTaskDelete(NULL);
 }
@@ -176,9 +176,9 @@ int wake_word_init(void)
         return -1;
     }
 
-    ESP_LOGI(TAG, "Found %d model(s) in flash:", models->num);
+    ESP_LOGD(TAG, "Found %d model(s) in flash:", models->num);
     for (int i = 0; i < models->num; i++) {
-        ESP_LOGI(TAG, "  [%d] %s", i, models->model_name[i]);
+        ESP_LOGD(TAG, "  [%d] %s", i, models->model_name[i]);
     }
 
     char *model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, CONFIG_MITR_WAKEWORD_MODEL);
@@ -192,9 +192,6 @@ int wake_word_init(void)
         esp_srmodel_deinit(models);
         return -1;
     }
-
-    ESP_LOGI(TAG, "Using model: %s  wake word: %s",
-             model_name, esp_wn_wakeword_from_name(model_name));
 
     s_wakenet = esp_wn_handle_from_name(model_name);
     if (!s_wakenet) {
@@ -214,17 +211,12 @@ int wake_word_init(void)
     s_chunk = s_wakenet->get_samp_chunksize(s_model);
     cache_loaded_wakeword_metadata(model_name);
 
-    ESP_LOGI(TAG, "WakeNet init OK: chunk=%d samples (%d ms), rate=%d Hz, channels=%d",
-             s_chunk, s_chunk / 16,
+    ESP_LOGI(TAG, "Local WakeNet ready: phrase=%s model=%s rate=%dHz chunk=%dms channels=%d",
+             s_phrase[0] != '\0' ? s_phrase : UNKNOWN_WAKE_WORD,
+             model_name,
              s_wakenet->get_samp_rate(s_model),
+             s_chunk / 16,
              s_wakenet->get_channel_num(s_model));
-
-    for (int i = 1; i <= s_wakenet->get_word_num(s_model); i++) {
-        ESP_LOGI(TAG, "  word[%d]: %s (threshold=%.3f)",
-                 i,
-                 s_wakenet->get_word_name(s_model, i),
-                 s_wakenet->get_det_threshold(s_model, i));
-    }
 
     return 0;
 }

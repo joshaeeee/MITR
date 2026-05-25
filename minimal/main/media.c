@@ -97,7 +97,7 @@ static int build_capturer_system(void)
 
     capturer_system.audio_source = mitr_preconnect_audio_src_new(record_handle);
     NULL_CHECK(capturer_system.audio_source, "Failed to create audio source");
-    ESP_LOGI(TAG, "Capture source: preconnect-capable dev src (no AFE)");
+    ESP_LOGD(TAG, "Capture source ready");
 
     esp_capture_cfg_t cfg = {
         .sync_mode = ESP_CAPTURE_SYNC_MODE_AUDIO,
@@ -119,7 +119,7 @@ static int build_renderer_system(void)
     esp_codec_dev_set_out_vol(render_device, CONFIG_LK_EXAMPLE_SPEAKER_VOLUME);
     renderer_system.output_volume = CONFIG_LK_EXAMPLE_SPEAKER_VOLUME;
     renderer_system.output_muted = false;
-    ESP_LOGI(TAG, "Gateway playback: using codec device directly");
+    ESP_LOGD(TAG, "Gateway playback ready");
     return 0;
 #else
     i2s_render_cfg_t i2s_cfg = {
@@ -215,7 +215,7 @@ esp_err_t media_start_preconnect_capture(void)
         ESP_LOGW(TAG, "[PRECONNECT] Failed to start prebuffer: %s", esp_err_to_name(err));
         return err;
     }
-    ESP_LOGI(TAG, "[PRECONNECT] Capture started");
+    ESP_LOGD(TAG, "Preconnect capture started");
     return ESP_OK;
 }
 
@@ -223,7 +223,7 @@ void media_stop_preconnect_capture(void)
 {
     mitr_preconnect_audio_src_stop_prebuffer();
     mitr_preconnect_audio_src_reset_buffer();
-    ESP_LOGI(TAG, "[PRECONNECT] Capture stopped");
+    ESP_LOGD(TAG, "Preconnect capture stopped");
 }
 
 bool media_is_preconnect_capture_active(void)

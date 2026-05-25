@@ -17,7 +17,6 @@ set(mitr_device_srcs
     "ota_manager.c"
     "atomic_compat.c"
     "sounds.c"
-    "wake_word.c"
     ${mitr_gateway_client_src}
 )
 
@@ -35,11 +34,15 @@ set(mitr_device_priv_requires
     nvs_flash
     espressif__esp_audio_codec
     espressif__esp_capture
-    espressif__esp-sr
     tempotian__av_render
     tempotian__codec_board
     tempotian__media_lib_sal
 )
+
+if(NOT CONFIG_MITR_GATEWAY_SERVER_WAKE_PHRASE)
+    list(APPEND mitr_device_srcs "wake_word.c")
+    list(APPEND mitr_device_priv_requires espressif__esp-sr)
+endif()
 
 idf_component_register(
     SRCS
