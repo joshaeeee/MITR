@@ -309,6 +309,43 @@ class ToolExecutionPolicyTests(unittest.TestCase):
 
         self.assertTrue(tools._tool_execution_policy("memory_add").async_ack)
 
+    def test_tool_end_hook_receives_args_result_success_and_latency(self):
+        llm = DummyLLM()
+        auth = DeviceAuthContext(
+            device_id="device-1",
+            user_id="user-1",
+            family_id="family-1",
+            elder_id="elder-1",
+            language="hi-IN",
+        )
+        end_calls = []
+
+        class Params:
+            function_name = "context_packet_get"
+            arguments = {"triggerType": "manual"}
+
+            async def result_callback(self, result, properties=None):
+                return None
+
+        async def fake_execute_tool(name, args, auth_context):
+            return {"ok": True, "packet": "ready"}
+
+        async def on_tool_end(name, args, result, success, latency_ms):
+            end_calls.append((name, args, result, success, latency_ms))
+
+        tools.register_mitr_tools(llm, auth, None, on_tool_end=on_tool_end)
+
+        with patch.object(tools, "_execute_tool", new=fake_execute_tool):
+            asyncio.run(llm.registrations["context_packet_get"]["handler"](Params()))
+
+        self.assertEqual(len(end_calls), 1)
+        name, args, result, success, latency_ms = end_calls[0]
+        self.assertEqual(name, "context_packet_get")
+        self.assertEqual(args, {"triggerType": "manual"})
+        self.assertEqual(result, {"ok": True, "packet": "ready"})
+        self.assertTrue(success)
+        self.assertGreaterEqual(latency_ms, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

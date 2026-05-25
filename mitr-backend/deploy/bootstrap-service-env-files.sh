@@ -294,6 +294,14 @@ set_from_env "${gateway_env}" MITR_GATEWAY_ACK_SLOW_TOOLS MITR_GATEWAY_ACK_SLOW_
 set_from_env "${gateway_env}" MITR_GATEWAY_SESSION_TIMEOUT_SEC MITR_GATEWAY_SESSION_TIMEOUT_SEC
 set_from_env "${gateway_env}" MITR_GATEWAY_ECHO_SUPPRESSION MITR_GATEWAY_ECHO_SUPPRESSION
 set_env_value "${gateway_env}" MITR_GATEWAY_INJECT_BOOT_CONTEXT "false"
+set_from_env "${gateway_env}" AGNOST_ENABLED AGNOST_ENABLED
+set_from_env "${gateway_env}" AGNOST_ORG_ID AGNOST_ORG_ID
+set_from_env "${gateway_env}" AGNOST_BASE_URL AGNOST_BASE_URL
+set_from_env "${gateway_env}" AGNOST_CLIENT_CONFIG AGNOST_CLIENT_CONFIG
+set_from_env "${gateway_env}" AGNOST_AGENT_NAME AGNOST_AGENT_NAME
+set_from_env "${gateway_env}" AGNOST_TIMEOUT_MS AGNOST_TIMEOUT_MS
+set_from_env "${gateway_env}" AGNOST_MAX_PAYLOAD_CHARS AGNOST_MAX_PAYLOAD_CHARS
+set_from_env "${gateway_env}" AGNOST_API_KEY AGNOST_API_KEY
 set_from_env "${gateway_env}" OPENAI_API_KEY OPENAI_API_KEY
 set_from_env "${gateway_env}" OPENAI_REALTIME_MODEL OPENAI_REALTIME_MODEL
 set_from_env "${gateway_env}" OPENAI_REALTIME_STT_MODEL OPENAI_REALTIME_STT_MODEL

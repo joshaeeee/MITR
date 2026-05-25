@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from collections import defaultdict
@@ -25,8 +26,8 @@ _REMINDERS: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _DIARY: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _CONTEXT_CARDS: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _FLOWS: dict[str, dict[str, Any]] = {}
-ToolStartHook = Callable[[str], Awaitable[None]]
-ToolEndHook = Callable[[str, dict[str, Any] | None], Awaitable[None]]
+ToolStartHook = Callable[[str, dict[str, Any]], Awaitable[None]]
+ToolEndHook = Callable[[str, dict[str, Any], Any, bool, int], Awaitable[None]]
 _DEFAULT_ASYNC_ACK_TOOLS: set[str] = set()
 _DEFAULT_SYNC_TOOLS = {
     "memory_get",
@@ -1205,11 +1206,11 @@ def register_mitr_tools(
     async def handler(params: FunctionCallParams):
         args = dict(params.arguments or {})
         name = params.function_name
-        tool_end_result: dict[str, Any] | None = None
+        started_at = time.monotonic()
         logger.info("Pipecat tool call started: {} arg_keys={}", name, sorted(args.keys()))
         should_async_ack = _tool_execution_policy(name).async_ack
         if on_tool_start:
-            await on_tool_start(name)
+            await on_tool_start(name, args)
         try:
             await _send_tool_event(websocket, name, "start", args)
             if should_async_ack:
@@ -1231,7 +1232,9 @@ def register_mitr_tools(
                 if min_delay > 0:
                     await asyncio.sleep(min_delay)
                 result = await _execute_tool(name, args, auth)
-                tool_end_result = result
+                latency_ms = int((time.monotonic() - started_at) * 1000)
+                if on_tool_end:
+                    await on_tool_end(name, args, result, bool(result.get("ok")), latency_ms)
                 logger.info("Pipecat async tool call completed: {} ok={}", name, result.get("ok"))
                 await _send_tool_event(websocket, name, "end", result)
                 await params.result_callback(
@@ -1241,7 +1244,9 @@ def register_mitr_tools(
                 return
 
             result = await _execute_tool(name, args, auth)
-            tool_end_result = result
+            latency_ms = int((time.monotonic() - started_at) * 1000)
+            if on_tool_end:
+                await on_tool_end(name, args, result, bool(result.get("ok")), latency_ms)
             logger.info("Pipecat tool call completed: {} ok={}", name, result.get("ok"))
             await _send_tool_event(websocket, name, "end", result)
             callback_result = _sync_tool_result(name, args, auth, result)
@@ -1253,7 +1258,9 @@ def register_mitr_tools(
             raise
         except Exception as error:
             payload = {"ok": False, "error": str(error)}
-            tool_end_result = payload
+            latency_ms = int((time.monotonic() - started_at) * 1000)
+            if on_tool_end:
+                await on_tool_end(name, args, payload, False, latency_ms)
             logger.warning("Pipecat tool call failed: {} error={}", name, str(error))
             await _send_tool_event(websocket, name, "error", payload)
             if should_async_ack:
@@ -1267,10 +1274,6 @@ def register_mitr_tools(
                     callback_result,
                     properties=_finished_tool_result_properties(name, params),
                 )
-        finally:
-            if on_tool_end:
-                await on_tool_end(name, tool_end_result)
-
     timeout_sec = _int_env("MITR_GATEWAY_TOOL_TIMEOUT_SEC", 65)
     for schema in build_tools_schema().standard_tools:
         policy = _tool_execution_policy(schema.name)

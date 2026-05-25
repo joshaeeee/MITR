@@ -40,6 +40,7 @@ from pipecat.utils.context.llm_context_summarization import (
     LLMContextSummaryConfig,
 )
 
+from .agnost import AgnostConfig, AgnostTurnRecorder
 from .auth import DeviceAuthContext
 from .serializer import Esp32PCMSerializer
 from .tools import build_tools_schema, execute_backend_tool_once, register_mitr_tools
@@ -437,6 +438,21 @@ def _system_instruction_with_context_packet(auth: DeviceAuthContext, payload: di
     )
 
 
+def _response_output_text(evt: Any) -> str:
+    parts: list[str] = []
+    response = getattr(evt, "response", None)
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text = (
+                getattr(content, "transcript", None)
+                or getattr(content, "text", None)
+                or getattr(content, "output_text", None)
+            )
+            if isinstance(text, str) and text:
+                parts.append(text)
+    return "".join(parts)
+
+
 async def _fetch_runtime_context_packet(auth: DeviceAuthContext) -> dict[str, object] | None:
     if os.getenv("MITR_GATEWAY_INJECT_BOOT_CONTEXT", "false").strip().lower() not in {"1", "true", "yes", "on"}:
         return None
@@ -515,10 +531,11 @@ class PCM16Resampler(FrameProcessor):
 
 
 class MitrOpenAIRealtimeLLMService(MitrRealtime2SessionOptionsMixin, OpenAIRealtimeLLMService):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, agnost_recorder: AgnostTurnRecorder | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._mitr_input_audio_frames = 0
         self._mitr_output_audio_started = False
+        self._mitr_agnost_recorder = agnost_recorder
 
     async def _send_user_audio(self, frame: InputAudioRawFrame):
         self._mitr_input_audio_frames += 1
@@ -558,6 +575,28 @@ class MitrOpenAIRealtimeLLMService(MitrRealtime2SessionOptionsMixin, OpenAIRealt
         logger.info("OpenAI realtime output audio done")
         await super()._handle_evt_audio_done(evt)
 
+    async def handle_evt_input_audio_transcription_completed(self, evt):
+        if self._mitr_agnost_recorder:
+            await self._mitr_agnost_recorder.begin_user_turn(evt.transcript)
+        await super().handle_evt_input_audio_transcription_completed(evt)
+
+    async def _handle_evt_audio_transcript_delta(self, evt):
+        if self._mitr_agnost_recorder and evt.delta:
+            self._mitr_agnost_recorder.append_assistant_text(evt.delta)
+        await super()._handle_evt_audio_transcript_delta(evt)
+
+    async def _handle_evt_text_delta(self, evt):
+        if self._mitr_agnost_recorder and evt.delta:
+            self._mitr_agnost_recorder.append_assistant_text(evt.delta)
+        await super()._handle_evt_text_delta(evt)
+
+    async def _handle_evt_response_done(self, evt):
+        if self._mitr_agnost_recorder:
+            if not self._mitr_agnost_recorder.has_pending_assistant_text:
+                self._mitr_agnost_recorder.append_assistant_text(_response_output_text(evt))
+            self._mitr_agnost_recorder.mark_turn_output_complete()
+        await super()._handle_evt_response_done(evt)
+
 
 async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     packet_ms = _int_env("ESP32_AUDIO_PACKET_MS", 20)
@@ -580,8 +619,10 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     )
 
     api_key = os.getenv("OPENAI_API_KEY", "")
+    agnost = AgnostTurnRecorder(auth=auth, config=AgnostConfig.from_env())
     llm = MitrOpenAIRealtimeLLMService(
         api_key=api_key,
+        agnost_recorder=agnost,
         settings=OpenAIRealtimeLLMService.Settings(
             model=_openai_realtime_model(),
             system_instruction=_system_instruction(auth),
@@ -607,7 +648,27 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
             ),
         ),
     )
-    register_mitr_tools(llm, auth, websocket)
+    async def record_agnost_tool_end(
+        name: str,
+        args: dict[str, Any],
+        result: Any,
+        success: bool,
+        latency_ms: int,
+    ) -> None:
+        agnost.record_tool_event(
+            name=name,
+            args=args,
+            result=result,
+            success=success,
+            latency_ms=latency_ms,
+        )
+
+    register_mitr_tools(
+        llm,
+        auth,
+        websocket,
+        on_tool_end=record_agnost_tool_end,
+    )
     context = LLMContext([])
     context_aggregator = LLMContextAggregatorPair(
         context,
@@ -644,17 +705,23 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
         logger.info("ESP32 connected to Pipecat gateway", device_id=auth.device_id)
+        await agnost.start_session()
         asyncio.create_task(_queue_runtime_context_update(task, llm, auth))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
         logger.info("ESP32 disconnected from Pipecat gateway", device_id=auth.device_id)
+        await agnost.close()
         await task.cancel()
 
     @transport.event_handler("on_session_timeout")
     async def on_session_timeout(_transport, _client):
         logger.info("ESP32 Pipecat session timed out", device_id=auth.device_id)
+        await agnost.close()
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        await agnost.close()
