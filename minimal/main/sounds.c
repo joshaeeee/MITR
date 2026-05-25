@@ -6,6 +6,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "sounds";
@@ -26,14 +27,18 @@ static const char *TAG = "sounds";
 #define PROV_SAMPLES    (SAMPLE_RATE * PROV_TONE_MS / 1000)
 #define READY_STREAM_CHUNK_SAMPLES 512
 
-extern const uint8_t boot_ready_raw_start[] asm("_binary_boot_ready_raw_start");
-extern const uint8_t boot_ready_raw_end[] asm("_binary_boot_ready_raw_end");
+extern const uint8_t voice_connected_raw_start[] asm("_binary_voice_connected_raw_start");
+extern const uint8_t voice_connected_raw_end[] asm("_binary_voice_connected_raw_end");
+extern const uint8_t voice_disconnected_raw_start[] asm("_binary_voice_disconnected_raw_start");
+extern const uint8_t voice_disconnected_raw_end[] asm("_binary_voice_disconnected_raw_end");
 
 static int16_t *s_chime_buf = NULL;  /* [CHIME_SAMPLES * 2] stereo */
 static int16_t *s_beep_buf  = NULL;  /* [BEEP_SAMPLES  * 2] stereo */
 static int16_t *s_prov_buf  = NULL;  /* [PROV_SAMPLES * 2] stereo */
 static int16_t *s_ready_chunk_buf = NULL;  /* small internal-RAM stream buffer */
-static int s_ready_samples = 0;
+static SemaphoreHandle_t s_sound_mutex = NULL;
+static int s_connected_samples = 0;
+static int s_disconnected_samples = 0;
 
 /* Generate a linear-frequency-sweep (chirp) into a stereo buffer.
  * f_start, f_end: start and end frequency in Hz.
@@ -64,7 +69,11 @@ static void gen_chirp(int16_t *buf, int n_samples, float f_start, float f_end,
 
 void sounds_init(void)
 {
-    size_t ready_bytes = (size_t)(boot_ready_raw_end - boot_ready_raw_start);
+    size_t connected_bytes = (size_t)(voice_connected_raw_end - voice_connected_raw_start);
+    size_t disconnected_bytes = (size_t)(voice_disconnected_raw_end - voice_disconnected_raw_start);
+    if (s_sound_mutex == NULL) {
+        s_sound_mutex = xSemaphoreCreateMutex();
+    }
     s_chime_buf = heap_caps_malloc(CHIME_SAMPLES * 2 * sizeof(int16_t),
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_beep_buf  = heap_caps_malloc(BEEP_SAMPLES  * 2 * sizeof(int16_t),
@@ -74,17 +83,27 @@ void sounds_init(void)
     s_ready_chunk_buf = heap_caps_malloc(
         READY_STREAM_CHUNK_SAMPLES * 2 * sizeof(int16_t),
         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (ready_bytes > 0 && (ready_bytes % (2 * sizeof(int16_t))) == 0) {
-        s_ready_samples = (int)(ready_bytes / (2 * sizeof(int16_t)));
+    if (connected_bytes > 0 && (connected_bytes % (2 * sizeof(int16_t))) == 0) {
+        s_connected_samples = (int)(connected_bytes / (2 * sizeof(int16_t)));
+    }
+    if (disconnected_bytes > 0 && (disconnected_bytes % (2 * sizeof(int16_t))) == 0) {
+        s_disconnected_samples = (int)(disconnected_bytes / (2 * sizeof(int16_t)));
     }
     if (!s_chime_buf || !s_beep_buf || !s_prov_buf) {
         ESP_LOGE(TAG, "PSRAM alloc failed for sound buffers");
         return;
     }
-    if (ready_bytes == 0 || (ready_bytes % (2 * sizeof(int16_t))) != 0) {
-        ESP_LOGW(TAG, "Ready PCM asset is missing or malformed");
-    } else if (!s_ready_chunk_buf) {
-        ESP_LOGW(TAG, "Ready PCM stream buffer alloc failed; cue disabled");
+    if (!s_sound_mutex) {
+        ESP_LOGW(TAG, "Sound mutex alloc failed; cues may overlap");
+    }
+    if (!s_ready_chunk_buf) {
+        ESP_LOGW(TAG, "PCM stream buffer alloc failed; embedded cues disabled");
+    }
+    if (connected_bytes == 0 || (connected_bytes % (2 * sizeof(int16_t))) != 0) {
+        ESP_LOGW(TAG, "Connected PCM asset is missing or malformed");
+    }
+    if (disconnected_bytes == 0 || (disconnected_bytes % (2 * sizeof(int16_t))) != 0) {
+        ESP_LOGW(TAG, "Disconnected PCM asset is missing or malformed");
     }
 
     /* Rising chirp: 440 Hz → 880 Hz, 200 ms, 30 ms fade */
@@ -96,8 +115,28 @@ void sounds_init(void)
     /* Provisioning cue: soft tone repeated twice by sounds_play_provisioning_wait() */
     gen_chirp(s_prov_buf, PROV_SAMPLES, 660.0f, 520.0f, 16000.0f, 15);
 
-    ESP_LOGI(TAG, "Sounds init OK: chime=%d beep=%d provision=%d ready=%d samples",
-             CHIME_SAMPLES, BEEP_SAMPLES, PROV_SAMPLES, s_ready_samples);
+    ESP_LOGI(
+        TAG,
+        "Sounds init OK: chime=%d beep=%d provision=%d connected=%d disconnected=%d samples",
+        CHIME_SAMPLES,
+        BEEP_SAMPLES,
+        PROV_SAMPLES,
+        s_connected_samples,
+        s_disconnected_samples);
+}
+
+static void lock_sound_output(void)
+{
+    if (s_sound_mutex != NULL) {
+        (void)xSemaphoreTake(s_sound_mutex, portMAX_DELAY);
+    }
+}
+
+static void unlock_sound_output(void)
+{
+    if (s_sound_mutex != NULL) {
+        (void)xSemaphoreGive(s_sound_mutex);
+    }
 }
 
 void sounds_play_chime(void)
@@ -107,7 +146,9 @@ void sounds_play_chime(void)
         return;
     }
     ESP_LOGI(TAG, "[SOUND] Playing wake chime");
+    lock_sound_output();
     media_play_pcm(s_chime_buf, CHIME_SAMPLES);
+    unlock_sound_output();
     /* Add a small silence gap so the gateway capture doesn't step on the tail. */
     vTaskDelay(pdMS_TO_TICKS(50));
 }
@@ -119,22 +160,41 @@ void sounds_play_beep(void)
         return;
     }
     ESP_LOGI(TAG, "[SOUND] Playing disconnect beep");
+    lock_sound_output();
     media_play_pcm(s_beep_buf, BEEP_SAMPLES);
+    unlock_sound_output();
     vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 void sounds_play_ready(void)
 {
-    if (!s_ready_chunk_buf || s_ready_samples <= 0) {
-        ESP_LOGW(TAG, "Ready PCM cue unavailable");
+    sounds_play_connected();
+}
+
+static void play_embedded_pcm_cue(const char *name, const uint8_t *start, int samples)
+{
+    if (!s_ready_chunk_buf || samples <= 0) {
+        ESP_LOGW(TAG, "%s PCM cue unavailable", name);
         return;
     }
-    ESP_LOGI(TAG, "[SOUND] Playing ready cue (%d stereo samples streamed)", s_ready_samples);
-    media_play_pcm_chunked((const int16_t *)boot_ready_raw_start,
-                           s_ready_samples,
+    ESP_LOGI(TAG, "[SOUND] Playing %s cue (%d stereo samples streamed)", name, samples);
+    lock_sound_output();
+    media_play_pcm_chunked((const int16_t *)start,
+                           samples,
                            READY_STREAM_CHUNK_SAMPLES,
                            s_ready_chunk_buf);
+    unlock_sound_output();
     vTaskDelay(pdMS_TO_TICKS(30));
+}
+
+void sounds_play_connected(void)
+{
+    play_embedded_pcm_cue("connected", voice_connected_raw_start, s_connected_samples);
+}
+
+void sounds_play_disconnected(void)
+{
+    play_embedded_pcm_cue("disconnected", voice_disconnected_raw_start, s_disconnected_samples);
 }
 
 void sounds_play_provisioning_wait(void)
@@ -144,8 +204,10 @@ void sounds_play_provisioning_wait(void)
         return;
     }
     ESP_LOGI(TAG, "[SOUND] Playing provisioning cue");
+    lock_sound_output();
     media_play_pcm(s_prov_buf, PROV_SAMPLES);
     vTaskDelay(pdMS_TO_TICKS(PROV_GAP_MS));
     media_play_pcm(s_prov_buf, PROV_SAMPLES);
+    unlock_sound_output();
     vTaskDelay(pdMS_TO_TICKS(30));
 }

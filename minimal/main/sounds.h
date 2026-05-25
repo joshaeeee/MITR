@@ -23,9 +23,19 @@ void sounds_play_chime(void);
 void sounds_play_beep(void);
 
 /**
- * Play a short positive cue when boot has reached the first true listening state.
+ * Play the positive cue when boot has reached the first true listening state.
  */
 void sounds_play_ready(void);
+
+/**
+ * Play the voice backend connected/listening cue.
+ */
+void sounds_play_connected(void);
+
+/**
+ * Play the voice backend disconnected cue.
+ */
+void sounds_play_disconnected(void);
 
 /**
  * Play a short double-tone when the device enters BLE provisioning mode.
