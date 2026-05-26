@@ -100,6 +100,25 @@ class AgnostTurnRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.events[0]["args"], "Pehla sawaal")
         self.assertEqual(client.events[0]["result"], "Pehla jawab")
 
+    async def test_complete_assistant_turn_flushes_immediately(self):
+        client = FakeAgnostClient()
+        recorder = AgnostTurnRecorder(
+            auth=self.auth,
+            config=self.config,
+            client=client,
+            session_id="session-1",
+        )
+
+        await recorder.begin_user_turn("Kya haal hai?", timestamp_ms=1000)
+        recorder.append_assistant_text("Main theek hoon.")
+        await recorder.complete_assistant_turn(timestamp_ms=1600)
+
+        self.assertEqual(len(client.events), 1)
+        self.assertEqual(client.events[0]["args"], "Kya haal hai?")
+        self.assertEqual(client.events[0]["result"], "Main theek hoon.")
+        self.assertEqual(client.events[0]["latency"], 600)
+        self.assertIsNone(recorder.current_parent_event_id)
+
     async def test_disabled_config_does_not_emit(self):
         client = FakeAgnostClient()
         client.enabled = False

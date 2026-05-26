@@ -231,6 +231,10 @@ class AgnostTurnRecorder:
         if self._pending_turn and self._pending_turn.result_text:
             self._pending_turn.finalized_at = timestamp_ms or _now_ms()
 
+    async def complete_assistant_turn(self, *, timestamp_ms: int | None = None) -> None:
+        self.mark_turn_output_complete(timestamp_ms=timestamp_ms)
+        await self.flush_pending_turn()
+
     def record_tool_event(
         self,
         *,

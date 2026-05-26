@@ -494,7 +494,7 @@ class MitrWakePhraseOpenAIRealtimeLLMService(
         if self._mitr_agnost_recorder:
             if not self._mitr_agnost_recorder.has_pending_assistant_text:
                 self._mitr_agnost_recorder.append_assistant_text(_response_output_text(evt))
-            self._mitr_agnost_recorder.mark_turn_output_complete()
+            await self._mitr_agnost_recorder.complete_assistant_turn()
         await super()._handle_evt_response_done(evt)
 
     async def _handle_evt_speech_started(self, evt):
@@ -612,7 +612,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     llm_resampler = PCM16Resampler(target_sample_rate=OPENAI_REALTIME_SAMPLE_RATE)
     echo_suppression = EchoSuppressionState(
         enabled=_bool_env("MITR_GATEWAY_ECHO_SUPPRESSION", True),
-        tail_ms=_int_env("MITR_GATEWAY_ECHO_SUPPRESSION_TAIL_MS", 900),
+        tail_ms=_int_env("MITR_GATEWAY_ECHO_SUPPRESSION_TAIL_MS", 2500),
     )
     echo_input_gate = EchoSuppressionInputGate(echo_suppression, tool_activity)
     echo_output_tracker = EchoSuppressionOutputTracker(echo_suppression)
