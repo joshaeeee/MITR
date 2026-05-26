@@ -32,6 +32,27 @@ env_value() {
   env_value_from_file "${ENV_FILE}" "$1"
 }
 
+install_env_file() {
+  local source_file="$1"
+  local target_file="$2"
+  if cp "${source_file}" "${target_file}" 2>/dev/null; then
+    chmod 600 "${target_file}" || true
+    return
+  fi
+  sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" "${source_file}" "${target_file}"
+}
+
+replace_env_file() {
+  local source_file="$1"
+  local target_file="$2"
+  if mv "${source_file}" "${target_file}" 2>/dev/null; then
+    chmod 600 "${target_file}" || true
+    return
+  fi
+  sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" "${source_file}" "${target_file}"
+  rm -f "${source_file}"
+}
+
 is_placeholder() {
   local value="$1"
   local lower
@@ -124,8 +145,8 @@ set_env_value() {
     END {
       if (!done) print k "=" v
     }
-  ' "${file}" > "${file}.tmp"
-  mv "${file}.tmp" "${file}"
+	  ' "${file}" > "${file}.tmp"
+	  replace_env_file "${file}.tmp" "${file}"
 }
 
 set_from_env() {
@@ -167,8 +188,7 @@ ensure_from_template() {
     echo "[deploy] missing ${template}; cannot bootstrap ${label} env"
     exit 1
   fi
-  cp "${template}" "${file}"
-  chmod 600 "${file}" || true
+  install_env_file "${template}" "${file}"
   echo "[deploy] generated ${label} env from ${template}; canonical values come from ${ENV_FILE}"
 }
 
