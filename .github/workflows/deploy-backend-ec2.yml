@@ -339,7 +339,7 @@ jobs:
               -e mitr-backend/deploy/www/
             if [ -f ".deploy-tmp/env.prod" ]; then
               mkdir -p "mitr-backend/deploy"
-              cp ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod"
+              cp ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod" 2>/dev/null || sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod"
             fi
             rm -rf .deploy-tmp
             echo "[deploy] checkout ready at $(git rev-parse --short HEAD)"
@@ -359,7 +359,7 @@ jobs:
               value="$2"
               # Keep this as a single shell line because appleboy/ssh-action injects
               # guard code after each script line and breaks multiline inline scripts.
-              awk -v k="$key" -v v="$value" -F= 'BEGIN{done=0} $1==k {if(!done){print k "=" v; done=1} next} {print} END{if(!done) print k "=" v}' deploy/.env.prod > deploy/.env.prod.tmp && mv deploy/.env.prod.tmp deploy/.env.prod
+              awk -v k="$key" -v v="$value" -F= 'BEGIN{done=0} $1==k {if(!done){print k "=" v; done=1} next} {print} END{if(!done) print k "=" v}' deploy/.env.prod > deploy/.env.prod.tmp && (mv deploy/.env.prod.tmp deploy/.env.prod 2>/dev/null || sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" deploy/.env.prod.tmp deploy/.env.prod)
               echo "[deploy] set ${key}"
             }
 
