@@ -25,8 +25,10 @@ class AgnostTurnRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.auth = DeviceAuthContext(
             device_id="device-1",
             user_id="user-1",
+            user_name="Nidhi Joshi",
             family_id="family-1",
             elder_id="elder-1",
+            elder_name="Kamla Devi",
             language="hi-IN",
         )
         self.config = AgnostConfig(
@@ -65,6 +67,8 @@ class AgnostTurnRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.sessions), 1)
         self.assertEqual(client.sessions[0]["session_id"], "session-1")
         self.assertEqual(client.sessions[0]["user_data"]["user_id"], "user-1")
+        self.assertEqual(client.sessions[0]["user_data"]["user_name"], "Nidhi Joshi")
+        self.assertEqual(client.sessions[0]["user_data"]["elder_name"], "Kamla Devi")
 
         self.assertEqual(len(client.events), 2)
         agent_event = client.events[0]
@@ -78,6 +82,10 @@ class AgnostTurnRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent_event["latency"], 1000)
         self.assertEqual(tool_event["primitive_name"], "flow_start")
         self.assertEqual(tool_event["parent_id"], agent_event["event_id"])
+        self.assertEqual(agent_event["metadata"]["user_name"], "Nidhi Joshi")
+        self.assertEqual(agent_event["metadata"]["elder_name"], "Kamla Devi")
+        self.assertEqual(tool_event["metadata"]["user_id"], "user-1")
+        self.assertEqual(tool_event["metadata"]["elder_name"], "Kamla Devi")
         self.assertIn('"mode": "satsang"', tool_event["args"])
         self.assertIn('"flow_id": "flow-1"', tool_event["result"])
         self.assertEqual(tool_event["latency"], 250)
