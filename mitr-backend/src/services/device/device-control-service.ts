@@ -9,7 +9,8 @@ import {
   deviceSessions,
   deviceTelemetry,
   elderProfiles,
-  firmwareReleases
+  firmwareReleases,
+  users
 } from '../../db/schema.js';
 import { env } from '../../config/env.js';
 import { getFamilyRepository } from '../family/family-repository.js';
@@ -28,8 +29,10 @@ export interface DeviceAuthRecord {
   id: string;
   deviceId: string;
   userId: string;
+  userName: string | null;
   familyId: string | null;
   elderId: string | null;
+  elderName: string | null;
   claimedByUserId: string | null;
   displayName: string | null;
   hardwareRev: string | null;
@@ -376,11 +379,12 @@ export class DeviceControlService {
 
   async getCurrentFamilyContextForUser(
     userId: string
-  ): Promise<{ familyId: string; elderId: string | null } | null> {
+  ): Promise<{ familyId: string; elderId: string | null; elderName: string | null } | null> {
     const context = await this.resolveFamilyContextForUser(userId, undefined, { requireElder: false });
     return {
       familyId: context.familyId,
-      elderId: context.elderId
+      elderId: context.elderId,
+      elderName: context.elderName
     };
   }
 
@@ -922,12 +926,27 @@ export class DeviceControlService {
 
     if (!device) return null;
 
+    const [owner] = await db
+      .select({ displayName: users.displayName })
+      .from(users)
+      .where(eq(users.id, device.userId))
+      .limit(1);
+    const [elder] = device.elderId
+      ? await db
+          .select({ name: elderProfiles.name })
+          .from(elderProfiles)
+          .where(eq(elderProfiles.id, device.elderId))
+          .limit(1)
+      : [];
+
     return {
       id: device.id,
       deviceId: device.deviceId,
       userId: device.userId,
+      userName: owner?.displayName ?? null,
       familyId: device.familyId,
       elderId: device.elderId,
+      elderName: elder?.name ?? null,
       claimedByUserId: device.claimedByUserId,
       displayName: device.displayName,
       hardwareRev: device.hardwareRev,

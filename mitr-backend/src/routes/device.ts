@@ -244,8 +244,10 @@ export const registerDeviceRoutes = (app: FastifyInstance, auth: AuthService): v
       ok: true,
       deviceId: authenticated.deviceId,
       userId: authenticated.userId,
+      userName: authenticated.userName,
       familyId: authenticated.familyId,
       elderId: authenticated.elderId,
+      elderName: authenticated.elderName,
       claimedByUserId: authenticated.claimedByUserId,
       language: parsed.data.language || metadataLanguage || 'hi-IN',
       transport: parsed.data.transport || 'pipecat-gateway'

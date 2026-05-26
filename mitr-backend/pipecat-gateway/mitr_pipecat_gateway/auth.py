@@ -11,10 +11,12 @@ PCM16_SUBPROTOCOL = "mitr-pcm16"
 @dataclass(frozen=True)
 class DeviceAuthContext:
     device_id: str
-    user_id: str | None
-    family_id: str | None
-    elder_id: str | None
-    language: str
+    user_id: str | None = None
+    user_name: str | None = None
+    family_id: str | None = None
+    elder_id: str | None = None
+    elder_name: str | None = None
+    language: str = "hi-IN"
 
 
 def _bearer(headers: dict[str, str]) -> str | None:
@@ -62,8 +64,10 @@ async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
         return DeviceAuthContext(
             device_id=device_id,
             user_id=None,
+            user_name=None,
             family_id=None,
             elder_id=None,
+            elder_name=None,
             language=language,
         )
 
@@ -90,8 +94,10 @@ async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
         return DeviceAuthContext(
             device_id=str(data.get("deviceId") or f"web-{user_id}"),
             user_id=user_id,
+            user_name=data.get("userName"),
             family_id=data.get("familyId"),
             elder_id=data.get("elderId"),
+            elder_name=data.get("elderName"),
             language=str(data.get("language") or language or "hi-IN"),
         )
 
@@ -113,7 +119,9 @@ async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
     return DeviceAuthContext(
         device_id=str(data.get("deviceId") or device_id or "unknown-device"),
         user_id=data.get("userId"),
+        user_name=data.get("userName"),
         family_id=data.get("familyId"),
         elder_id=data.get("elderId"),
+        elder_name=data.get("elderName"),
         language=str(data.get("language") or language or "hi-IN"),
     )

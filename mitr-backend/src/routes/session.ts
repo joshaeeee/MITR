@@ -212,8 +212,10 @@ export const registerSessionRoutes = (
       ok: true,
       deviceId: `web-${slug(userId)}`,
       userId,
+      userName: request.auth!.user.name ?? null,
       familyId: familyContext?.familyId ?? null,
       elderId: familyContext?.elderId ?? null,
+      elderName: familyContext?.elderName ?? null,
       language: parsed.data.language || preferredProfileLanguage(profile?.answers),
       transport: parsed.data.transport || 'pipecat-gateway'
     });

@@ -184,6 +184,18 @@ class AgnostTurnRecorder:
     def has_pending_assistant_text(self) -> bool:
         return bool(self._pending_turn and self._pending_turn.result_text)
 
+    def _identity_metadata(self) -> dict[str, Any]:
+        return _metadata_without_empty(
+            {
+                "user_id": self._auth.user_id,
+                "user_name": self._auth.user_name,
+                "family_id": self._auth.family_id,
+                "elder_id": self._auth.elder_id,
+                "elder_name": self._auth.elder_name,
+                "device_id": self._auth.device_id,
+            }
+        )
+
     async def start_session(self) -> None:
         if not self.enabled or self._session_started:
             return
@@ -193,15 +205,17 @@ class AgnostTurnRecorder:
             "user_data": _metadata_without_empty(
                 {
                     "user_id": self._auth.user_id or self._auth.elder_id or self._auth.device_id,
+                    "user_name": self._auth.user_name,
+                    "elder_id": self._auth.elder_id,
+                    "elder_name": self._auth.elder_name,
                     "device_id": self._auth.device_id,
                 }
             ),
             "client_config": self._config.client_config,
             "metadata": _metadata_without_empty(
                 {
+                    **self._identity_metadata(),
                     "language": self._auth.language,
-                    "family_id": self._auth.family_id,
-                    "elder_id": self._auth.elder_id,
                     "transport": "pipecat-openai-realtime",
                 }
             ),
@@ -284,11 +298,9 @@ class AgnostTurnRecorder:
             "timestamp": turn.timestamp,
             "metadata": _metadata_without_empty(
                 {
+                    **self._identity_metadata(),
                     "language": self._auth.language,
                     "source": "openai_realtime",
-                    "device_id": self._auth.device_id,
-                    "elder_id": self._auth.elder_id,
-                    "family_id": self._auth.family_id,
                 }
             ),
         }
@@ -308,9 +320,9 @@ class AgnostTurnRecorder:
                     "timestamp": tool.timestamp,
                     "metadata": _metadata_without_empty(
                         {
+                            **self._identity_metadata(),
                             "language": self._auth.language,
                             "source": "pipecat_tool",
-                            "device_id": self._auth.device_id,
                         }
                     ),
                 }
