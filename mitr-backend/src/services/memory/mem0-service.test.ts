@@ -124,7 +124,7 @@ test('listScopedMemories calls Mem0 v3 list with scoped filters', async () => {
         assert.equal(String(url), 'https://api.mem0.test/v3/memories/?page=2&page_size=10');
         assert.equal(init?.method, 'POST');
         const body = JSON.parse(String(init?.body));
-        assert.deepEqual(body.filters, { category: 'workout_log', user_id: 'elder:elder-1' });
+        assert.deepEqual(body.filters, { metadata: { category: 'workout_log' }, user_id: 'elder:elder-1' });
         return new Response(
           JSON.stringify({
             count: 1,
@@ -155,6 +155,40 @@ test('listScopedMemories calls Mem0 v3 list with scoped filters', async () => {
 
       assert.equal(result.count, 1);
       assert.equal(result.memories[0]?.id, 'mem-1');
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+});
+
+test('Mem0 filters normalize common model-authored category shapes', async () => {
+  await withMem0Env(async () => {
+    const previousFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        assert.deepEqual(body.filters, {
+          metadata: { category: 'fitness_plan', domain: 'fitness' },
+          categories: { contains: 'health' },
+          user_id: 'elder:elder-1'
+        });
+        return new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }) as typeof fetch;
+
+      const service = new Mem0Service();
+      await service.searchScopedMemories({
+        userId: 'user-1',
+        elderId: 'elder-1',
+        query: 'fitness plan',
+        filters: {
+          category: 'fitness_plan',
+          domain: 'fitness',
+          categories: ['health']
+        }
+      });
     } finally {
       globalThis.fetch = previousFetch;
     }

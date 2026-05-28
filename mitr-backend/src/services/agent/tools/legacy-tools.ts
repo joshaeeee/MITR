@@ -430,7 +430,83 @@ export const createLegacyToolDefinitions = (
     if (triggerType === 'caregiver_nudge') {
       return 'family relationships caregiver preferences boundaries';
     }
-    return 'important user preferences routines relationships boundaries hobbies spiritual interests';
+    return 'important user preferences routines relationships boundaries hobbies spiritual interests active plans budgets trackers goals recent logs progress completion spending scores outcomes';
+  };
+  const metadataString = (metadata: Record<string, unknown>, key: string): string | undefined => {
+    const value = metadata[key];
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  };
+  const metadataRecordKind = (metadata: Record<string, unknown>): 'document' | 'log' | 'summary' | undefined => {
+    const value = metadataString(metadata, 'record_kind') ?? metadataString(metadata, 'recordKind');
+    return value === 'document' || value === 'log' || value === 'summary' ? value : undefined;
+  };
+  const summarizeMemoryText = (value: string, maxChars = 260): string => {
+    const compact = value.replace(/\s+/g, ' ').trim();
+    return compact.length > maxChars ? `${compact.slice(0, maxChars - 14).trim()}...[truncated]` : compact;
+  };
+  const structuredMemoryContext = (results: Awaited<ReturnType<Mem0Service['searchScopedMemories']>>) => {
+    const structured = results
+      .filter((memory) => metadataRecordKind(memory.metadata) || metadataString(memory.metadata, 'category'))
+      .sort((a, b) => {
+        const aDate = Date.parse(a.updatedAt ?? a.createdAt ?? '');
+        const bDate = Date.parse(b.updatedAt ?? b.createdAt ?? '');
+        return (Number.isFinite(bDate) ? bDate : 0) - (Number.isFinite(aDate) ? aDate : 0);
+      });
+
+    const activeCanvases = structured
+      .filter((memory) => metadataRecordKind(memory.metadata) === 'document')
+      .filter((memory) => (metadataString(memory.metadata, 'status') ?? 'active') === 'active')
+      .slice(0, 6)
+      .map((memory) => ({
+        memoryId: memory.id,
+        domain: metadataString(memory.metadata, 'domain') ?? 'general',
+        category: metadataString(memory.metadata, 'category') ?? 'document',
+        canvasName:
+          metadataString(memory.metadata, 'canvas_name') ??
+          metadataString(memory.metadata, 'canvasName') ??
+          metadataString(memory.metadata, 'title') ??
+          metadataString(memory.metadata, 'category') ??
+          'active memory canvas',
+        summary: summarizeMemoryText(memory.memory),
+        updatedAt: memory.updatedAt ?? memory.createdAt
+      }));
+
+    const recentEpisodes = structured
+      .filter((memory) => metadataRecordKind(memory.metadata) === 'log')
+      .slice(0, 8)
+      .map((memory) => ({
+        memoryId: memory.id,
+        domain: metadataString(memory.metadata, 'domain') ?? 'general',
+        category: metadataString(memory.metadata, 'category') ?? 'log',
+        canvasName:
+          metadataString(memory.metadata, 'canvas_name') ??
+          metadataString(memory.metadata, 'canvasName') ??
+          metadataString(memory.metadata, 'parent_category') ??
+          metadataString(memory.metadata, 'category'),
+        summary: summarizeMemoryText(memory.memory, 220),
+        occurredAt: metadataString(memory.metadata, 'event_date') ?? metadataString(memory.metadata, 'date') ?? memory.createdAt,
+        updatedAt: memory.updatedAt ?? memory.createdAt
+      }));
+
+    const summaries = structured
+      .filter((memory) => metadataRecordKind(memory.metadata) === 'summary')
+      .slice(0, 4)
+      .map((memory) => ({
+        memoryId: memory.id,
+        domain: metadataString(memory.metadata, 'domain') ?? 'general',
+        category: metadataString(memory.metadata, 'category') ?? 'summary',
+        summary: summarizeMemoryText(memory.memory, 240),
+        updatedAt: memory.updatedAt ?? memory.createdAt
+      }));
+
+    return {
+      version: 'mem0_profile_v1',
+      activeCanvases,
+      recentEpisodes,
+      summaries,
+      retrievalPolicy:
+        'This is a compact profile, not the full memory store. For exact details, totals, next steps, or history, retrieve matching Mem0 memories before answering.'
+    };
   };
   type PanchangQueryType = 'today_snapshot' | 'next_tithi' | 'upcoming_tithi_dates' | 'tithi_on_date';
   const INDIA_TIMEZONE = 'Asia/Kolkata';
@@ -1102,7 +1178,7 @@ export const createLegacyToolDefinitions = (
       triggerType: conversationTriggerSchema.nullish(),
       includeDebug: z.boolean().nullish()
     }),
-    timeoutMs: 900,
+    timeoutMs: 2500,
     execute: async (input, context) => {
       const packet = await deps.elderContextService.getContextPacket({
         userId: context.userId,
@@ -1118,17 +1194,22 @@ export const createLegacyToolDefinitions = (
           userId: context.userId,
           elderId: context.elderId,
           query: contextMemoryQuery(input.triggerType),
-          limit: 8,
+          limit: 20,
           timeoutMs: env.MEM0_CONTEXT_SEARCH_TIMEOUT_MS
         });
+        const memoryProfile = structuredMemoryContext(results);
         const authorized = await deps.elderContextService.authorizeMem0SearchResults({
           userId: context.userId,
           elderId: context.elderId,
           results
         });
-        if (authorized.length === 0) return packet;
-        return {
+        const enrichedPacket = {
           ...packet,
+          memoryProfile
+        };
+        if (authorized.length === 0) return enrichedPacket;
+        return {
+          ...enrichedPacket,
           memories: authorized.slice(0, 6).map((memory) => ({
             memoryId: memory.registryId,
             type: memory.memoryType,

@@ -190,7 +190,22 @@ def _wake_phrase_aliases(phrases: list[str] | None = None) -> list[str]:
     )
     add_if_configured(
         {"hi mitr", "hey mitr", "hi mitra", "hey mitra"},
-        {"हाय मित्र", "हे मित्र", "हाय मित्रा", "हे मित्रा"},
+        {
+            "hi meter",
+            "hey meter",
+            "hi miter",
+            "hey miter",
+            "hi mitter",
+            "hey mitter",
+            "hi mithra",
+            "hey mithra",
+            "hi meet her",
+            "hey meet her",
+            "हाय मित्र",
+            "हे मित्र",
+            "हाय मित्रा",
+            "हे मित्रा",
+        },
     )
 
     return sorted((phrase for phrase in aliases if phrase.strip()), key=len, reverse=True)
@@ -285,17 +300,31 @@ class WakePhraseRealtimeGate(FrameProcessor):
 
 
 class TranscriptDebug(FrameProcessor):
+    def __init__(self, websocket: WebSocket | None = None):
+        super().__init__()
+        self._websocket = websocket
+
+    async def _send_transcript_event(self, *, status: str, text: str):
+        if self._websocket is None:
+            return
+        try:
+            await self._websocket.send_json({"type": "transcript", "status": status, "text": text})
+        except Exception as error:
+            logger.debug("Failed to send transcript event: {}", str(error))
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if direction == FrameDirection.DOWNSTREAM and _bool_env(
-            "MITR_GATEWAY_LOG_TRANSCRIPTS",
-            False,
-        ):
+        if direction == FrameDirection.DOWNSTREAM:
             if isinstance(frame, TranscriptionFrame):
-                logger.info("OpenAI STT final: {!r}", frame.text)
+                if _bool_env("MITR_GATEWAY_LOG_TRANSCRIPTS", False):
+                    logger.info("OpenAI STT final: {!r}", frame.text)
+                await self._send_transcript_event(status="final", text=frame.text)
             elif isinstance(frame, InterimTranscriptionFrame):
-                logger.info("OpenAI STT interim: {!r}", frame.text)
+                if _bool_env("MITR_GATEWAY_LOG_TRANSCRIPTS", False):
+                    logger.info("OpenAI STT interim: {!r}", frame.text)
+                if _bool_env("MITR_GATEWAY_SEND_INTERIM_TRANSCRIPTS", False):
+                    await self._send_transcript_event(status="interim", text=frame.text)
 
         await self.push_frame(frame, direction)
 
@@ -533,7 +562,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     )
 
     api_key = os.getenv("OPENAI_API_KEY", "")
-    stt_language = os.getenv("OPENAI_REALTIME_STT_LANGUAGE", "en")
+    stt_language = os.getenv("OPENAI_REALTIME_STT_LANGUAGE") or auth.language or "en"
     stt = OpenAIRealtimeSTTService(
         api_key=api_key,
         turn_detection=None,
@@ -607,7 +636,7 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     gate = WakePhraseRealtimeGate(
         preroll_sec=_float_env("MITR_GATEWAY_WAKE_PHRASE_PREROLL_SEC", 4.0),
     )
-    transcript_debug = TranscriptDebug()
+    transcript_debug = TranscriptDebug(websocket)
     agnost_transcripts = AgnostTranscriptCapture(agnost)
     llm_resampler = PCM16Resampler(target_sample_rate=OPENAI_REALTIME_SAMPLE_RATE)
     echo_suppression = EchoSuppressionState(
@@ -620,6 +649,9 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     @wake_phrase.event_handler("on_wake_phrase_detected")
     async def on_wake_phrase_detected(_strategy, phrase: str):
         await send_state("awake", wakePhrase=phrase, idleTimeoutSec=_wake_idle_timeout())
+        asyncio.create_task(
+            _queue_runtime_context_update(task, llm, auth, websocket=websocket, trigger_type="user_requested")
+        )
         await gate.wake(phrase)
 
     @wake_phrase.event_handler("on_wake_phrase_timeout")
@@ -688,7 +720,15 @@ async def run_bot(websocket: WebSocket, auth: DeviceAuthContext) -> None:
     async def on_client_connected(_transport, _client):
         logger.info("ESP32 connected to Pipecat wake phrase gateway", device_id=auth.device_id)
         await agnost.start_session()
-        asyncio.create_task(_queue_runtime_context_update(task, llm, auth))
+        asyncio.create_task(
+            _queue_runtime_context_update(
+                task,
+                llm,
+                auth,
+                websocket=websocket,
+                trigger_type="session_start",
+            )
+        )
         await send_state("listening", wakePhrases=_wake_phrases())
 
     @transport.event_handler("on_client_disconnected")
