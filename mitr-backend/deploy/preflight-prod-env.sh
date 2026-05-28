@@ -260,6 +260,7 @@ require_secret_min_length "${ENV_FILE}" INTERNAL_SERVICE_TOKEN 32
 require_secret_min_length "${ENV_FILE}" SHORT_CODE_PEPPER 32
 require_not_placeholder "${ENV_FILE}" OPENAI_API_KEY
 validate_openai_api_key "${ENV_FILE}" OPENAI_API_KEY
+require_exact_value "${ENV_FILE}" OPENAI_REALTIME_STT_LANGUAGE "hi-IN"
 require_nonempty "${ENV_FILE}" MEM0_API_KEY
 require_nonempty "${ENV_FILE}" QDRANT_URL
 require_nonempty "${ENV_FILE}" QDRANT_API_KEY
@@ -310,7 +311,10 @@ if [[ -f "${SCRIPT_DIR}/.env.prod.pipecat-gateway" ]]; then
   require_same_value "${ENV_FILE}" INTERNAL_SERVICE_TOKEN "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN
   require_not_placeholder "${gateway_env}" OPENAI_API_KEY
   require_same_value "${ENV_FILE}" OPENAI_API_KEY "${gateway_env}" OPENAI_API_KEY
+  require_same_value "${ENV_FILE}" OPENAI_REALTIME_STT_LANGUAGE "${gateway_env}" OPENAI_REALTIME_STT_LANGUAGE
+  require_exact_value "${gateway_env}" OPENAI_REALTIME_STT_LANGUAGE "hi-IN"
   require_exact_value "${gateway_env}" OPENAI_REALTIME_TURN_DETECTION "manual"
+  require_false_or_empty "${gateway_env}" MITR_GATEWAY_SEND_INTERIM_TRANSCRIPTS
 fi
 
 for worker_env in \
