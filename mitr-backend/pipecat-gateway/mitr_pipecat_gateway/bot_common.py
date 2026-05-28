@@ -413,8 +413,8 @@ def _system_instruction_with_context_packet(auth: DeviceAuthContext, payload: di
 
     return (
         f"{instruction}\n\n"
-        "Runtime context packet for this connection. Use it as current context; do not read it aloud. "
-        "Handle mustHandle items before optional topics unless the user is distressed or asks something urgent.\n"
+        "Runtime memory context. Use this silently as current user context; do not read it aloud. "
+        "If exact details are needed, retrieve them before answering.\n"
         f"{compact}"
     )
 
@@ -434,29 +434,81 @@ def _response_output_text(evt: Any) -> str:
     return "".join(parts)
 
 
-async def _fetch_runtime_context_packet(auth: DeviceAuthContext) -> dict[str, object] | None:
+async def _fetch_runtime_context_packet(
+    auth: DeviceAuthContext,
+    *,
+    trigger_type: str = "session_start",
+) -> tuple[dict[str, object] | None, str | None, object | None]:
     if os.getenv("MITR_GATEWAY_INJECT_BOOT_CONTEXT", "false").strip().lower() not in {"1", "true", "yes", "on"}:
-        return None
+        return None, "disabled", None
 
     try:
         result = await execute_backend_tool_once(
             "context_packet_get",
-            {"triggerType": "session_start"},
+            {"triggerType": trigger_type},
             auth,
-            timeout_sec=_float_env("MITR_GATEWAY_CONTEXT_PACKET_BACKGROUND_TIMEOUT_SEC", 1.0),
+            timeout_sec=_float_env("MITR_GATEWAY_CONTEXT_PACKET_BACKGROUND_TIMEOUT_SEC", 8.0),
         )
     except Exception as error:
         logger.debug("Runtime context packet fetch failed: {}", str(error))
-        return None
+        return None, "fetch_failed", str(error)
 
     payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
-    return payload if isinstance(payload, dict) and payload.get("ok") else None
+    if isinstance(payload, dict) and payload.get("ok"):
+        return payload, None, None
+    return None, "not_ok", payload
 
 
-async def _queue_runtime_context_update(task: PipelineTask, llm: OpenAIRealtimeLLMService, auth: DeviceAuthContext) -> None:
+async def _send_runtime_context_event(
+    websocket: Any | None,
+    *,
+    status: str,
+    trigger_type: str,
+    payload: object | None = None,
+    error: str | None = None,
+) -> None:
+    if websocket is None:
+        return
     try:
-        payload = await _fetch_runtime_context_packet(auth)
+        event: dict[str, object] = {
+            "type": "runtime_context",
+            "status": status,
+            "triggerType": trigger_type,
+        }
+        if payload is not None:
+            event["payload"] = payload
+        if error:
+            event["error"] = error
+        await websocket.send_json(event)
+    except Exception as send_error:
+        logger.debug("Failed to send runtime_context event: {}", str(send_error))
+
+
+async def _queue_runtime_context_update(
+    task: PipelineTask,
+    llm: OpenAIRealtimeLLMService,
+    auth: DeviceAuthContext,
+    *,
+    websocket: Any | None = None,
+    trigger_type: str = "session_start",
+) -> None:
+    try:
+        await _send_runtime_context_event(websocket, status="start", trigger_type=trigger_type)
+        payload, skipped_reason, raw_payload = await _fetch_runtime_context_packet(auth, trigger_type=trigger_type)
         if not payload:
+            await _send_runtime_context_event(
+                websocket,
+                status="skipped",
+                trigger_type=trigger_type,
+                payload=raw_payload,
+                error=skipped_reason,
+            )
+            logger.info(
+                "Runtime context packet skipped device_id={} trigger_type={} reason={}",
+                auth.device_id,
+                trigger_type,
+                skipped_reason,
+            )
             return
 
         await task.queue_frame(
@@ -465,8 +517,14 @@ async def _queue_runtime_context_update(task: PipelineTask, llm: OpenAIRealtimeL
                 service=llm,
             )
         )
-        logger.info("Runtime context packet injected asynchronously", device_id=auth.device_id)
+        await _send_runtime_context_event(websocket, status="injected", trigger_type=trigger_type, payload=payload)
+        logger.info(
+            "Runtime context packet injected asynchronously device_id={} trigger_type={}",
+            auth.device_id,
+            trigger_type,
+        )
     except Exception as error:
+        await _send_runtime_context_event(websocket, status="error", trigger_type=trigger_type, error=str(error))
         logger.debug("Runtime context packet async injection failed: {}", str(error))
 
 

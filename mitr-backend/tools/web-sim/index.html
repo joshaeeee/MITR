@@ -71,6 +71,52 @@
         opacity: 0.55;
         cursor: not-allowed;
       }
+      .warning {
+        margin-top: 14px;
+        padding: 12px 14px;
+        border: 1px solid #b45309;
+        border-radius: 8px;
+        background: #fff7ed;
+        color: #7c2d12;
+        font-size: 13px;
+      }
+      .warning a {
+        color: inherit;
+        font-weight: 700;
+      }
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .status-item {
+        min-height: 48px;
+        border: 1px solid #d7d7cf;
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: #f8f8f5;
+      }
+      .status-item span {
+        display: block;
+        color: #6a6d64;
+        font-size: 11px;
+        line-height: 1.2;
+      }
+      .status-item strong {
+        display: block;
+        margin-top: 3px;
+        color: #20211d;
+        font-size: 13px;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+      }
+      .hint {
+        margin-top: 10px;
+        color: #4b4e47;
+        font-size: 13px;
+        line-height: 1.35;
+      }
       pre {
         min-height: 280px;
         max-height: 420px;
@@ -79,6 +125,21 @@
         border-radius: 8px;
         background: #11140f;
         color: #d8f5c8;
+        font-size: 12px;
+      }
+      h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+      .debug-title {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 20px;
+      }
+      .debug-title span {
+        color: #6a6d64;
         font-size: 12px;
       }
     </style>
@@ -102,14 +163,62 @@
           <input id="language" value="hi-IN" />
         </label>
         <div class="row">
-          <button id="loginTest" class="secondary">Login test user</button>
+          <button id="checkIdentity" class="secondary">Check identity</button>
           <button id="swiggyStatus" class="secondary">Swiggy status</button>
           <button id="swiggyConnect" class="secondary">Connect Swiggy</button>
           <button id="connect">Connect</button>
           <button id="disconnect" class="secondary" disabled>Disconnect</button>
         </div>
+        <div class="status-grid" aria-live="polite">
+          <div class="status-item">
+            <span>Identity</span>
+            <strong id="identityStatus">Not checked</strong>
+          </div>
+          <div class="status-item">
+            <span>Gateway</span>
+            <strong id="gatewayStatus">Disconnected</strong>
+          </div>
+          <div class="status-item">
+            <span>Memory context</span>
+            <strong id="contextStatus">Not injected</strong>
+          </div>
+          <div class="status-item">
+            <span>Wake state</span>
+            <strong id="wakeStatus">Not listening</strong>
+          </div>
+          <div class="status-item">
+            <span>Audio</span>
+            <strong id="audioStatus">Mic off</strong>
+          </div>
+          <div class="status-item">
+            <span>Last heard</span>
+            <strong id="transcriptStatus">No transcript</strong>
+          </div>
+        </div>
+        <div id="wakeHint" class="hint">
+          After connecting, wait for “Listening”, then say “Hi Mitr” or “Hey Mitr”.
+        </div>
       </section>
+      <div id="fileWarning" class="warning" hidden>
+        This simulator must be opened from <a href="http://localhost:8787">http://localhost:8787</a>.
+        The file:// version has origin null, so browser CORS blocks backend calls.
+      </div>
 
+      <div class="debug-title">
+        <h2>Resolved identity</h2>
+        <span>Fetched from the bearer token before connect</span>
+      </div>
+      <pre id="identity">{ "status": "not_checked" }</pre>
+
+      <div class="debug-title">
+        <h2>Runtime context packet</h2>
+        <span>Shows the latest context injected into the Realtime session</span>
+      </div>
+      <pre id="runtimeContext">{}</pre>
+
+      <div class="debug-title">
+        <h2>Gateway log</h2>
+      </div>
       <pre id="log"></pre>
     </main>
 
@@ -117,26 +226,44 @@
       const apiBaseInput = document.getElementById("apiBase");
       const tokenInput = document.getElementById("token");
       const languageInput = document.getElementById("language");
-      const loginTestButton = document.getElementById("loginTest");
+      const checkIdentityButton = document.getElementById("checkIdentity");
       const swiggyStatusButton = document.getElementById("swiggyStatus");
       const swiggyConnectButton = document.getElementById("swiggyConnect");
       const connectButton = document.getElementById("connect");
       const disconnectButton = document.getElementById("disconnect");
       const logEl = document.getElementById("log");
+      const identityEl = document.getElementById("identity");
+      const runtimeContextEl = document.getElementById("runtimeContext");
+      const fileWarningEl = document.getElementById("fileWarning");
+      const identityStatusEl = document.getElementById("identityStatus");
+      const gatewayStatusEl = document.getElementById("gatewayStatus");
+      const contextStatusEl = document.getElementById("contextStatus");
+      const wakeStatusEl = document.getElementById("wakeStatus");
+      const audioStatusEl = document.getElementById("audioStatus");
+      const transcriptStatusEl = document.getElementById("transcriptStatus");
 
       let ws = null;
       let audioContext = null;
       let sourceNode = null;
       let processorNode = null;
+      let silentMonitorNode = null;
       let mediaStream = null;
       let playbackTime = 0;
       let micMutedUntil = 0;
+      let audioFrameCount = 0;
+      let connectionId = 0;
       const playbackEchoTailSec = 1.2;
+      const isFileProtocol = window.location.protocol === "file:";
 
       const log = (event, payload = "") => {
         const line = `${new Date().toISOString()} ${event} ${typeof payload === "string" ? payload : JSON.stringify(payload)}`;
         logEl.textContent += `${line}\n`;
         logEl.scrollTop = logEl.scrollHeight;
+        console.info(`[web-sim] ${event}`, payload);
+      };
+
+      const setStatus = (element, value) => {
+        element.textContent = value;
       };
 
       const params = new URLSearchParams(window.location.search);
@@ -145,6 +272,40 @@
       const savedToken = localStorage.getItem("mitr_websim_token");
       if (savedToken) tokenInput.value = savedToken;
       if (params.get("swiggy")) log("swiggy_redirect", Object.fromEntries(params.entries()));
+      if (isFileProtocol) {
+        fileWarningEl.hidden = false;
+        identityEl.textContent = JSON.stringify(
+          {
+            status: "wrong_origin",
+            open: "http://localhost:8787",
+            currentOrigin: "file://"
+          },
+          null,
+          2
+        );
+        log("wrong_origin", "open http://localhost:8787 instead of the file path");
+        setStatus(identityStatusEl, "Wrong origin");
+        setStatus(gatewayStatusEl, "Blocked");
+        setStatus(contextStatusEl, "Blocked");
+        setStatus(wakeStatusEl, "Open localhost");
+        setStatus(audioStatusEl, "Blocked");
+        setStatus(transcriptStatusEl, "Blocked");
+        checkIdentityButton.disabled = true;
+        swiggyStatusButton.disabled = true;
+        swiggyConnectButton.disabled = true;
+        connectButton.disabled = true;
+      }
+
+      let configPromise = null;
+      const webSimConfig = () => {
+        if (isFileProtocol) return Promise.resolve({});
+        if (!configPromise) {
+          configPromise = fetch("/config")
+            .then((res) => (res.ok ? res.json() : {}))
+            .catch(() => ({}));
+        }
+        return configPromise;
+      };
 
       const apiBase = () => {
         const value = apiBaseInput.value.trim().replace(/\/+$/, "");
@@ -167,18 +328,59 @@
         return token;
       };
 
-      loginTestButton.onclick = async () => {
-        try {
-          const res = await fetch(`${apiBase()}/auth/email/login`, {
+      const resetAudioTiming = () => {
+        playbackTime = 0;
+        micMutedUntil = 0;
+      };
+
+      const resolveIdentity = async (base, token, language) => {
+        if (isFileProtocol) {
+          throw new Error("Open http://localhost:8787 instead of the file path; file:// cannot call the backend.");
+        }
+        const [res, config] = await Promise.all([
+          fetch(`${base}/pipecat/gateway/auth`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ email: "tester@gmail.com", password: "12345678910" }),
-          });
-          if (!res.ok) throw new Error(await res.text());
-          const payload = await res.json();
-          tokenInput.value = payload.session.accessToken;
-          localStorage.setItem("mitr_websim_token", payload.session.accessToken);
-          log("login", { userId: payload.user.id, email: payload.user.email });
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ language, transport: "pipecat-gateway" }),
+          }),
+          webSimConfig(),
+        ]);
+        if (!res.ok) throw new Error(await res.text());
+
+        const payload = await res.json();
+        const expectedUserId = config.expectedUserId || "";
+        const identity = {
+          status: expectedUserId && payload.userId !== expectedUserId ? "blocked_wrong_user" : "ok",
+          expectedEmail: config.expectedEmail || undefined,
+          expectedUserId: expectedUserId || undefined,
+          ...payload,
+        };
+        identityEl.textContent = JSON.stringify(identity, null, 2);
+
+        if (identity.status !== "ok") {
+          setStatus(identityStatusEl, "Wrong user");
+          log("identity_mismatch", identity);
+          throw new Error(`Token resolved to userId ${payload.userId}; expected ${expectedUserId}`);
+        }
+
+        setStatus(identityStatusEl, `${identity.userName || "User"} OK`);
+        log("identity", {
+          userId: identity.userId,
+          elderId: identity.elderId,
+          elderName: identity.elderName,
+          expectedEmail: identity.expectedEmail,
+        });
+        return identity;
+      };
+
+      checkIdentityButton.onclick = async () => {
+        const token = requireToken();
+        if (!token) return;
+        try {
+          await resolveIdentity(apiBase(), token, languageInput.value.trim() || "hi-IN");
         } catch (error) {
           log("error", error.message || String(error));
         }
@@ -236,24 +438,26 @@
       };
 
       const playPcm16 = async (arrayBuffer) => {
-        if (!audioContext) return;
+        const context = audioContext;
+        if (!context) return;
         const pcm = new Int16Array(arrayBuffer);
         const floats = new Float32Array(pcm.length);
         for (let i = 0; i < pcm.length; i += 1) {
           floats[i] = Math.max(-1, Math.min(1, pcm[i] / 32768));
         }
-        const buffer = audioContext.createBuffer(1, floats.length, 16000);
+        const buffer = context.createBuffer(1, floats.length, 16000);
         buffer.copyToChannel(floats, 0);
-        const node = audioContext.createBufferSource();
+        const node = context.createBufferSource();
         node.buffer = buffer;
-        node.connect(audioContext.destination);
-        playbackTime = Math.max(playbackTime, audioContext.currentTime);
+        node.connect(context.destination);
+        playbackTime = Math.max(playbackTime, context.currentTime);
         node.start(playbackTime);
         playbackTime += buffer.duration;
         micMutedUntil = Math.max(micMutedUntil, playbackTime + playbackEchoTailSec);
       };
 
       const startMic = async () => {
+        resetAudioTiming();
         audioContext = new AudioContext();
         mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -270,6 +474,14 @@
           if (audioContext.currentTime < micMutedUntil) return;
           const mono = event.inputBuffer.getChannelData(0);
           const pcm16 = floatToPcm16(downsample(mono, audioContext.sampleRate, 16000));
+          audioFrameCount += 1;
+          if (audioFrameCount === 1 || audioFrameCount % 100 === 0) {
+            let peak = 0;
+            for (let i = 0; i < mono.length; i += 32) {
+              peak = Math.max(peak, Math.abs(mono[i]));
+            }
+            setStatus(audioStatusEl, `Sending #${audioFrameCount}, peak ${peak.toFixed(3)}`);
+          }
           ws.send(pcm16.buffer);
         };
         const silentMonitor = audioContext.createGain();
@@ -277,17 +489,23 @@
         sourceNode.connect(processorNode);
         processorNode.connect(silentMonitor);
         silentMonitor.connect(audioContext.destination);
+        silentMonitorNode = silentMonitor;
       };
 
       const stopMic = () => {
         if (processorNode) processorNode.disconnect();
         if (sourceNode) sourceNode.disconnect();
+        if (silentMonitorNode) silentMonitorNode.disconnect();
         if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
         if (audioContext) void audioContext.close();
         processorNode = null;
         sourceNode = null;
+        silentMonitorNode = null;
         mediaStream = null;
         audioContext = null;
+        audioFrameCount = 0;
+        resetAudioTiming();
+        setStatus(audioStatusEl, "Mic off");
       };
 
       connectButton.onclick = async () => {
@@ -300,7 +518,13 @@
         }
 
         connectButton.disabled = true;
+        setStatus(gatewayStatusEl, "Connecting");
+        setStatus(contextStatusEl, "Waiting");
+        setStatus(wakeStatusEl, "Starting mic");
+        setStatus(audioStatusEl, "Starting");
+        setStatus(transcriptStatusEl, "Waiting");
         try {
+          await resolveIdentity(base, token, language);
           const connectRes = await fetch(`${base}/pipecat/connect`, {
             method: "POST",
             headers: {
@@ -315,37 +539,118 @@
           wsUrl.searchParams.set("client", "web");
           wsUrl.searchParams.set("language", language);
 
-          ws = new WebSocket(wsUrl.toString(), ["mitr-pcm16", `mitr-token-${token}`]);
-          ws.binaryType = "arraybuffer";
-          ws.onopen = async () => {
+          const currentConnectionId = ++connectionId;
+          const socket = new WebSocket(wsUrl.toString(), ["mitr-pcm16", `mitr-token-${token}`]);
+          ws = socket;
+          socket.binaryType = "arraybuffer";
+          socket.onopen = async () => {
+            if (currentConnectionId !== connectionId || socket !== ws) return;
+            setStatus(gatewayStatusEl, "WebSocket open");
+            setStatus(wakeStatusEl, "Mic starting");
             log("connected", wsUrl.toString());
-            ws.send(JSON.stringify({ type: "hello", client: "web", language, ts: Date.now() }));
+            socket.send(JSON.stringify({ type: "hello", client: "web", language, ts: Date.now() }));
             await startMic();
+            if (currentConnectionId !== connectionId || socket !== ws) {
+              stopMic();
+              return;
+            }
+            setStatus(wakeStatusEl, "Mic on");
+            setStatus(audioStatusEl, "Mic on");
             disconnectButton.disabled = false;
           };
-          ws.onmessage = (event) => {
+          socket.onmessage = (event) => {
+            if (currentConnectionId !== connectionId || socket !== ws) return;
             if (typeof event.data === "string") {
-              log("gateway", event.data);
+              try {
+                const parsed = JSON.parse(event.data);
+                if (parsed && parsed.type === "runtime_context") {
+                  runtimeContextEl.textContent = JSON.stringify(parsed.payload || parsed, null, 2);
+                  if (parsed.status === "start") {
+                    setStatus(contextStatusEl, "Loading");
+                  } else if (parsed.status === "injected") {
+                    const activeCanvases = parsed.payload?.memoryProfile?.activeCanvases?.length ?? 0;
+                    const recentEpisodes = parsed.payload?.memoryProfile?.recentEpisodes?.length ?? 0;
+                    setStatus(contextStatusEl, `Injected ${activeCanvases}/${recentEpisodes}`);
+                  } else if (parsed.status === "skipped") {
+                    setStatus(contextStatusEl, `Skipped: ${parsed.error || "unknown"}`);
+                  } else if (parsed.status === "error") {
+                    setStatus(contextStatusEl, "Error");
+                  }
+                  log("runtime_context", {
+                    status: parsed.status,
+                    triggerType: parsed.triggerType,
+                    error: parsed.error,
+                    activeCanvases: parsed.payload?.memoryProfile?.activeCanvases?.length ?? 0,
+                    recentEpisodes: parsed.payload?.memoryProfile?.recentEpisodes?.length ?? 0,
+                  });
+                  return;
+                }
+                if (parsed && parsed.type === "transcript") {
+                  setStatus(transcriptStatusEl, `${parsed.status}: ${parsed.text || "(blank)"}`);
+                  log("transcript", { status: parsed.status, text: parsed.text });
+                  return;
+                }
+                if (parsed && parsed.type === "ready") {
+                  setStatus(gatewayStatusEl, "Ready");
+                  setStatus(wakeStatusEl, "Waiting for gateway");
+                } else if (parsed && parsed.type === "listening") {
+                  setStatus(gatewayStatusEl, "Listening");
+                  setStatus(wakeStatusEl, 'Say "Hi Mitr"');
+                } else if (parsed && parsed.type === "awake") {
+                  setStatus(wakeStatusEl, `Awake: ${parsed.wakePhrase || "wake phrase"}`);
+                } else if (parsed && parsed.type === "sleeping") {
+                  setStatus(wakeStatusEl, 'Sleeping: say "Hi Mitr"');
+                } else if (parsed && parsed.type === "session_superseded") {
+                  setStatus(gatewayStatusEl, "Superseded");
+                } else if (parsed && parsed.type === "model_error") {
+                  setStatus(gatewayStatusEl, "Model error");
+                } else if (parsed && parsed.type === "model_reconnecting") {
+                  setStatus(gatewayStatusEl, "Reconnecting");
+                }
+                log("gateway", parsed);
+              } catch {
+                log("gateway", event.data);
+              }
             } else {
               void playPcm16(event.data);
             }
           };
-          ws.onclose = (event) => {
+          socket.onclose = (event) => {
+            if (currentConnectionId !== connectionId || socket !== ws) return;
             log("closed", { code: event.code, reason: event.reason });
+            ws = null;
             stopMic();
+            setStatus(gatewayStatusEl, "Disconnected");
+            setStatus(wakeStatusEl, "Not listening");
+            setStatus(transcriptStatusEl, "No transcript");
             connectButton.disabled = false;
             disconnectButton.disabled = true;
           };
-          ws.onerror = () => log("error", "websocket error");
+          socket.onerror = () => {
+            if (currentConnectionId !== connectionId || socket !== ws) return;
+            setStatus(gatewayStatusEl, "WebSocket error");
+            log("error", "websocket error");
+          };
         } catch (error) {
           log("error", error.message || String(error));
+          setStatus(gatewayStatusEl, "Connect failed");
+          setStatus(wakeStatusEl, "Not listening");
+          setStatus(audioStatusEl, "Mic off");
           connectButton.disabled = false;
         }
       };
 
       disconnectButton.onclick = () => {
-        if (ws) ws.close();
+        const socket = ws;
+        connectionId += 1;
+        ws = null;
+        if (socket) socket.close();
         stopMic();
+        setStatus(gatewayStatusEl, "Disconnected");
+        setStatus(wakeStatusEl, "Not listening");
+        setStatus(transcriptStatusEl, "No transcript");
+        connectButton.disabled = false;
+        disconnectButton.disabled = true;
       };
     </script>
   </body>

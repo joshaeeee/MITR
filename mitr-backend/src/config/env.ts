@@ -140,7 +140,7 @@ const baseEnvSchema = z.object({
   MEM0_AGENT_ID: z.string().default('reca'),
   MEM0_ADD_TIMEOUT_MS: z.coerce.number().default(5000),
   MEM0_SEARCH_TIMEOUT_MS: z.coerce.number().default(3500),
-  MEM0_CONTEXT_SEARCH_TIMEOUT_MS: z.coerce.number().default(650),
+  MEM0_CONTEXT_SEARCH_TIMEOUT_MS: z.coerce.number().default(1800),
   MEM0_SEARCH_THRESHOLD: z.coerce.number().default(0.1),
   MEM0_SEARCH_RERANK: envBoolean(false),
 

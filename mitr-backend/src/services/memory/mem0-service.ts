@@ -94,8 +94,43 @@ const asNumber = (value: unknown): number | undefined =>
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
 
+const MEM0_METADATA_FILTER_KEYS = new Set(['category', 'status', 'domain', 'object_type', 'record_kind', 'canvasName']);
+
+const normalizeMem0FilterValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    const [first] = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    return first ? { contains: first } : undefined;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return { contains: value.trim() };
+  }
+  return value;
+};
+
+const normalizeScopedFilters = (filters?: Record<string, unknown>): Record<string, unknown> => {
+  const normalized: Record<string, unknown> = {};
+  const metadata = asObject(filters?.metadata);
+
+  for (const [key, value] of Object.entries(filters ?? {})) {
+    if (key === 'metadata') continue;
+    if (MEM0_METADATA_FILTER_KEYS.has(key)) {
+      metadata[key] = value;
+      continue;
+    }
+    if (key === 'categories' || key === 'keywords') {
+      const normalizedValue = normalizeMem0FilterValue(value);
+      if (normalizedValue !== undefined) normalized[key] = normalizedValue;
+      continue;
+    }
+    normalized[key] = value;
+  }
+
+  if (Object.keys(metadata).length > 0) normalized.metadata = metadata;
+  return normalized;
+};
+
 const mergeScopedFilters = (mem0UserId: string, filters?: Record<string, unknown>): Record<string, unknown> => ({
-  ...(filters ?? {}),
+  ...normalizeScopedFilters(filters),
   user_id: mem0UserId
 });
 

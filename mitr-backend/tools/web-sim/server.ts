@@ -92,6 +92,17 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (pathname === '/config') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(
+      JSON.stringify({
+        expectedEmail: process.env.WEB_SIM_EXPECTED_EMAIL ?? null,
+        expectedUserId: process.env.WEB_SIM_EXPECTED_USER_ID ?? null
+      })
+    );
+    return;
+  }
+
   if (pathname.startsWith('/assets/')) {
     try {
       const decoded = decodeURIComponent(pathname.slice('/assets/'.length));
