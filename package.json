@@ -7,5 +7,14 @@
     "dev:agent": "pnpm --dir mitr-backend dev:agent",
     "dev:mobile": "pnpm --dir mitr-mobile start",
     "typecheck": "pnpm -r typecheck"
+  },
+  "pnpm": {
+    "overrides": {
+      "undici@<6.24.0": "^6.24.0",
+      "fast-uri@<3.1.2": "^3.1.2",
+      "uuid@<11.1.1": "^11.1.1",
+      "brace-expansion@>=2.0.0 <2.0.3": "^2.0.3",
+      "protobufjs@<7.5.8": "^7.5.8"
+    }
   }
 }
