@@ -20,6 +20,21 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _default_audio_out_sample_rate() -> int:
+    configured = os.getenv("ESP32_AUDIO_OUT_SAMPLE_RATE")
+    if configured:
+        return int(configured)
+    provider = os.getenv("MITR_GATEWAY_REALTIME_PROVIDER", "openai").strip().lower()
+    if provider in {"google", "gemini", "gemini-live", "gemini_live"}:
+        return 24000
+    return 16000
+
+
+def _is_gemini_realtime_provider() -> bool:
+    provider = os.getenv("MITR_GATEWAY_REALTIME_PROVIDER", "openai").strip().lower()
+    return provider in {"google", "gemini", "gemini-live", "gemini_live"}
+
+
 def _is_placeholder(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -95,6 +110,21 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def preload_gateway_runtime():
+    if not _env_bool("MITR_GATEWAY_PRELOAD_BOT", True):
+        return
+    from . import bot_wake_phrase  # noqa: F401
+
+    if _is_gemini_realtime_provider():
+        try:
+            from google import genai  # noqa: F401
+            from google.genai import types  # noqa: F401
+        except Exception as error:
+            logger.warning("Gemini Live SDK preload failed: {}", error)
+    logger.info("Pipecat gateway runtime preloaded")
+
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
@@ -131,7 +161,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "type": "ready",
             "protocol": "mitr-esp32-pcm16-v1",
             "audioIn": {"sampleRate": int(os.getenv("ESP32_AUDIO_IN_SAMPLE_RATE", "16000"))},
-            "audioOut": {"sampleRate": int(os.getenv("ESP32_AUDIO_OUT_SAMPLE_RATE", "16000"))},
+            "audioOut": {"sampleRate": _default_audio_out_sample_rate()},
             "deviceId": auth.device_id,
         }
     )

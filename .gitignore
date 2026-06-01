@@ -55,3 +55,4 @@ minimal/.cache/
 AGENTS.md
 CLAUDE.md
 extra_system_prompt.txt
+LOCAL_AWS_SSM_ENV_RUNBOOK.md

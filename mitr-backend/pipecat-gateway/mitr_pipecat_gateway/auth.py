@@ -48,10 +48,6 @@ def select_websocket_subprotocol(websocket: WebSocket) -> str | None:
 
 async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
     headers = {key.lower(): value for key, value in websocket.headers.items()}
-    token = _bearer(headers) or _subprotocol_token(headers)
-    if not token:
-        raise PermissionError("missing bearer token")
-
     device_id = websocket.query_params.get("deviceId") or headers.get("x-mitr-device-id") or ""
     language = websocket.query_params.get("language") or headers.get("x-mitr-language") or "hi-IN"
     client = websocket.query_params.get("client") or headers.get("x-mitr-client") or "esp32"
@@ -70,6 +66,10 @@ async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
             elder_name=None,
             language=language,
         )
+
+    token = _bearer(headers) or _subprotocol_token(headers)
+    if not token:
+        raise PermissionError("missing bearer token")
 
     backend_base = os.getenv("MITR_BACKEND_BASE_URL", "").rstrip("/")
     if not backend_base:

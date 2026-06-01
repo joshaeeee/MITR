@@ -634,6 +634,28 @@ def build_tools_schema() -> ToolsSchema:
     return ToolsSchema(standard_tools=tools)
 
 
+def build_gemini_function_declarations() -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    for schema in build_tools_schema().standard_tools:
+        properties = dict(schema.properties or {})
+        parameters = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+        required = list(schema.required or [])
+        if required:
+            parameters["required"] = required
+        declarations.append(
+            {
+                "name": schema.name,
+                "description": schema.description,
+                "parameters_json_schema": parameters,
+            }
+        )
+    return declarations
+
+
 async def _send_tool_event(websocket: WebSocket | None, name: str, status: str, payload: Any):
     if websocket is None:
         return
@@ -1193,6 +1215,45 @@ async def _execute_tool(name: str, args: dict[str, Any], auth: DeviceAuthContext
         }
 
     return {"ok": False, "error": f"Unknown tool: {name}"}
+
+
+async def execute_gemini_live_tool(
+    name: str,
+    args: dict[str, Any],
+    auth: DeviceAuthContext,
+    websocket: WebSocket | None = None,
+    *,
+    on_tool_start: ToolStartHook | None = None,
+    on_tool_end: ToolEndHook | None = None,
+) -> dict[str, Any]:
+    started_at = time.monotonic()
+    logger.info("Gemini Live tool call started: {} arg_keys={}", name, sorted(args.keys()))
+    if on_tool_start:
+        await on_tool_start(name, args)
+    try:
+        await _send_tool_event(websocket, name, "start", args)
+        result = await _execute_tool(name, args, auth)
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+        if on_tool_end:
+            await on_tool_end(name, args, result, bool(result.get("ok")), latency_ms)
+        logger.info("Gemini Live tool call completed: {} ok={}", name, result.get("ok"))
+        await _send_tool_event(websocket, name, "end", result)
+
+        if _tool_execution_policy(name).async_ack:
+            return _finished_tool_result(name, args, auth, result)
+        return _sync_tool_result(name, args, auth, result)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        payload = {"ok": False, "error": str(error)}
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+        if on_tool_end:
+            await on_tool_end(name, args, payload, False, latency_ms)
+        logger.warning("Gemini Live tool call failed: {} error={}", name, str(error))
+        await _send_tool_event(websocket, name, "error", payload)
+        if _tool_execution_policy(name).async_ack:
+            return _finished_tool_result(name, args, auth, payload)
+        return _sync_tool_result(name, args, auth, payload)
 
 
 def register_mitr_tools(

@@ -157,20 +157,28 @@ Deploy:
 
 ```sh
 cd /opt/mitr/MITR/mitr-backend
-cp deploy/.env.prod.template deploy/.env.prod
-deploy/generate-prod-secrets.sh
-bash deploy/bootstrap-service-env-files.sh deploy/.env.prod
-bash deploy/preflight-prod-env.sh deploy/.env.prod
 bash deploy/deploy.sh
 bash deploy/setup-https.sh
 ```
 
-Fill secrets and runtime config only in `deploy/.env.prod`. Deploy bootstrap
-regenerates narrow gateway and worker env files from that canonical env, so
-service env files should not be edited by hand. Gateway and worker env files
-must not include unrelated API/OAuth/database/vector-store/device secrets. The
-deploy preflight validates `OPENAI_API_KEY` against OpenAI by default before
-restarting production containers.
+Production secrets and runtime config live in AWS SSM Parameter Store under
+`/mitr/prod`. `deploy/deploy.sh` regenerates `deploy/.env.prod` from SSM before
+bootstrapping service env files, so `.env.prod` and service env files on EC2 are
+generated artifacts and should not be edited by hand. To refresh env without a
+full deploy:
+
+```sh
+AWS_REGION=ap-south-1 bash deploy/sync-env-from-ssm.sh /mitr/prod deploy/.env.prod
+bash deploy/bootstrap-service-env-files.sh deploy/.env.prod
+VALIDATE_OPENAI_API_KEY=false bash deploy/preflight-prod-env.sh deploy/.env.prod
+```
+
+To change production config, update the matching SSM parameter, then rerun
+deploy. Use `USE_SSM_ENV=false bash deploy/deploy.sh` only for an emergency
+manual env-file deploy. Gateway and worker env files must not include unrelated
+API/OAuth/database/vector-store/device secrets. The deploy preflight validates
+`OPENAI_API_KEY` against OpenAI by default before restarting production
+containers.
 Before a pilot launch, complete `deploy/SECURITY_LAUNCH_CHECKLIST.md`; the
 production preflight blocks deploy until the required security acknowledgements
 are set.

@@ -7,6 +7,8 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.prod.yml"
 ENV_FILE="${SCRIPT_DIR}/.env.prod"
 HEALTHCHECK_SCRIPT="${SCRIPT_DIR}/healthcheck.sh"
+USE_SSM_ENV="${USE_SSM_ENV:-true}"
+SSM_ENV_PATH="${SSM_ENV_PATH:-/mitr/prod}"
 RUN_DB_MIGRATIONS="${RUN_DB_MIGRATIONS:-true}"
 ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="${ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS:-false}"
 
@@ -18,6 +20,11 @@ fi
 if ! docker compose version >/dev/null 2>&1; then
   echo "[deploy] docker compose plugin not found"
   exit 1
+fi
+
+if [[ "${USE_SSM_ENV}" == "true" ]]; then
+  echo "[deploy] syncing production env from SSM Parameter Store (${SSM_ENV_PATH})"
+  AWS_REGION="${AWS_REGION:-ap-south-1}" bash "${SCRIPT_DIR}/sync-env-from-ssm.sh" "${SSM_ENV_PATH}" "${ENV_FILE}"
 fi
 
 if [[ ! -f "${ENV_FILE}" ]]; then

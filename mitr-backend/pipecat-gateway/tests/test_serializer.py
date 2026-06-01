@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from pipecat.frames.frames import OutputAudioRawFrame
+from pipecat.frames.frames import OutputAudioRawFrame, UserStartedSpeakingFrame
 
 from mitr_pipecat_gateway.serializer import Esp32PCMSerializer
 
@@ -69,6 +69,13 @@ class Esp32PCMSerializerTests(unittest.IsolatedAsyncioTestCase):
             int(32767).to_bytes(2, "little", signed=True)
             + int(-32768).to_bytes(2, "little", signed=True),
         )
+
+    async def test_start_control_opens_user_turn(self):
+        serializer = Esp32PCMSerializer()
+
+        frame = await serializer.deserialize('{"type":"start"}')
+
+        self.assertIsInstance(frame, UserStartedSpeakingFrame)
 
 
 if __name__ == "__main__":

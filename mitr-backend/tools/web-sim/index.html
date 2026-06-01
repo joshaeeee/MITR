@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Cache-Control" content="no-store" />
     <title>Mitr Pipecat Web Simulator</title>
     <style>
       :root {
@@ -41,12 +42,23 @@
         font-size: 13px;
         color: #4b4e47;
       }
-      input {
+      input,
+      select {
         min-height: 38px;
         border: 1px solid #c8c9bf;
         border-radius: 6px;
         padding: 0 10px;
         font: inherit;
+        background: #fff;
+        color: #20211d;
+      }
+      .fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .wide {
+        grid-column: 1 / -1;
       }
       .row {
         display: flex;
@@ -147,26 +159,53 @@
   <body>
     <main>
       <h1>Mitr Pipecat Web Simulator</h1>
-      <p>Direct test path: browser mic PCM16 -> Pipecat gateway -> OpenAI Realtime -> browser speaker.</p>
+      <p>Direct test path: browser mic PCM16 -> selected Pipecat gateway -> browser speaker.</p>
 
       <section class="panel">
+        <div class="fields">
+        <label>
+          Connection mode
+          <select id="connectionMode">
+            <option value="direct">Direct gateway</option>
+            <option value="backend">Backend /pipecat/connect</option>
+          </select>
+        </label>
+        <label>
+          Experiment server
+          <select id="serverPreset">
+            <option value="elevenlabs">ElevenLabs chained TTS</option>
+            <option value="gemini">Gemini Live direct SDK</option>
+            <option value="custom">Custom gateway URL</option>
+          </select>
+        </label>
+        <label class="wide">
+          Direct gateway URL
+          <input id="directGatewayUrl" value="ws://127.0.0.1:7861/ws" />
+        </label>
+        <label>
+          Device ID
+          <input id="deviceId" value="web-sim-device" />
+        </label>
         <label>
           API base URL
           <input id="apiBase" value="http://127.0.0.1:8080" />
         </label>
-        <label>
+        <label class="wide">
           User bearer token
-          <input id="token" placeholder="Paste app access token" />
+          <input id="token" placeholder="Paste app access token, or any value for local gateway auth" />
         </label>
         <label>
           Language
           <input id="language" value="hi-IN" />
         </label>
+        </div>
         <div class="row">
           <button id="checkIdentity" class="secondary">Check identity</button>
           <button id="swiggyStatus" class="secondary">Swiggy status</button>
           <button id="swiggyConnect" class="secondary">Connect Swiggy</button>
           <button id="connect">Connect</button>
+          <button id="wakeNow" class="secondary" disabled>Wake</button>
+          <button id="stopTurn" class="secondary" disabled>Stop turn</button>
           <button id="disconnect" class="secondary" disabled>Disconnect</button>
         </div>
         <div class="status-grid" aria-live="polite">
@@ -223,13 +262,20 @@
     </main>
 
     <script>
+      const webSimVersion = "2026-06-01-gemini-transcript-wake-fast-turns";
       const apiBaseInput = document.getElementById("apiBase");
+      const connectionModeInput = document.getElementById("connectionMode");
+      const serverPresetInput = document.getElementById("serverPreset");
+      const directGatewayUrlInput = document.getElementById("directGatewayUrl");
+      const deviceIdInput = document.getElementById("deviceId");
       const tokenInput = document.getElementById("token");
       const languageInput = document.getElementById("language");
       const checkIdentityButton = document.getElementById("checkIdentity");
       const swiggyStatusButton = document.getElementById("swiggyStatus");
       const swiggyConnectButton = document.getElementById("swiggyConnect");
       const connectButton = document.getElementById("connect");
+      const wakeNowButton = document.getElementById("wakeNow");
+      const stopTurnButton = document.getElementById("stopTurn");
       const disconnectButton = document.getElementById("disconnect");
       const logEl = document.getElementById("log");
       const identityEl = document.getElementById("identity");
@@ -250,10 +296,30 @@
       let mediaStream = null;
       let playbackTime = 0;
       let micMutedUntil = 0;
+      let outputNodes = [];
       let audioFrameCount = 0;
+      let outputSampleRate = 16000;
+      let gatewayWakeMode = "unknown";
+      let geminiAwake = false;
+      let geminiTurnOpen = false;
+      let geminiSpeechSeen = false;
+      let geminiSpeechStartCandidateMs = 0;
+      let geminiSilenceStart = 0;
+      let geminiLastStartMs = 0;
+      let geminiLastStopMs = 0;
+      let geminiAwaitingFirstAudio = false;
+      let geminiDroppedAssistantFrames = 0;
       let connectionId = 0;
-      const playbackEchoTailSec = 1.2;
+      const playbackEchoTailSec = 0.45;
+      const geminiSpeechPeakThreshold = 0.035;
+      const geminiSilencePeakThreshold = 0.014;
+      const geminiStartSpeechMs = 80;
+      const geminiAutoStopSilenceMs = 220;
       const isFileProtocol = window.location.protocol === "file:";
+      const gatewayPresets = {
+        elevenlabs: "ws://127.0.0.1:7861/ws",
+        gemini: "ws://127.0.0.1:7862/ws",
+      };
 
       const log = (event, payload = "") => {
         const line = `${new Date().toISOString()} ${event} ${typeof payload === "string" ? payload : JSON.stringify(payload)}`;
@@ -261,6 +327,7 @@
         logEl.scrollTop = logEl.scrollHeight;
         console.info(`[web-sim] ${event}`, payload);
       };
+      log("web_sim", { version: webSimVersion });
 
       const setStatus = (element, value) => {
         element.textContent = value;
@@ -269,6 +336,19 @@
       const params = new URLSearchParams(window.location.search);
       const initialApiHost = params.get("apiHost") || params.get("host") || localStorage.getItem("mitr_websim_host");
       if (initialApiHost) apiBaseInput.value = initialApiHost;
+      const initialGatewayUrl =
+        params.get("gatewayUrl") ||
+        params.get("gateway") ||
+        localStorage.getItem("mitr_websim_gateway_url");
+      if (initialGatewayUrl) directGatewayUrlInput.value = initialGatewayUrl;
+      const initialMode = params.get("mode") || localStorage.getItem("mitr_websim_connection_mode");
+      if (initialMode === "backend" || initialMode === "direct") connectionModeInput.value = initialMode;
+      const initialPreset = params.get("server") || localStorage.getItem("mitr_websim_server_preset");
+      if (initialPreset && serverPresetInput.querySelector(`option[value="${initialPreset}"]`)) {
+        serverPresetInput.value = initialPreset;
+      }
+      const savedDeviceId = localStorage.getItem("mitr_websim_device_id");
+      if (savedDeviceId) deviceIdInput.value = savedDeviceId;
       const savedToken = localStorage.getItem("mitr_websim_token");
       if (savedToken) tokenInput.value = savedToken;
       if (params.get("swiggy")) log("swiggy_redirect", Object.fromEntries(params.entries()));
@@ -311,6 +391,60 @@
         const value = apiBaseInput.value.trim().replace(/\/+$/, "");
         localStorage.setItem("mitr_websim_host", value);
         return value;
+      };
+
+      const connectionMode = () => {
+        const value = connectionModeInput.value === "backend" ? "backend" : "direct";
+        localStorage.setItem("mitr_websim_connection_mode", value);
+        return value;
+      };
+
+      const directGatewayUrl = () => {
+        const value = directGatewayUrlInput.value.trim();
+        localStorage.setItem("mitr_websim_gateway_url", value);
+        return value;
+      };
+
+      const deviceId = () => {
+        const value = deviceIdInput.value.trim() || "web-sim-device";
+        localStorage.setItem("mitr_websim_device_id", value);
+        return value;
+      };
+
+      const updatePreset = () => {
+        const preset = serverPresetInput.value;
+        localStorage.setItem("mitr_websim_server_preset", preset);
+        if (preset !== "custom" && gatewayPresets[preset]) {
+          directGatewayUrlInput.value = gatewayPresets[preset];
+          localStorage.setItem("mitr_websim_gateway_url", gatewayPresets[preset]);
+        }
+      };
+      serverPresetInput.onchange = updatePreset;
+      directGatewayUrlInput.oninput = () => {
+        serverPresetInput.value = "custom";
+        localStorage.setItem("mitr_websim_server_preset", "custom");
+      };
+      if (!initialGatewayUrl && serverPresetInput.value !== "custom") updatePreset();
+
+      const isGeminiDirectMode = () => connectionMode() === "direct" && serverPresetInput.value === "gemini";
+      const shouldSendGeminiTurnControls = () =>
+        isGeminiDirectMode() && geminiAwake;
+
+      const sendStopTurn = (source = "web-sim") => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        geminiLastStopMs = performance.now();
+        ws.send(JSON.stringify({ type: "stop", source, ts: Date.now() }));
+        log("control", { type: "stop", source });
+      };
+
+      const sendStartTurn = (source = "web-sim") => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        geminiLastStartMs = performance.now();
+        geminiLastStopMs = 0;
+        geminiAwaitingFirstAudio = isGeminiDirectMode();
+        geminiDroppedAssistantFrames = 0;
+        ws.send(JSON.stringify({ type: "start", source, ts: Date.now() }));
+        log("control", { type: "start", source });
       };
 
       const bearerToken = () => {
@@ -377,6 +511,20 @@
       };
 
       checkIdentityButton.onclick = async () => {
+        if (connectionMode() === "direct") {
+          setStatus(identityStatusEl, `Local device ${deviceId()}`);
+          identityEl.textContent = JSON.stringify(
+            {
+              status: "local_gateway_mode",
+              deviceId: deviceId(),
+              note: "Identity is skipped in direct gateway mode.",
+            },
+            null,
+            2
+          );
+          log("identity", "skipped in direct gateway mode");
+          return;
+        }
         const token = requireToken();
         if (!token) return;
         try {
@@ -437,6 +585,22 @@
         return output;
       };
 
+      const stopAssistantPlayback = () => {
+        for (const node of outputNodes) {
+          try {
+            node.stop();
+          } catch {}
+        }
+        outputNodes = [];
+        if (audioContext) {
+          playbackTime = audioContext.currentTime;
+          micMutedUntil = audioContext.currentTime;
+        } else {
+          playbackTime = 0;
+          micMutedUntil = 0;
+        }
+      };
+
       const playPcm16 = async (arrayBuffer) => {
         const context = audioContext;
         if (!context) return;
@@ -445,11 +609,15 @@
         for (let i = 0; i < pcm.length; i += 1) {
           floats[i] = Math.max(-1, Math.min(1, pcm[i] / 32768));
         }
-        const buffer = context.createBuffer(1, floats.length, 16000);
+        const buffer = context.createBuffer(1, floats.length, outputSampleRate);
         buffer.copyToChannel(floats, 0);
         const node = context.createBufferSource();
         node.buffer = buffer;
         node.connect(context.destination);
+        outputNodes.push(node);
+        node.onended = () => {
+          outputNodes = outputNodes.filter((item) => item !== node);
+        };
         playbackTime = Math.max(playbackTime, context.currentTime);
         node.start(playbackTime);
         playbackTime += buffer.duration;
@@ -458,7 +626,7 @@
 
       const startMic = async () => {
         resetAudioTiming();
-        audioContext = new AudioContext();
+        audioContext = new AudioContext({ latencyHint: "interactive" });
         mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
@@ -468,18 +636,58 @@
           },
         });
         sourceNode = audioContext.createMediaStreamSource(mediaStream);
-        processorNode = audioContext.createScriptProcessor(2048, 1, 1);
+        processorNode = audioContext.createScriptProcessor(512, 1, 1);
         processorNode.onaudioprocess = (event) => {
           if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          if (audioContext.currentTime < micMutedUntil) return;
+          if (audioContext.currentTime < micMutedUntil) {
+            geminiSpeechStartCandidateMs = 0;
+            return;
+          }
           const mono = event.inputBuffer.getChannelData(0);
+          let peak = 0;
+          for (let i = 0; i < mono.length; i += 32) {
+            peak = Math.max(peak, Math.abs(mono[i]));
+          }
+          if (isGeminiDirectMode()) {
+            if (!geminiAwake && gatewayWakeMode === "manual") return;
+            if (shouldSendGeminiTurnControls()) {
+              if (!geminiTurnOpen) {
+                if (peak < geminiSpeechPeakThreshold) {
+                  geminiSpeechStartCandidateMs = 0;
+                  return;
+                }
+                geminiSpeechStartCandidateMs ||= Date.now();
+                if (Date.now() - geminiSpeechStartCandidateMs < geminiStartSpeechMs) return;
+                geminiTurnOpen = true;
+                geminiSpeechSeen = true;
+                geminiSpeechStartCandidateMs = 0;
+                geminiSilenceStart = 0;
+                sendStartTurn("web-sim-auto-vad");
+                setStatus(wakeStatusEl, "Speaking");
+              }
+              if (peak >= geminiSpeechPeakThreshold) {
+                geminiSpeechSeen = true;
+                geminiSpeechStartCandidateMs = 0;
+                geminiSilenceStart = 0;
+              } else if (geminiSpeechSeen && peak <= geminiSilencePeakThreshold) {
+                geminiSilenceStart ||= Date.now();
+                if (Date.now() - geminiSilenceStart >= geminiAutoStopSilenceMs) {
+                  geminiTurnOpen = false;
+                  geminiSpeechSeen = false;
+                  geminiSpeechStartCandidateMs = 0;
+                  geminiSilenceStart = 0;
+                  sendStopTurn("web-sim-auto-vad");
+                  setStatus(wakeStatusEl, "Listening for speech");
+                  return;
+                }
+              } else {
+                geminiSilenceStart = 0;
+              }
+            }
+          }
           const pcm16 = floatToPcm16(downsample(mono, audioContext.sampleRate, 16000));
           audioFrameCount += 1;
           if (audioFrameCount === 1 || audioFrameCount % 100 === 0) {
-            let peak = 0;
-            for (let i = 0; i < mono.length; i += 32) {
-              peak = Math.max(peak, Math.abs(mono[i]));
-            }
             setStatus(audioStatusEl, `Sending #${audioFrameCount}, peak ${peak.toFixed(3)}`);
           }
           ws.send(pcm16.buffer);
@@ -496,6 +704,7 @@
         if (processorNode) processorNode.disconnect();
         if (sourceNode) sourceNode.disconnect();
         if (silentMonitorNode) silentMonitorNode.disconnect();
+        stopAssistantPlayback();
         if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
         if (audioContext) void audioContext.close();
         processorNode = null;
@@ -504,15 +713,21 @@
         mediaStream = null;
         audioContext = null;
         audioFrameCount = 0;
+        geminiAwake = false;
+        geminiTurnOpen = false;
+        geminiSpeechSeen = false;
+        geminiSpeechStartCandidateMs = 0;
+        geminiSilenceStart = 0;
         resetAudioTiming();
         setStatus(audioStatusEl, "Mic off");
       };
 
       connectButton.onclick = async () => {
         const base = apiBase();
-        const token = bearerToken();
+        const token = bearerToken() || "local-test-token";
         const language = languageInput.value.trim() || "hi-IN";
-        if (!token) {
+        const mode = connectionMode();
+        if (mode === "backend" && !tokenInput.value.trim()) {
           log("error", "missing bearer token");
           return;
         }
@@ -524,19 +739,36 @@
         setStatus(audioStatusEl, "Starting");
         setStatus(transcriptStatusEl, "Waiting");
         try {
-          await resolveIdentity(base, token, language);
-          const connectRes = await fetch(`${base}/pipecat/connect`, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({ language }),
-          });
-          if (!connectRes.ok) throw new Error(await connectRes.text());
-          const connectInfo = await connectRes.json();
-          const wsUrl = new URL(connectInfo.wsUrl);
-          wsUrl.searchParams.set("client", "web");
+          let wsUrl;
+          if (mode === "backend") {
+            await resolveIdentity(base, token, language);
+            const connectRes = await fetch(`${base}/pipecat/connect`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ language }),
+            });
+            if (!connectRes.ok) throw new Error(await connectRes.text());
+            const connectInfo = await connectRes.json();
+            wsUrl = new URL(connectInfo.wsUrl);
+            wsUrl.searchParams.set("client", "web");
+          } else {
+            wsUrl = new URL(directGatewayUrl());
+            wsUrl.searchParams.set("client", "web");
+            wsUrl.searchParams.set("deviceId", deviceId());
+            setStatus(identityStatusEl, `Local device ${deviceId()}`);
+            identityEl.textContent = JSON.stringify(
+              {
+                status: "local_gateway_mode",
+                deviceId: deviceId(),
+                gatewayUrl: wsUrl.toString(),
+              },
+              null,
+              2
+            );
+          }
           wsUrl.searchParams.set("language", language);
 
           const currentConnectionId = ++connectionId;
@@ -557,6 +789,8 @@
             setStatus(wakeStatusEl, "Mic on");
             setStatus(audioStatusEl, "Mic on");
             disconnectButton.disabled = false;
+            wakeNowButton.disabled = false;
+            stopTurnButton.disabled = false;
           };
           socket.onmessage = (event) => {
             if (currentConnectionId !== connectionId || socket !== ws) return;
@@ -590,13 +824,45 @@
                   log("transcript", { status: parsed.status, text: parsed.text });
                   return;
                 }
+                if (parsed && parsed.type === "gateway_error") {
+                  const message = parsed.message || "unknown backend error";
+                  setStatus(gatewayStatusEl, "Gateway error");
+                  setStatus(wakeStatusEl, message);
+                  log("gateway_error", {
+                    source: parsed.source,
+                    message,
+                    fatal: parsed.fatal,
+                  });
+                  return;
+                }
                 if (parsed && parsed.type === "ready") {
+                  outputSampleRate = parsed.audioOut?.sampleRate || 16000;
+                  gatewayWakeMode = "unknown";
                   setStatus(gatewayStatusEl, "Ready");
                   setStatus(wakeStatusEl, "Waiting for gateway");
+                  wakeNowButton.disabled = true;
                 } else if (parsed && parsed.type === "listening") {
+                  gatewayWakeMode = parsed.wakeMode || "manual";
                   setStatus(gatewayStatusEl, "Listening");
-                  setStatus(wakeStatusEl, 'Say "Hi Mitr"');
+                  if (parsed.wakeMode === "manual") {
+                    setStatus(wakeStatusEl, "Click Wake, then speak");
+                    wakeNowButton.disabled = false;
+                  } else if (parsed.wakeMode === "always") {
+                    setStatus(wakeStatusEl, "Live");
+                    wakeNowButton.disabled = true;
+                  } else {
+                    setStatus(wakeStatusEl, 'Say "Hi Mitr"');
+                    wakeNowButton.disabled = true;
+                  }
                 } else if (parsed && parsed.type === "awake") {
+                  if (isGeminiDirectMode()) {
+                    geminiAwake = true;
+                    geminiSpeechStartCandidateMs = 0;
+                    if (!geminiTurnOpen) {
+                      geminiSpeechSeen = false;
+                      geminiSilenceStart = 0;
+                    }
+                  }
                   setStatus(wakeStatusEl, `Awake: ${parsed.wakePhrase || "wake phrase"}`);
                 } else if (parsed && parsed.type === "sleeping") {
                   setStatus(wakeStatusEl, 'Sleeping: say "Hi Mitr"');
@@ -612,6 +878,29 @@
                 log("gateway", event.data);
               }
             } else {
+              if (isGeminiDirectMode() && geminiTurnOpen) {
+                geminiDroppedAssistantFrames += 1;
+                if (geminiDroppedAssistantFrames === 1 || geminiDroppedAssistantFrames % 50 === 0) {
+                  log("assistant_audio_dropped", {
+                    reason: "user_turn_open",
+                    frames: geminiDroppedAssistantFrames,
+                  });
+                }
+                return;
+              }
+              if (geminiAwaitingFirstAudio) {
+                const now = performance.now();
+                const metrics = {
+                  start_to_first_audio_ms: geminiLastStartMs ? Math.round(now - geminiLastStartMs) : null,
+                  stop_to_first_audio_ms: geminiLastStopMs ? Math.round(now - geminiLastStopMs) : null,
+                };
+                setStatus(
+                  audioStatusEl,
+                  `First audio ${metrics.stop_to_first_audio_ms ?? metrics.start_to_first_audio_ms}ms`,
+                );
+                log("browser_latency", metrics);
+                geminiAwaitingFirstAudio = false;
+              }
               void playPcm16(event.data);
             }
           };
@@ -625,6 +914,8 @@
             setStatus(transcriptStatusEl, "No transcript");
             connectButton.disabled = false;
             disconnectButton.disabled = true;
+            wakeNowButton.disabled = true;
+            stopTurnButton.disabled = true;
           };
           socket.onerror = () => {
             if (currentConnectionId !== connectionId || socket !== ws) return;
@@ -637,6 +928,8 @@
           setStatus(wakeStatusEl, "Not listening");
           setStatus(audioStatusEl, "Mic off");
           connectButton.disabled = false;
+          wakeNowButton.disabled = true;
+          stopTurnButton.disabled = true;
         }
       };
 
@@ -649,8 +942,37 @@
         setStatus(gatewayStatusEl, "Disconnected");
         setStatus(wakeStatusEl, "Not listening");
         setStatus(transcriptStatusEl, "No transcript");
+        gatewayWakeMode = "unknown";
         connectButton.disabled = false;
         disconnectButton.disabled = true;
+        wakeNowButton.disabled = true;
+        stopTurnButton.disabled = true;
+      };
+
+      wakeNowButton.onclick = () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (gatewayWakeMode !== "manual") {
+          log("control_skipped", { type: "wake", reason: `wakeMode=${gatewayWakeMode}` });
+          return;
+        }
+        geminiAwake = isGeminiDirectMode();
+        geminiTurnOpen = false;
+        geminiSpeechSeen = false;
+        geminiSpeechStartCandidateMs = 0;
+        geminiSilenceStart = 0;
+        geminiAwaitingFirstAudio = false;
+        ws.send(JSON.stringify({ type: "wake", source: "web-sim", ts: Date.now() }));
+        setStatus(wakeStatusEl, isGeminiDirectMode() ? "Listening for speech" : "Wake sent");
+        log("control", { type: "wake" });
+      };
+
+      stopTurnButton.onclick = () => {
+        geminiTurnOpen = false;
+        geminiSpeechSeen = false;
+        geminiSpeechStartCandidateMs = 0;
+        geminiSilenceStart = 0;
+        sendStopTurn();
+        if (geminiAwake) setStatus(wakeStatusEl, "Listening for speech");
       };
     </script>
   </body>

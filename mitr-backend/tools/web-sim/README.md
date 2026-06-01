@@ -1,3 +1,61 @@
+# MITR Web Simulator
+
+## Local experiment testing
+
+Run the web simulator:
+
+```sh
+cd /Users/shivanshjoshi/Mitr/mitr-backend
+pnpm test:web
+```
+
+Open:
+
+```text
+http://localhost:8787
+```
+
+Use **Connection mode: Direct gateway** to test the two speech experiments
+without going through the Node `/pipecat/connect` endpoint. The simulator uses
+the same PCM16 websocket protocol as the ESP/browser gateway client.
+
+Start the ElevenLabs gateway on port `7861`:
+
+```sh
+cd /Users/shivanshjoshi/.codex/worktrees/mitr-elevenlabs-chained-stt/mitr-backend/pipecat-gateway
+MITR_GATEWAY_PIPELINE=openai_stt_llm_elevenlabs \
+MITR_GATEWAY_AUTH_MODE=local \
+MITR_GATEWAY_LOCAL_DEVICE_ID=web-sim-device \
+MITR_GATEWAY_PORT=7861 \
+MITR_GATEWAY_CONTEXT_SUMMARIZATION=false \
+AGNOST_ENABLED=false \
+OPENAI_REALTIME_STT_LANGUAGE=ta-IN \
+uv run python -m mitr_pipecat_gateway.server
+```
+
+Start the Gemini Live gateway on port `7862`:
+
+```sh
+cd /Users/shivanshjoshi/.codex/worktrees/mitr-gemini-live/mitr-backend/pipecat-gateway
+MITR_GATEWAY_PIPELINE=gemini_live \
+GEMINI_LIVE_SERVICE=direct_sdk \
+MITR_GATEWAY_AUTH_MODE=local \
+MITR_GATEWAY_LOCAL_DEVICE_ID=web-sim-device \
+MITR_GATEWAY_PORT=7862 \
+MITR_GATEWAY_CONTEXT_SUMMARIZATION=false \
+AGNOST_ENABLED=false \
+OPENAI_REALTIME_STT_LANGUAGE=ta-IN \
+uv run python -m mitr_pipecat_gateway.server
+```
+
+In the simulator, switch **Experiment server** between:
+
+- `ElevenLabs chained TTS`: `ws://127.0.0.1:7861/ws`
+- `Gemini Live direct SDK`: `ws://127.0.0.1:7862/ws`
+
+Use language `ta-IN` or another target language, click **Connect**, wait for
+`Listening`, then say “Hi Mitr”.
+
 # MITR Web Simulator (Vercel)
 
 Deploy this folder as a static site on Vercel.
