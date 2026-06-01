@@ -447,22 +447,30 @@ def build_tools_schema() -> ToolsSchema:
             "Search structured Mem0 memories in the current Reca user scope. Use this "
             "when the user asks to recall, continue, update, or inspect a saved plan, "
             "routine, schedule, tracker, budget, recipe, or log and you do not yet know "
-            "the memory ID. Provide a specific query and metadata filters such as category, "
-            "status, domain, object_type, or record_kind when known. Do not use this for "
-            "general conversation context; use memory_get or context_packet_get instead.",
+            "the memory ID. For direct recall requests like 'mera workout plan batao', "
+            "call this silently before saying anything speculative; do not ask whether "
+            "the plan exists before checking. Provide a specific query and metadata "
+            "filters such as category, status, domain, object_type, or record_kind when "
+            "known. After the result, answer only from returned memories. If the result "
+            "is empty or unavailable, say you could not confirm it from saved memory "
+            "right now. Do not use this for general conversation context; use memory_get "
+            "or context_packet_get instead.",
         ),
         _tool_schema(
             "mem0_memory_list",
             "List structured Mem0 memories by metadata filters in the current Reca user "
             "scope. Use when browsing a known category/domain before updating a document, "
-            "creating a rollup, or finding the active version of a saved artifact. Keep "
-            "limits small unless the user explicitly asks to see many records.",
+            "creating a rollup, or finding the active version of a saved artifact. Call "
+            "silently before speaking when the user directly asks for saved artifacts; "
+            "do not speculate before the result. Keep limits small unless the user "
+            "explicitly asks to see many records.",
         ),
         _tool_schema(
             "mem0_memory_get",
             "Get one structured Mem0 memory by memory ID after scoped search/list found "
             "it. Use before updating or quoting a saved artifact so you have the exact "
-            "current content. Do not invent memory IDs.",
+            "current content. Answer from the returned content only. Do not invent memory "
+            "IDs.",
         ),
         _tool_schema(
             "mem0_memory_update",
@@ -483,8 +491,10 @@ def build_tools_schema() -> ToolsSchema:
             "memory_get",
             "Retrieve relevant personal memories when the user asks what you remember, "
             "asks to recall a saved detail, or a direct answer depends on explicit saved "
-            "memory. If no memory is returned, say only that you could not confirm it from "
-            "saved memory right now; never claim the user never said it.",
+            "memory. Call silently before speaking for direct recall requests; do not "
+            "speculate or ask whether the memory exists before checking. If no memory is "
+            "returned, say only that you could not confirm it from saved memory right now; "
+            "never claim the user never said it.",
         ),
         _tool_schema(
             "context_packet_get",

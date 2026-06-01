@@ -1067,6 +1067,13 @@ async def _open_transcript_wake_fast(
 
 
 class DirectGeminiLiveAudioService(FrameProcessor):
+    _MEMORY_LOOKUP_TOOLS = {
+        "memory_get",
+        "mem0_memory_search",
+        "mem0_memory_list",
+        "mem0_memory_get",
+    }
+
     def __init__(
         self,
         *,
@@ -1478,6 +1485,55 @@ class DirectGeminiLiveAudioService(FrameProcessor):
                 "Gemini Live first audio latency event",
             )
 
+    def _tool_response_payload(self, name: str, result: object) -> dict[str, object]:
+        if not isinstance(result, dict):
+            return {
+                "output": {
+                    "ok": True,
+                    "tool": name,
+                    "result": result,
+                    "spokenInstruction": "Answer the user from this tool result now.",
+                }
+            }
+
+        payload: dict[str, object] = dict(result)
+        if name in self._MEMORY_LOOKUP_TOOLS:
+            if payload.get("ok") is False:
+                status = str(payload.get("status") or "")
+                if status == "backend_required":
+                    payload.setdefault(
+                        "userSafeMessage",
+                        "I could not access verified saved memory from this session right now.",
+                    )
+                else:
+                    payload.setdefault(
+                        "userSafeMessage",
+                        "I could not confirm that from saved memory right now.",
+                    )
+                payload["spokenInstruction"] = (
+                    "Tell the user briefly that saved memory could not be verified right now. "
+                    "Do not guess, do not claim the user never made the plan, and do not expose "
+                    "raw tool errors."
+                )
+            else:
+                payload["spokenInstruction"] = (
+                    "Answer the user's memory request now using only returned saved-memory "
+                    "content. Do not say you are still checking."
+                )
+        elif payload.get("ok") is False:
+            payload.setdefault(
+                "userSafeMessage",
+                "I could not complete that check right now.",
+            )
+            payload["spokenInstruction"] = (
+                "Give a short user-safe explanation from userSafeMessage. Do not expose raw "
+                "tool errors."
+            )
+        else:
+            payload.setdefault("spokenInstruction", "Answer the user from this tool result now.")
+
+        return {"output": payload}
+
     async def _run_single_tool_call(self, types, function_call):
         name = getattr(function_call, "name", None) or ""
         args = getattr(function_call, "args", None) or {}
@@ -1498,15 +1554,10 @@ class DirectGeminiLiveAudioService(FrameProcessor):
             on_tool_start=self._on_tool_start,
             on_tool_end=self._on_tool_end,
         )
-        response: dict[str, object]
-        if isinstance(result, dict) and result.get("ok") is False:
-            response = {"error": result}
-        else:
-            response = {"output": result}
         return types.FunctionResponse(
             id=call_id,
             name=name,
-            response=response,
+            response=self._tool_response_payload(name, result),
         )
 
     async def _send_tool_responses(self, session, types, function_calls):
@@ -2331,13 +2382,13 @@ async def _run_openai_realtime_bot(websocket: WebSocket, auth: DeviceAuthContext
 
     task = PipelineTask(
         pipeline,
+        cancel_on_idle_timeout=False,
+        idle_timeout_secs=None,
         params=PipelineParams(
             audio_in_sample_rate=_int_env("ESP32_AUDIO_IN_SAMPLE_RATE", 16000),
             audio_out_sample_rate=out_rate,
             enable_metrics=True,
             enable_usage_metrics=True,
-            cancel_on_idle_timeout=False,
-            idle_timeout_secs=None,
         ),
     )
 
@@ -2642,13 +2693,13 @@ async def _run_gemini_live_bot(websocket: WebSocket, auth: DeviceAuthContext) ->
 
     task = PipelineTask(
         pipeline,
+        cancel_on_idle_timeout=False,
+        idle_timeout_secs=None,
         params=PipelineParams(
             audio_in_sample_rate=_int_env("ESP32_AUDIO_IN_SAMPLE_RATE", 16000),
             audio_out_sample_rate=out_rate,
             enable_metrics=True,
             enable_usage_metrics=True,
-            cancel_on_idle_timeout=False,
-            idle_timeout_secs=None,
         ),
     )
 

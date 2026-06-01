@@ -5,6 +5,7 @@ import time
 import unittest
 from collections import deque
 from types import MethodType
+from unittest.mock import patch
 
 from pipecat.frames.frames import (
     CancelFrame,
@@ -1495,6 +1496,43 @@ class DirectGeminiLiveAudioServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.responses[0].id, "call-1")
         self.assertEqual(session.responses[0].name, "daily_briefing_get")
         self.assertIn("output", session.responses[0].response)
+
+    async def test_direct_gemini_failed_memory_lookup_returns_spoken_output_payload(self):
+        service = bot_wake_phrase.DirectGeminiLiveAudioService(
+            auth=DeviceAuthContext(device_id="device-1", language="hi-IN"),
+            output_sample_rate=24000,
+        )
+
+        class FunctionCall:
+            id = "call-1"
+            name = "mem0_memory_search"
+            args = {"query": "workout plan"}
+
+        class FunctionResponse:
+            def __init__(self, *, id, name, response):
+                self.id = id
+                self.name = name
+                self.response = response
+
+        Types = type("Types", (), {"FunctionResponse": FunctionResponse})
+
+        async def fake_execute_tool(*_args, **_kwargs):
+            return {
+                "ok": False,
+                "tool": "mem0_memory_search",
+                "status": "backend_required",
+                "error": "verified backend required",
+            }
+
+        with patch.object(bot_wake_phrase, "execute_gemini_live_tool", new=fake_execute_tool):
+            response = await service._run_single_tool_call(Types, FunctionCall())
+
+        self.assertNotIn("error", response.response)
+        payload = response.response["output"]
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "backend_required")
+        self.assertIn("saved memory", payload["userSafeMessage"])
+        self.assertIn("Do not guess", payload["spokenInstruction"])
 
     async def test_direct_receive_emits_first_audio_latency_event(self):
         latency_events = []
