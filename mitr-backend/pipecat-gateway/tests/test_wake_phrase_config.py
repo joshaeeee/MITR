@@ -123,6 +123,7 @@ class WakePhraseConfigTests(unittest.TestCase):
                 "GEMINI_LIVE_UNVERIFIED_MODEL_FALLBACK"
             ),
             "GEMINI_LIVE_LANGUAGE": os.environ.get("GEMINI_LIVE_LANGUAGE"),
+            "GEMINI_LIVE_PROMPT_MODE": os.environ.get("GEMINI_LIVE_PROMPT_MODE"),
             "GEMINI_LIVE_COMPACT_SYSTEM_PROMPT": os.environ.get(
                 "GEMINI_LIVE_COMPACT_SYSTEM_PROMPT"
             ),
@@ -331,12 +332,34 @@ class WakePhraseConfigTests(unittest.TestCase):
             bot_wake_phrase.Language.HI_IN,
         )
 
-    def test_gemini_live_system_prompt_uses_shared_template(self):
+    def test_gemini_live_system_prompt_defaults_to_compact_low_latency_prompt(self):
         auth = DeviceAuthContext(device_id="mitr-esp32-002", language="hi-IN")
 
         prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
 
         self.assertIn("preferred language from hi-IN", prompt)
+        self.assertIn("After a tool result arrives, answer directly", prompt)
+        self.assertIn("Current Runtime Time", prompt)
+        self.assertLess(len(prompt), 3500)
+
+    def test_gemini_live_system_prompt_can_use_shared_template(self):
+        os.environ["GEMINI_LIVE_PROMPT_MODE"] = "shared"
+        auth = DeviceAuthContext(device_id="mitr-esp32-002", language="hi-IN")
+
+        prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
+
+        self.assertIn("Role and Objective", prompt)
+        self.assertIn("preferred language from hi-IN", prompt)
+        self.assertIn("Current Runtime Time", prompt)
+        self.assertGreater(len(prompt), 8000)
+
+    def test_gemini_live_compact_prompt_env_can_use_shared_template(self):
+        os.environ["GEMINI_LIVE_COMPACT_SYSTEM_PROMPT"] = "false"
+        auth = DeviceAuthContext(device_id="mitr-esp32-002", language="hi-IN")
+
+        prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
+
+        self.assertIn("Role and Objective", prompt)
         self.assertIn("Current Runtime Time", prompt)
 
     def test_gemini_live_direct_sdk_defaults_to_low_latency_settings(self):

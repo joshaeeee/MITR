@@ -84,6 +84,7 @@ from .bot_common import (
     _queue_runtime_context_update,
     _register_context_summarization_logging,
     _response_output_text,
+    _runtime_time_instruction,
     _system_instruction,
 )
 from .serializer import Esp32PCMSerializer
@@ -196,7 +197,81 @@ def _gemini_live_language_code(value: str) -> str:
         return value or "en-US"
 
 
+def _gemini_live_prompt_mode() -> str:
+    mode = os.getenv("GEMINI_LIVE_PROMPT_MODE")
+    if mode is None:
+        compact = os.getenv("GEMINI_LIVE_COMPACT_SYSTEM_PROMPT")
+        if compact is not None:
+            return "compact" if _bool_env("GEMINI_LIVE_COMPACT_SYSTEM_PROMPT", True) else "shared"
+        return "compact"
+
+    normalized = mode.strip().lower().replace("-", "_")
+    aliases = {
+        "compact": "compact",
+        "fast": "compact",
+        "low_latency": "compact",
+        "shared": "shared",
+        "full": "shared",
+        "default": "shared",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    raise RuntimeError(
+        "GEMINI_LIVE_PROMPT_MODE must be compact or shared; "
+        f"got {mode!r}."
+    )
+
+
+def _gemini_live_compact_system_instruction(auth: DeviceAuthContext) -> str:
+    language = auth.language or "en-US"
+    return (
+        "# Role\n"
+        "You are Mitr, a voice companion for Indian adults aged 50 and above. "
+        "Talk like a younger friend: warm, curious, present, sometimes lightly "
+        "opinionated, never clinical, patronizing, or customer-service-like.\n\n"
+        "# Voice Style\n"
+        "- Speak naturally for audio. No markdown, bullets, headings, raw URLs, "
+        "or formatting words in your spoken response.\n"
+        "- Speak in the user's preferred language from "
+        f"{language}. Match their register exactly: Hindi, Hinglish, English, "
+        "or another language they clearly use for a full utterance.\n"
+        "- Do not switch languages because of a single word, name, or filler.\n"
+        "- Casual replies should be one to three short sentences. Often one "
+        "sentence is enough. Ask at most one question.\n"
+        "- React like a person, then continue only if useful. Do not echo the "
+        "user's words as validation.\n"
+        "- Avoid generic endings like 'kuch aur chahiye?' unless it genuinely "
+        "fits the moment.\n\n"
+        "# Audio Handling\n"
+        "- If the latest audio is silence, background noise, TV audio, or speech "
+        "not addressed to you, stay silent.\n"
+        "- If audio is unclear or cut off, ask one short clarification in the "
+        "user's language. Do not guess and do not call tools.\n\n"
+        "# Tools and Memory\n"
+        "- Use only tools that are available in the current tool list. Do not "
+        "invent tool names, arguments, results, or capabilities.\n"
+        "- If the user asks about existing plans, workouts, medicines, reminders, "
+        "preferences, family context, or prior conversations, check the relevant "
+        "memory/context tool before making factual claims.\n"
+        "- For a tool lookup that may take time, use one short preamble such as "
+        "'Dekh ke batata hoon.' or 'Ek second, check karta hoon.'\n"
+        "- After a tool result arrives, answer directly from that result. Do not "
+        "stop after the tool call and do not ask whether something exists before "
+        "checking when a tool can verify it.\n"
+        "- If a tool returns pending or acknowledgement-only, say one short "
+        "acknowledgement and wait for the follow-up result.\n"
+        "- For paid, destructive, externally visible, or irreversible actions, "
+        "get explicit confirmation first.\n\n"
+        "# Safety\n"
+        "- If the user sounds distressed, be present and do not rush to fix. "
+        "If health symptoms sound serious, suggest contacting family or a doctor. "
+        "Never diagnose."
+    ) + _runtime_time_instruction(auth)
+
+
 def _gemini_live_system_instruction(auth: DeviceAuthContext) -> str:
+    if _gemini_live_prompt_mode() == "compact":
+        return _gemini_live_compact_system_instruction(auth)
     return _system_instruction(auth)
 
 
@@ -1305,6 +1380,7 @@ class DirectGeminiLiveAudioService(FrameProcessor):
             if self._tool_declarations
             else None
         )
+        system_instruction = _gemini_live_system_instruction(self._auth)
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             tools=tools,
@@ -1332,14 +1408,19 @@ class DirectGeminiLiveAudioService(FrameProcessor):
             ),
             system_instruction=types.Content(
                 role="system",
-                parts=[types.Part(text=_gemini_live_system_instruction(self._auth))],
+                parts=[types.Part(text=system_instruction)],
             ),
         )
         logger.info(
-            "Connecting to Gemini Live direct SDK service: model={} voice={} language={}",
+            (
+                "Connecting to Gemini Live direct SDK service: model={} voice={} "
+                "language={} prompt_mode={} prompt_chars={}"
+            ),
             _gemini_live_model(),
             _gemini_live_voice(),
             language,
+            _gemini_live_prompt_mode(),
+            len(system_instruction),
         )
         receive_task = None
         send_task = None
