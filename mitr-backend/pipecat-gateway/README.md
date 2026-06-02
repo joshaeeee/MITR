@@ -280,7 +280,7 @@ GEMINI_LIVE_SERVER_VAD_SPEECH_PEAK=0.035
 GEMINI_LIVE_SERVER_VAD_SILENCE_PEAK=0.014
 GEMINI_LIVE_PRECONNECT_ON_CONNECT=true
 GEMINI_LIVE_PRECONNECT_BEFORE_LISTENING=false
-GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC=0.5
+GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC=0
 GEMINI_LIVE_WAKE_IDLE_TIMEOUT_SEC=15
 MITR_GATEWAY_WAKE_USE_INTERIM_TRANSCRIPTS=true
 OPENAI_REALTIME_STT_LANGUAGE=        # optional; defaults to auth.language
@@ -291,10 +291,11 @@ MITR_GATEWAY_WAKE_STT_ASYNC_CONNECT=true
 For latency, OpenAI realtime STT is only in the pre-wake path. The wake matcher
 uses interim transcript deltas from `gpt-4o-mini-transcribe` by default, then
 bypasses STT after `awake` so post-wake mic audio goes straight to the
-speech-to-speech model. Gemini Live also uses a short 0.5 second transcript-wake
-preroll by default instead of the generic 4 second wake buffer. The wake-STT
-websocket connects in the background at startup; early wake audio is buffered
-until the transcription session is ready.
+speech-to-speech model. Gemini Live does not forward wake-word preroll audio by
+default; the wake phrase opens the session, and the next post-wake utterance is
+the first speech-to-speech turn. The wake-STT websocket connects in the
+background at startup; early wake audio is buffered until the transcription
+session is ready.
 
 The low-latency path uses the Google direct Live SDK by default, not the Pipecat
 Gemini service wrapper. The gateway starts warming the Gemini Live session as

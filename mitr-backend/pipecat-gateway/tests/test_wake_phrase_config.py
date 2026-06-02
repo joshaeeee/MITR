@@ -456,11 +456,11 @@ class WakePhraseConfigTests(unittest.TestCase):
         self.assertTrue(strategy._check_wake_phrase("का"))
         self.assertEqual(detected, ["हाय रेका"])
 
-    def test_gemini_live_transcript_wake_preroll_defaults_to_short_buffer(self):
-        self.assertEqual(bot_wake_phrase._gemini_live_transcript_wake_preroll_sec(), 0.5)
+    def test_gemini_live_transcript_wake_preroll_defaults_to_no_wake_audio(self):
+        self.assertEqual(bot_wake_phrase._gemini_live_transcript_wake_preroll_sec(), 0.0)
 
         os.environ["MITR_GATEWAY_WAKE_PHRASE_PREROLL_SEC"] = "1.2"
-        self.assertEqual(bot_wake_phrase._gemini_live_transcript_wake_preroll_sec(), 1.2)
+        self.assertEqual(bot_wake_phrase._gemini_live_transcript_wake_preroll_sec(), 0.0)
 
         os.environ["GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC"] = "0.3"
         self.assertEqual(bot_wake_phrase._gemini_live_transcript_wake_preroll_sec(), 0.3)

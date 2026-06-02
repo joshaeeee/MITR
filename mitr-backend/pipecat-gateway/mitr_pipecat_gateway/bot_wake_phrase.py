@@ -524,9 +524,9 @@ def _wake_stt_async_connect() -> bool:
 
 def _gemini_live_transcript_wake_preroll_sec() -> float:
     if "GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC" in os.environ:
-        value = _float_env("GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC", 0.5)
+        value = _float_env("GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC", 0.0)
     else:
-        value = _float_env("MITR_GATEWAY_WAKE_PHRASE_PREROLL_SEC", 0.5)
+        value = 0.0
     if value < 0:
         raise RuntimeError("GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC must be non-negative")
     return value
