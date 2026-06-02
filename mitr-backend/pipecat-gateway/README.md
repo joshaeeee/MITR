@@ -109,10 +109,17 @@ Supported template variables:
 {auth.user_id} or {user_id}
 {auth.family_id} or {family_id}
 {auth.elder_id} or {elder_id}
+{auth.timezone} or {timezone}
 ```
 
 Unknown variables fail startup/session creation instead of falling back to an old
 prompt.
+
+Each session also appends a runtime clock block with the current user-local date,
+time, weekday, local ISO timestamp, and UTC ISO timestamp. The timezone comes
+from the verified auth response (`timezone` or `timeZone`), the websocket
+`timezone` query parameter/header for local tests, or
+`MITR_GATEWAY_DEFAULT_TIMEZONE` (`Asia/Kolkata` by default).
 
 ## Local Run
 
@@ -131,6 +138,7 @@ Start the gateway:
 ```sh
 cd /Users/shivanshjoshi/conductor/workspaces/Mitr/nairobi-v1/mitr-backend/pipecat-gateway
 MITR_GATEWAY_PIPELINE_MODE=openai_realtime \
+MITR_GATEWAY_DEFAULT_TIMEZONE=Asia/Kolkata \
 MITR_GATEWAY_WAKE_PHRASES="hi mitr,hey mitr,hi mitra,hey mitra,hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,hi reka,hey reka,hi esp,hey esp,hi e s p,हाय मित्र,हे मित्र,हाय रेका,हाय रेखा" \
 MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC=45 \
 OPENAI_REALTIME_TURN_DETECTION=manual \

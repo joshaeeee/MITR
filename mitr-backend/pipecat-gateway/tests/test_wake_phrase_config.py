@@ -4,6 +4,7 @@ import os
 import time
 import unittest
 from collections import deque
+from datetime import datetime, timezone
 from types import MethodType
 from unittest.mock import patch
 
@@ -43,6 +44,7 @@ class WakePhraseConfigTests(unittest.TestCase):
             "MITR_GATEWAY_WAKE_USE_INTERIM_TRANSCRIPTS": os.environ.get(
                 "MITR_GATEWAY_WAKE_USE_INTERIM_TRANSCRIPTS"
             ),
+            "MITR_GATEWAY_DEFAULT_TIMEZONE": os.environ.get("MITR_GATEWAY_DEFAULT_TIMEZONE"),
             "OPENAI_REALTIME_TURN_DETECTION": os.environ.get("OPENAI_REALTIME_TURN_DETECTION"),
             "OPENAI_REALTIME_STT_MODEL": os.environ.get("OPENAI_REALTIME_STT_MODEL"),
             "OPENAI_REALTIME_WAKE_STT_MODEL": os.environ.get(
@@ -334,8 +336,8 @@ class WakePhraseConfigTests(unittest.TestCase):
 
         prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
 
-        self.assertEqual(prompt, bot_common._system_instruction(auth))
         self.assertIn("preferred language from hi-IN", prompt)
+        self.assertIn("Current Runtime Time", prompt)
 
     def test_gemini_live_direct_sdk_defaults_to_low_latency_settings(self):
         self.assertEqual(bot_wake_phrase._gemini_live_service_mode(), "direct_sdk")
@@ -563,6 +565,25 @@ class WakePhraseConfigTests(unittest.TestCase):
 
         self.assertIn("preferred language from hi-IN", prompt)
         self.assertNotIn("{auth.language}", prompt)
+        self.assertIn("Current Runtime Time", prompt)
+        self.assertIn("User-local timezone: Asia/Kolkata", prompt)
+
+    def test_runtime_time_context_uses_configured_timezone(self):
+        auth = DeviceAuthContext(
+            device_id="mitr-esp32-002",
+            language="hi-IN",
+            timezone="Asia/Kolkata",
+        )
+
+        context = bot_common._runtime_time_context(
+            auth,
+            now=datetime(2026, 6, 1, 18, 30, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(context["timezone"], "Asia/Kolkata")
+        self.assertEqual(context["localDate"], "2026-06-02")
+        self.assertEqual(context["localTime"], "00:00:00")
+        self.assertEqual(context["localWeekday"], "Tuesday")
 
 
 class WakePhraseRealtimeGateTests(unittest.IsolatedAsyncioTestCase):

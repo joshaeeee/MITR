@@ -1,8 +1,10 @@
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from loguru import logger
 from pipecat.audio.utils import create_stream_resampler
@@ -33,6 +35,7 @@ _CONTEXT_SUMMARY_DEFAULT_MAX_UNSUMMARIZED_MESSAGES = 20
 _CONTEXT_SUMMARY_DEFAULT_TARGET_TOKENS = 6000
 _CONTEXT_SUMMARY_DEFAULT_KEEP_MESSAGES = 4
 _CONTEXT_SUMMARY_DEFAULT_TIMEOUT_SEC = 120.0
+_DEFAULT_GATEWAY_TIMEZONE = "Asia/Kolkata"
 
 
 def _int_env(name: str, fallback: int) -> int:
@@ -375,11 +378,13 @@ def _system_prompt_template_context(auth: DeviceAuthContext) -> dict[str, str]:
         "auth.user_id": _prompt_value(auth.user_id),
         "auth.family_id": _prompt_value(auth.family_id),
         "auth.elder_id": _prompt_value(auth.elder_id),
+        "auth.timezone": _prompt_value(auth.timezone),
         "language": _prompt_value(auth.language),
         "device_id": _prompt_value(auth.device_id),
         "user_id": _prompt_value(auth.user_id),
         "family_id": _prompt_value(auth.family_id),
         "elder_id": _prompt_value(auth.elder_id),
+        "timezone": _prompt_value(auth.timezone),
     }
 
 
@@ -387,6 +392,57 @@ def _load_system_prompt_template() -> str:
     if not PROMPT_TEMPLATE_PATH.exists():
         raise RuntimeError(f"Missing Mitr system prompt template: {PROMPT_TEMPLATE_PATH}")
     return PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def _gateway_default_timezone() -> str:
+    return os.getenv("MITR_GATEWAY_DEFAULT_TIMEZONE", _DEFAULT_GATEWAY_TIMEZONE).strip() or _DEFAULT_GATEWAY_TIMEZONE
+
+
+def _runtime_timezone(auth: DeviceAuthContext) -> tuple[str, ZoneInfo | timezone]:
+    timezone_name = (auth.timezone or _gateway_default_timezone()).strip()
+    try:
+        return timezone_name, ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown runtime timezone {!r}; falling back to UTC", timezone_name)
+        return "UTC", timezone.utc
+
+
+def _runtime_time_context(
+    auth: DeviceAuthContext,
+    *,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    timezone_name, tzinfo = _runtime_timezone(auth)
+    now_utc = now or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    now_utc = now_utc.astimezone(timezone.utc)
+    local_now = now_utc.astimezone(tzinfo)
+    return {
+        "timezone": timezone_name,
+        "localIso": local_now.isoformat(timespec="seconds"),
+        "localDate": local_now.date().isoformat(),
+        "localTime": local_now.strftime("%H:%M:%S"),
+        "localWeekday": local_now.strftime("%A"),
+        "utcIso": now_utc.isoformat(timespec="seconds"),
+    }
+
+
+def _runtime_time_instruction(auth: DeviceAuthContext) -> str:
+    context = _runtime_time_context(auth)
+    return (
+        "\n\n# Current Runtime Time\n"
+        f"- User-local timezone: {context['timezone']}\n"
+        f"- Current user-local date: {context['localDate']}\n"
+        f"- Current user-local time: {context['localTime']}\n"
+        f"- Current user-local weekday: {context['localWeekday']}\n"
+        f"- Current user-local ISO timestamp: {context['localIso']}\n"
+        f"- Current UTC ISO timestamp: {context['utcIso']}\n"
+        "- Use this silently to interpret relative time like today, tomorrow, "
+        "morning, evening, yesterday, medication times, reminders, routines, and "
+        "follow-ups. Do not announce the timestamp unless the user asks for the time "
+        "or it is directly relevant."
+    )
 
 
 def _system_instruction(auth: DeviceAuthContext) -> str:
@@ -398,7 +454,9 @@ def _system_instruction(auth: DeviceAuthContext) -> str:
             raise RuntimeError(f"Unknown variable in Mitr system prompt template: {{{name}}}")
         return context[name]
 
-    return PROMPT_VARIABLE_PATTERN.sub(replace_variable, _load_system_prompt_template())
+    prompt = PROMPT_VARIABLE_PATTERN.sub(replace_variable, _load_system_prompt_template())
+    return prompt + _runtime_time_instruction(auth)
+
 
 
 def _system_instruction_with_context_packet(auth: DeviceAuthContext, payload: dict[str, object]) -> str:

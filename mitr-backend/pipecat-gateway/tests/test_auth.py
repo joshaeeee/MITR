@@ -32,6 +32,7 @@ class AuthenticateWebsocketTests(unittest.IsolatedAsyncioTestCase):
             query_params={
                 "deviceId": "web-sim-device",
                 "language": "hi-IN",
+                "timezone": "Asia/Kolkata",
                 "client": "web",
             },
         )
@@ -40,6 +41,7 @@ class AuthenticateWebsocketTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(auth.device_id, "web-sim-device")
         self.assertEqual(auth.language, "hi-IN")
+        self.assertEqual(auth.timezone, "Asia/Kolkata")
 
     async def test_non_local_auth_still_requires_bearer_token(self):
         os.environ["MITR_GATEWAY_AUTH_MODE"] = "backend"
