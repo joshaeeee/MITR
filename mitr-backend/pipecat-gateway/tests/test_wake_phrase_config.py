@@ -244,7 +244,7 @@ class WakePhraseConfigTests(unittest.TestCase):
         self.assertEqual(llm._settings.model, "gpt-4.1")
         self.assertEqual(llm._settings.max_tokens, 384)
         self.assertEqual(llm._settings.temperature, 0.4)
-        self.assertIn("preferred language from hi-IN", llm._settings.system_instruction)
+        self.assertIn("Speak in hi-IN", llm._settings.system_instruction)
 
     def test_elevenlabs_tts_uses_auth_language_by_default(self):
         os.environ["ELEVENLABS_API_KEY"] = "test-elevenlabs-key"
@@ -332,7 +332,19 @@ class WakePhraseConfigTests(unittest.TestCase):
             bot_wake_phrase.Language.HI_IN,
         )
 
-    def test_gemini_live_system_prompt_defaults_to_compact_low_latency_prompt(self):
+    def test_gemini_live_system_prompt_defaults_to_shared_template(self):
+        auth = DeviceAuthContext(device_id="mitr-esp32-002", language="hi-IN")
+
+        prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
+
+        self.assertIn("# Role", prompt)
+        self.assertIn("Speak in hi-IN", prompt)
+        self.assertIn("React first, ask second", prompt)
+        self.assertIn("Current Runtime Time", prompt)
+        self.assertLess(len(prompt), 5500)
+
+    def test_gemini_live_system_prompt_can_use_compact_low_latency_prompt(self):
+        os.environ["GEMINI_LIVE_PROMPT_MODE"] = "compact"
         auth = DeviceAuthContext(device_id="mitr-esp32-002", language="hi-IN")
 
         prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
@@ -342,24 +354,14 @@ class WakePhraseConfigTests(unittest.TestCase):
         self.assertIn("Current Runtime Time", prompt)
         self.assertLess(len(prompt), 3500)
 
-    def test_gemini_live_system_prompt_can_use_shared_template(self):
-        os.environ["GEMINI_LIVE_PROMPT_MODE"] = "shared"
-        auth = DeviceAuthContext(device_id="mitr-esp32-002", language="hi-IN")
-
-        prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
-
-        self.assertIn("Role and Objective", prompt)
-        self.assertIn("preferred language from hi-IN", prompt)
-        self.assertIn("Current Runtime Time", prompt)
-        self.assertGreater(len(prompt), 8000)
-
     def test_gemini_live_compact_prompt_env_can_use_shared_template(self):
         os.environ["GEMINI_LIVE_COMPACT_SYSTEM_PROMPT"] = "false"
         auth = DeviceAuthContext(device_id="mitr-esp32-002", language="hi-IN")
 
         prompt = bot_wake_phrase._gemini_live_system_instruction(auth)
 
-        self.assertIn("Role and Objective", prompt)
+        self.assertIn("# Role", prompt)
+        self.assertIn("Speak in hi-IN", prompt)
         self.assertIn("Current Runtime Time", prompt)
 
     def test_gemini_live_direct_sdk_defaults_to_low_latency_settings(self):
@@ -586,7 +588,7 @@ class WakePhraseConfigTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("preferred language from hi-IN", prompt)
+        self.assertIn("Speak in hi-IN", prompt)
         self.assertNotIn("{auth.language}", prompt)
         self.assertIn("Current Runtime Time", prompt)
         self.assertIn("User-local timezone: Asia/Kolkata", prompt)

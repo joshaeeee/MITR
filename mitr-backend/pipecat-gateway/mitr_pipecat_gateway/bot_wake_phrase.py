@@ -203,7 +203,7 @@ def _gemini_live_prompt_mode() -> str:
         compact = os.getenv("GEMINI_LIVE_COMPACT_SYSTEM_PROMPT")
         if compact is not None:
             return "compact" if _bool_env("GEMINI_LIVE_COMPACT_SYSTEM_PROMPT", True) else "shared"
-        return "compact"
+        return "shared"
 
     normalized = mode.strip().lower().replace("-", "_")
     aliases = {

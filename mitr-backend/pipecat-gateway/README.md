@@ -263,7 +263,7 @@ GEMINI_LIVE_SERVICE=direct_sdk
 GEMINI_LIVE_MODEL=models/gemini-3.1-flash-live-preview
 GEMINI_LIVE_VOICE=Charon
 GEMINI_LIVE_LANGUAGE=        # optional; defaults to auth.language
-GEMINI_LIVE_PROMPT_MODE=compact
+GEMINI_LIVE_PROMPT_MODE=shared
 GEMINI_LIVE_ACTIVITY_MODE=manual
 GEMINI_LIVE_AUDIO_SEND_PACING=false
 GEMINI_LIVE_INPUT_BATCH_MS=20
@@ -302,10 +302,9 @@ soon as the direct service is built, sends `listening` immediately, and uses
 explicit `start`/`stop` turn controls plus a lightweight backend PCM VAD so
 Gemini does not wait on browser or ESP silence timing before receiving
 `activity_end`.
-Gemini Live also defaults to `GEMINI_LIVE_PROMPT_MODE=compact`, a short
-voice-specific system prompt with the same language, memory/tool, and current
-time rules. Use `GEMINI_LIVE_PROMPT_MODE=shared` only when you need the full
-shared Mitr prompt and can accept the extra first-audio latency.
+Gemini Live defaults to `GEMINI_LIVE_PROMPT_MODE=shared`, using the shared Mitr
+voice prompt plus current time rules. Use `GEMINI_LIVE_PROMPT_MODE=compact`
+only when you are explicitly chasing lower first-audio latency.
 Keep `GEMINI_LIVE_PRECONNECT_BEFORE_LISTENING=false` unless you prefer slower
 wake readiness in exchange for waiting until Gemini is fully connected.
 The direct path drains wake-preroll and other queued audio in larger batches,
