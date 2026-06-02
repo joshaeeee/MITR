@@ -313,6 +313,14 @@ if [[ -f "${SCRIPT_DIR}/.env.prod.pipecat-gateway" ]]; then
   require_same_value "${ENV_FILE}" OPENAI_API_KEY "${gateway_env}" OPENAI_API_KEY
   require_same_value "${ENV_FILE}" OPENAI_REALTIME_STT_LANGUAGE "${gateway_env}" OPENAI_REALTIME_STT_LANGUAGE
   require_exact_value "${gateway_env}" OPENAI_REALTIME_STT_LANGUAGE "hi-IN"
+  if [[ "$(env_value "${gateway_env}" MITR_GATEWAY_REALTIME_PROVIDER)" == "gemini_live" ]]; then
+    require_not_placeholder "${gateway_env}" GOOGLE_API_KEY
+    require_same_value "${ENV_FILE}" GOOGLE_API_KEY "${gateway_env}" GOOGLE_API_KEY
+    require_exact_value "${gateway_env}" GEMINI_LIVE_SERVICE "direct_sdk"
+    require_exact_value "${gateway_env}" GEMINI_LIVE_MODEL "models/gemini-3.1-flash-live-preview"
+    require_exact_value "${gateway_env}" GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC "0"
+    require_exact_value "${gateway_env}" ESP32_AUDIO_OUT_SAMPLE_RATE "24000"
+  fi
   require_exact_value "${gateway_env}" OPENAI_REALTIME_TURN_DETECTION "manual"
   require_false_or_empty "${gateway_env}" MITR_GATEWAY_SEND_INTERIM_TRANSCRIPTS
 fi

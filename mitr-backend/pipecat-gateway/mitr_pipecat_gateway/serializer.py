@@ -84,8 +84,8 @@ class Esp32PCMSerializer(FrameSerializer):
             return None
 
         message_type = message.get("type")
-        if message_type == "wake":
-            logger.info("ESP32 control: wake")
+        if message_type in {"wake", "start"}:
+            logger.info("ESP32 control: {}", message_type)
             return UserStartedSpeakingFrame()
         if message_type == "stop":
             logger.info("ESP32 control: stop")

@@ -17,6 +17,7 @@ class DeviceAuthContext:
     elder_id: str | None = None
     elder_name: str | None = None
     language: str = "hi-IN"
+    timezone: str | None = None
 
 
 def _bearer(headers: dict[str, str]) -> str | None:
@@ -48,12 +49,9 @@ def select_websocket_subprotocol(websocket: WebSocket) -> str | None:
 
 async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
     headers = {key.lower(): value for key, value in websocket.headers.items()}
-    token = _bearer(headers) or _subprotocol_token(headers)
-    if not token:
-        raise PermissionError("missing bearer token")
-
     device_id = websocket.query_params.get("deviceId") or headers.get("x-mitr-device-id") or ""
     language = websocket.query_params.get("language") or headers.get("x-mitr-language") or "hi-IN"
+    timezone = websocket.query_params.get("timezone") or headers.get("x-mitr-timezone")
     client = websocket.query_params.get("client") or headers.get("x-mitr-client") or "esp32"
     if os.getenv("MITR_GATEWAY_AUTH_MODE", "").lower() == "local":
         expected_device_id = os.getenv("MITR_GATEWAY_LOCAL_DEVICE_ID", "").strip()
@@ -69,7 +67,12 @@ async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
             elder_id=None,
             elder_name=None,
             language=language,
+            timezone=timezone,
         )
+
+    token = _bearer(headers) or _subprotocol_token(headers)
+    if not token:
+        raise PermissionError("missing bearer token")
 
     backend_base = os.getenv("MITR_BACKEND_BASE_URL", "").rstrip("/")
     if not backend_base:
@@ -99,6 +102,8 @@ async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
             elder_id=data.get("elderId"),
             elder_name=data.get("elderName"),
             language=str(data.get("language") or language or "hi-IN"),
+            timezone=str(data.get("timezone") or data.get("timeZone") or timezone or "")
+            or None,
         )
 
     async with httpx.AsyncClient(timeout=5.0) as client:
@@ -124,4 +129,5 @@ async def authenticate_websocket(websocket: WebSocket) -> DeviceAuthContext:
         elder_id=data.get("elderId"),
         elder_name=data.get("elderName"),
         language=str(data.get("language") or language or "hi-IN"),
+        timezone=str(data.get("timezone") or data.get("timeZone") or timezone or "") or None,
     )

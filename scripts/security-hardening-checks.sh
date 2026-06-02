@@ -189,6 +189,7 @@ log "production preflight accepts synthetic configured env"
 voice_key="$(node -e "console.log(Buffer.alloc(32, 4).toString('base64'))")"
 internal_token="$(node -e "console.log('a'.repeat(64))")"
 openai_key='test-openai-key-12345678901234567890'
+google_key='test-google-key-12345678901234567890'
 postgres_url='postgresql://mitr:secret@db.example.com:5432/mitr?sslmode=verify-full'
 cp deploy/.env.prod.template deploy/.env.prod
 cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
@@ -208,6 +209,7 @@ set_kv deploy/.env.prod POSTGRES_URL "${postgres_url}"
 set_kv deploy/.env.prod INTERNAL_SERVICE_TOKEN "${internal_token}"
 set_kv deploy/.env.prod SHORT_CODE_PEPPER "$(node -e "console.log('c'.repeat(64))")"
 set_kv deploy/.env.prod OPENAI_API_KEY "${openai_key}"
+set_kv deploy/.env.prod GOOGLE_API_KEY "${google_key}"
 set_kv deploy/.env.prod MEM0_API_KEY mem0-test-key
 set_kv deploy/.env.prod QDRANT_URL https://qdrant.example
 set_kv deploy/.env.prod QDRANT_API_KEY qdrant-test-key
@@ -222,6 +224,7 @@ set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_CORS_ORIGINS https://app.mi
 set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_LOG_TRANSCRIPTS false
 set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
 set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY "${openai_key}"
+set_kv deploy/.env.prod.pipecat-gateway GOOGLE_API_KEY "${google_key}"
 for worker_env in \
   deploy/.env.prod.reminder-worker \
   deploy/.env.prod.insights-worker \

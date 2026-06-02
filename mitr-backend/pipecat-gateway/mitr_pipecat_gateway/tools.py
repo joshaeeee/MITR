@@ -447,22 +447,30 @@ def build_tools_schema() -> ToolsSchema:
             "Search structured Mem0 memories in the current Reca user scope. Use this "
             "when the user asks to recall, continue, update, or inspect a saved plan, "
             "routine, schedule, tracker, budget, recipe, or log and you do not yet know "
-            "the memory ID. Provide a specific query and metadata filters such as category, "
-            "status, domain, object_type, or record_kind when known. Do not use this for "
-            "general conversation context; use memory_get or context_packet_get instead.",
+            "the memory ID. For direct recall requests like 'mera workout plan batao', "
+            "call this silently before saying anything speculative; do not ask whether "
+            "the plan exists before checking. Provide a specific query and metadata "
+            "filters such as category, status, domain, object_type, or record_kind when "
+            "known. After the result, answer only from returned memories. If the result "
+            "is empty or unavailable, say you could not confirm it from saved memory "
+            "right now. Do not use this for general conversation context; use memory_get "
+            "or context_packet_get instead.",
         ),
         _tool_schema(
             "mem0_memory_list",
             "List structured Mem0 memories by metadata filters in the current Reca user "
             "scope. Use when browsing a known category/domain before updating a document, "
-            "creating a rollup, or finding the active version of a saved artifact. Keep "
-            "limits small unless the user explicitly asks to see many records.",
+            "creating a rollup, or finding the active version of a saved artifact. Call "
+            "silently before speaking when the user directly asks for saved artifacts; "
+            "do not speculate before the result. Keep limits small unless the user "
+            "explicitly asks to see many records.",
         ),
         _tool_schema(
             "mem0_memory_get",
             "Get one structured Mem0 memory by memory ID after scoped search/list found "
             "it. Use before updating or quoting a saved artifact so you have the exact "
-            "current content. Do not invent memory IDs.",
+            "current content. Answer from the returned content only. Do not invent memory "
+            "IDs.",
         ),
         _tool_schema(
             "mem0_memory_update",
@@ -483,8 +491,10 @@ def build_tools_schema() -> ToolsSchema:
             "memory_get",
             "Retrieve relevant personal memories when the user asks what you remember, "
             "asks to recall a saved detail, or a direct answer depends on explicit saved "
-            "memory. If no memory is returned, say only that you could not confirm it from "
-            "saved memory right now; never claim the user never said it.",
+            "memory. Call silently before speaking for direct recall requests; do not "
+            "speculate or ask whether the memory exists before checking. If no memory is "
+            "returned, say only that you could not confirm it from saved memory right now; "
+            "never claim the user never said it.",
         ),
         _tool_schema(
             "context_packet_get",
@@ -632,6 +642,28 @@ def build_tools_schema() -> ToolsSchema:
         _swiggy_mcp_call_schema(),
     ]
     return ToolsSchema(standard_tools=tools)
+
+
+def build_gemini_function_declarations() -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    for schema in build_tools_schema().standard_tools:
+        properties = dict(schema.properties or {})
+        parameters = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+        required = list(schema.required or [])
+        if required:
+            parameters["required"] = required
+        declarations.append(
+            {
+                "name": schema.name,
+                "description": schema.description,
+                "parameters_json_schema": parameters,
+            }
+        )
+    return declarations
 
 
 async def _send_tool_event(websocket: WebSocket | None, name: str, status: str, payload: Any):
@@ -1193,6 +1225,45 @@ async def _execute_tool(name: str, args: dict[str, Any], auth: DeviceAuthContext
         }
 
     return {"ok": False, "error": f"Unknown tool: {name}"}
+
+
+async def execute_gemini_live_tool(
+    name: str,
+    args: dict[str, Any],
+    auth: DeviceAuthContext,
+    websocket: WebSocket | None = None,
+    *,
+    on_tool_start: ToolStartHook | None = None,
+    on_tool_end: ToolEndHook | None = None,
+) -> dict[str, Any]:
+    started_at = time.monotonic()
+    logger.info("Gemini Live tool call started: {} arg_keys={}", name, sorted(args.keys()))
+    if on_tool_start:
+        await on_tool_start(name, args)
+    try:
+        await _send_tool_event(websocket, name, "start", args)
+        result = await _execute_tool(name, args, auth)
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+        if on_tool_end:
+            await on_tool_end(name, args, result, bool(result.get("ok")), latency_ms)
+        logger.info("Gemini Live tool call completed: {} ok={}", name, result.get("ok"))
+        await _send_tool_event(websocket, name, "end", result)
+
+        if _tool_execution_policy(name).async_ack:
+            return _finished_tool_result(name, args, auth, result)
+        return _sync_tool_result(name, args, auth, result)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        payload = {"ok": False, "error": str(error)}
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+        if on_tool_end:
+            await on_tool_end(name, args, payload, False, latency_ms)
+        logger.warning("Gemini Live tool call failed: {} error={}", name, str(error))
+        await _send_tool_event(websocket, name, "error", payload)
+        if _tool_execution_policy(name).async_ack:
+            return _finished_tool_result(name, args, auth, payload)
+        return _sync_tool_result(name, args, auth, payload)
 
 
 def register_mitr_tools(
