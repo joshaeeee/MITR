@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: MITR EC2 instance role, GitHub Actions OIDC deploy role, and log groups
+Description: MITR EC2 instance role, GitHub Actions OIDC deploy role, ECR repositories, and log groups
 
 Parameters:
   InstanceId:
@@ -67,6 +67,94 @@ Resources:
         - Key: Project
           Value: MITR
 
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: mitr-api
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 14 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 14
+                },
+                "action": {
+                  "type": "expire"
+                }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep the last 20 production images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["sha-"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 20
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: MITR
+
+  PipecatGatewayRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: mitr-pipecat-gateway
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 14 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 14
+                },
+                "action": {
+                  "type": "expire"
+                }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep the last 20 production images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["sha-"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 20
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: MITR
+
   Ec2Role:
     Type: AWS::IAM::Role
     Properties:
@@ -103,6 +191,21 @@ Resources:
                   - logs:DescribeLogStreams
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/mitr/*
+              - Sid: AuthorizeEcrPull
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PullProductionImages
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                  - ecr:GetDownloadUrlForLayer
+                Resource:
+                  - !GetAtt ApiRepository.Arn
+                  - !GetAtt PipecatGatewayRepository.Arn
               - !If
                 - HasKmsKey
                 - Sid: DecryptProductionParameters
@@ -159,11 +262,35 @@ Resources:
                 Action:
                   - ssm:GetCommandInvocation
                 Resource: "*"
+              - Sid: AuthorizeEcrPush
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PushProductionImages
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeImages
+                  - ecr:DescribeRepositories
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource:
+                  - !GetAtt ApiRepository.Arn
+                  - !GetAtt PipecatGatewayRepository.Arn
       Tags:
         - Key: Project
           Value: MITR
 
 Outputs:
+  ApiRepositoryUri:
+    Value: !GetAtt ApiRepository.RepositoryUri
+  PipecatGatewayRepositoryUri:
+    Value: !GetAtt PipecatGatewayRepository.RepositoryUri
   Ec2InstanceProfileName:
     Value: !Ref Ec2InstanceProfile
   Ec2RoleArn:

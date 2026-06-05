@@ -23,16 +23,10 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: mitr-backend-cicd-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  REGISTRY: ghcr.io
-  API_IMAGE_NAME: ${{ github.repository_owner }}/mitr-api
-  PIPECAT_GATEWAY_IMAGE_NAME: ${{ github.repository_owner }}/mitr-pipecat-gateway
 
 jobs:
   ci:
@@ -177,6 +171,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ci]
     if: github.event_name != 'pull_request'
+    environment: Production
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       image_ref: ${{ steps.out.outputs.image_ref }}
     steps:
@@ -186,12 +184,31 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - name: Validate ECR deploy secrets
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_API_REPOSITORY: ${{ secrets.ECR_API_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          test -n "${AWS_DEPLOY_ROLE_ARN}" || { echo "Missing secret: AWS_DEPLOY_ROLE_ARN"; exit 1; }
+          test -n "${AWS_REGION}" || { echo "Missing secret: AWS_REGION"; exit 1; }
+          test -n "${ECR_API_REPOSITORY}" || { echo "Missing secret: ECR_API_REPOSITORY"; exit 1; }
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_API_REPOSITORY: ${{ secrets.ECR_API_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          ecr_registry="${ECR_API_REPOSITORY%%/*}"
+          aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ecr_registry}"
 
       - name: Build and push API image
         uses: docker/build-push-action@v6
@@ -200,21 +217,27 @@ jobs:
           file: mitr-backend/Dockerfile.api
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:sha-${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:prod-latest
+            ${{ secrets.ECR_API_REPOSITORY }}:sha-${{ github.sha }}
+            ${{ secrets.ECR_API_REPOSITORY }}:prod-latest
           cache-from: type=gha,scope=mitr-api
           cache-to: type=gha,mode=max,scope=mitr-api
           provenance: false
 
       - name: Set API output
         id: out
-        run: echo "image_ref=${REGISTRY}/${API_IMAGE_NAME}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        env:
+          ECR_API_REPOSITORY: ${{ secrets.ECR_API_REPOSITORY }}
+        run: echo "image_ref=${ECR_API_REPOSITORY}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   build-pipecat-gateway:
     name: Build + push Pipecat gateway image
     runs-on: ubuntu-latest
     needs: [ci]
     if: github.event_name != 'pull_request'
+    environment: Production
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       image_ref: ${{ steps.out.outputs.image_ref }}
     steps:
@@ -224,12 +247,31 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - name: Validate ECR deploy secrets
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          test -n "${AWS_DEPLOY_ROLE_ARN}" || { echo "Missing secret: AWS_DEPLOY_ROLE_ARN"; exit 1; }
+          test -n "${AWS_REGION}" || { echo "Missing secret: AWS_REGION"; exit 1; }
+          test -n "${ECR_PIPECAT_GATEWAY_REPOSITORY}" || { echo "Missing secret: ECR_PIPECAT_GATEWAY_REPOSITORY"; exit 1; }
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          ecr_registry="${ECR_PIPECAT_GATEWAY_REPOSITORY%%/*}"
+          aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ecr_registry}"
 
       - name: Build and push Pipecat gateway image
         uses: docker/build-push-action@v6
@@ -238,15 +280,17 @@ jobs:
           file: mitr-backend/Dockerfile.agent
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.PIPECAT_GATEWAY_IMAGE_NAME }}:sha-${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.PIPECAT_GATEWAY_IMAGE_NAME }}:prod-latest
+            ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}:sha-${{ github.sha }}
+            ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}:prod-latest
           cache-from: type=gha,scope=mitr-pipecat-gateway
           cache-to: type=gha,mode=max,scope=mitr-pipecat-gateway
           provenance: false
 
       - name: Set Pipecat gateway output
         id: out
-        run: echo "image_ref=${REGISTRY}/${PIPECAT_GATEWAY_IMAGE_NAME}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        env:
+          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
+        run: echo "image_ref=${ECR_PIPECAT_GATEWAY_REPOSITORY}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy to EC2

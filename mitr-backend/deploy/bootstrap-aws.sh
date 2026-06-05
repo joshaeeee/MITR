@@ -65,6 +65,20 @@ deploy_role_arn="$(
     --query "Stacks[0].Outputs[?OutputKey=='GitHubDeployRoleArn'].OutputValue" \
     --output text
 )"
+api_repository_uri="$(
+  aws cloudformation describe-stacks \
+    --region "${AWS_REGION}" \
+    --stack-name "${STACK_NAME}" \
+    --query "Stacks[0].Outputs[?OutputKey=='ApiRepositoryUri'].OutputValue" \
+    --output text
+)"
+pipecat_gateway_repository_uri="$(
+  aws cloudformation describe-stacks \
+    --region "${AWS_REGION}" \
+    --stack-name "${STACK_NAME}" \
+    --query "Stacks[0].Outputs[?OutputKey=='PipecatGatewayRepositoryUri'].OutputValue" \
+    --output text
+)"
 
 association_id="$(
   aws ec2 describe-iam-instance-profile-associations \
@@ -107,6 +121,14 @@ gh secret set EC2_INSTANCE_ID \
   --repo joshaeeee/MITR \
   --env Production \
   --body "${INSTANCE_ID}"
+gh secret set ECR_API_REPOSITORY \
+  --repo joshaeeee/MITR \
+  --env Production \
+  --body "${api_repository_uri}"
+gh secret set ECR_PIPECAT_GATEWAY_REPOSITORY \
+  --repo joshaeeee/MITR \
+  --env Production \
+  --body "${pipecat_gateway_repository_uri}"
 
 if [[ -n "${PUBLIC_API_BASE_URL}" ]]; then
   gh secret set PUBLIC_API_BASE_URL \
@@ -118,3 +140,5 @@ fi
 echo "AWS infrastructure is ready."
 echo "Instance profile: ${instance_profile}"
 echo "GitHub deploy role: ${deploy_role_arn}"
+echo "API ECR repository: ${api_repository_uri}"
+echo "Pipecat gateway ECR repository: ${pipecat_gateway_repository_uri}"
