@@ -68,6 +68,33 @@ if [[ -n "${DEPLOY_REMINDER_IMAGE:-}" ]]; then
   set_env_value REMINDER_IMAGE "${DEPLOY_REMINDER_IMAGE}"
 fi
 
+login_ecr_registries() {
+  if ! command -v aws >/dev/null 2>&1; then
+    return
+  fi
+
+  local image registry
+  local -a images=(
+    "$(grep -E '^API_IMAGE=' "${ENV_FILE}" | tail -1 | cut -d= -f2- || true)"
+    "$(grep -E '^PIPECAT_GATEWAY_IMAGE=' "${ENV_FILE}" | tail -1 | cut -d= -f2- || true)"
+    "$(grep -E '^REMINDER_IMAGE=' "${ENV_FILE}" | tail -1 | cut -d= -f2- || true)"
+  )
+  local -a registries=()
+
+  for image in "${images[@]}"; do
+    [[ "${image}" == *.dkr.ecr.*.amazonaws.com/* ]] || continue
+    registry="${image%%/*}"
+    if [[ ! " ${registries[*]} " =~ " ${registry} " ]]; then
+      registries+=("${registry}")
+    fi
+  done
+
+  for registry in "${registries[@]}"; do
+    echo "[deploy] logging into ECR registry ${registry}"
+    aws ecr get-login-password --region "${AWS_REGION:-ap-south-1}" | docker login --username AWS --password-stdin "${registry}" >/dev/null
+  done
+}
+
 bash "${SCRIPT_DIR}/bootstrap-service-env-files.sh" "${ENV_FILE}"
 
 for worker_env in \
@@ -94,6 +121,8 @@ if [[ -n "${GHCR_USERNAME:-}" && -n "${GHCR_TOKEN:-}" ]]; then
   echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
 fi
 
+login_ecr_registries
+
 cd "${SCRIPT_DIR}"
 
 if [[ -x "${SCRIPT_DIR}/setup-https.sh" ]]; then
@@ -102,6 +131,10 @@ fi
 
 if [[ -x "${SCRIPT_DIR}/configure-nginx.sh" ]]; then
   bash "${SCRIPT_DIR}/configure-nginx.sh"
+  if docker inspect mitr-nginx >/dev/null 2>&1; then
+    docker exec mitr-nginx nginx -t
+    docker exec mitr-nginx nginx -s reload
+  fi
 fi
 
 running_image() {
