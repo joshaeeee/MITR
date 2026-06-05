@@ -97,6 +97,14 @@ sudo certbot certonly \
 bash "${SCRIPT_DIR}/configure-nginx.sh"
 docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --no-deps nginx
 
+sudo install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/mitr-nginx-reload >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+docker exec mitr-nginx nginx -s reload
+EOF
+sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/mitr-nginx-reload
+
 if command -v systemctl >/dev/null 2>&1 && sudo systemctl list-unit-files certbot.timer >/dev/null 2>&1; then
   sudo systemctl enable --now certbot.timer >/dev/null 2>&1 || true
   echo "[https] using certbot.timer for renewal"

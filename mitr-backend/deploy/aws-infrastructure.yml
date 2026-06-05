@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: MITR EC2 instance role, GitHub Actions OIDC deploy role, and log groups
+
+Parameters:
+  InstanceId:
+    Type: String
+    Description: Production EC2 instance ID
+  GitHubOwner:
+    Type: String
+    Default: joshaeeee
+  GitHubRepository:
+    Type: String
+    Default: MITR
+  GitHubEnvironment:
+    Type: String
+    Default: Production
+  ParameterPath:
+    Type: String
+    Default: /mitr/prod
+  CreateGitHubOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+  KmsKeyArn:
+    Type: String
+    Default: ""
+    Description: Optional customer-managed KMS key used for SSM SecureStrings
+
+Conditions:
+  ShouldCreateGitHubOidcProvider: !Equals
+    - !Ref CreateGitHubOidcProvider
+    - "true"
+  HasKmsKey: !Not
+    - !Equals
+      - !Ref KmsKeyArn
+      - ""
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateGitHubOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: MITR
+
+  ProductionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /mitr/prod
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: MITR
+
+  DeployLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /mitr/deploy
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: MITR
+
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mitr-prod-ec2
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: mitr-production-runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadProductionParameters
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ParameterPath}/*
+              - Sid: WriteMitrLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/mitr/*
+              - !If
+                - HasKmsKey
+                - Sid: DecryptProductionParameters
+                  Effect: Allow
+                  Action: kms:Decrypt
+                  Resource: !Ref KmsKeyArn
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+                - !Ref AWS::NoValue
+      Tags:
+        - Key: Project
+          Value: MITR
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: mitr-prod-ec2
+      Roles:
+        - !Ref Ec2Role
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mitr-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateGitHubOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepository}:environment:${GitHubEnvironment}
+      Policies:
+        - PolicyName: deploy-mitr-through-ssm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SendCommandToProductionInstance
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${InstanceId}
+              - Sid: ReadCommandResult
+                Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: MITR
+
+Outputs:
+  Ec2InstanceProfileName:
+    Value: !Ref Ec2InstanceProfile
+  Ec2RoleArn:
+    Value: !GetAtt Ec2Role.Arn
+  GitHubDeployRoleArn:
+    Value: !GetAtt GitHubDeployRole.Arn
