@@ -379,6 +379,7 @@ jobs:
     name: Public smoke check
     runs-on: ubuntu-latest
     needs: [deploy]
+    environment: Production
     if: needs.deploy.result == 'success'
     timeout-minutes: 5
     steps:
