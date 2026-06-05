@@ -86,7 +86,7 @@ http {
     server_name ${SERVER_NAMES};
 
     location /.well-known/acme-challenge/ {
-      root /var/www/certbot;
+      alias /var/www/certbot/.well-known/acme-challenge/;
     }
 
     location = /healthz {
@@ -130,7 +130,7 @@ http {
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     location /.well-known/acme-challenge/ {
-      root /var/www/certbot;
+      alias /var/www/certbot/.well-known/acme-challenge/;
     }
 
     location = /ws {
@@ -207,7 +207,7 @@ EOF
     index index.html;
 
     location /.well-known/acme-challenge/ {
-      root /var/www/certbot;
+      alias /var/www/certbot/.well-known/acme-challenge/;
     }
 
     location = /privacy-policy {

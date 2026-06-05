@@ -81,7 +81,7 @@ fi
 
 cp "${HTTP_CONF}" "${TARGET_CONF}"
 echo "[https] bootstrapped HTTP nginx config for certbot challenge"
-docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --no-deps nginx
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --force-recreate --no-deps nginx
 
 sudo certbot certonly \
   --webroot \
@@ -95,7 +95,7 @@ sudo certbot certonly \
   --keep-until-expiring
 
 bash "${SCRIPT_DIR}/configure-nginx.sh"
-docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --no-deps nginx
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --force-recreate --no-deps nginx
 
 sudo install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
 sudo tee /etc/letsencrypt/renewal-hooks/deploy/mitr-nginx-reload >/dev/null <<'EOF'
