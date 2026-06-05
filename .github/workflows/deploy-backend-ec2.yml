@@ -175,8 +175,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    outputs:
-      image_ref: ${{ steps.out.outputs.image_ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -223,12 +221,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=mitr-api
           provenance: false
 
-      - name: Set API output
-        id: out
-        env:
-          ECR_API_REPOSITORY: ${{ secrets.ECR_API_REPOSITORY }}
-        run: echo "image_ref=${ECR_API_REPOSITORY}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-
   build-pipecat-gateway:
     name: Build + push Pipecat gateway image
     runs-on: ubuntu-latest
@@ -238,8 +230,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    outputs:
-      image_ref: ${{ steps.out.outputs.image_ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -286,12 +276,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=mitr-pipecat-gateway
           provenance: false
 
-      - name: Set Pipecat gateway output
-        id: out
-        env:
-          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
-        run: echo "image_ref=${ECR_PIPECAT_GATEWAY_REPOSITORY}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
@@ -329,10 +313,13 @@ jobs:
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
-          API_IMAGE: ${{ needs.build-api.outputs.image_ref }}
-          PIPECAT_GATEWAY_IMAGE: ${{ needs.build-pipecat-gateway.outputs.image_ref }}
+          ECR_API_REPOSITORY: ${{ secrets.ECR_API_REPOSITORY }}
+          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
         run: |
           set -euo pipefail
+          API_IMAGE="${ECR_API_REPOSITORY}:sha-${GITHUB_SHA}"
+          PIPECAT_GATEWAY_IMAGE="${ECR_PIPECAT_GATEWAY_REPOSITORY}:sha-${GITHUB_SHA}"
+
           jq -n \
             --arg api_image "${API_IMAGE}" \
             --arg gateway_image "${PIPECAT_GATEWAY_IMAGE}" \
@@ -345,6 +332,7 @@ jobs:
                 "install -d -o ubuntu -g ubuntu -m 0755 /opt/mitr",
                 "if [ ! -d /opt/mitr/MITR/.git ]; then sudo -u ubuntu git clone https://github.com/" + $repository + ".git /opt/mitr/MITR; fi",
                 "sudo -u ubuntu git -C /opt/mitr/MITR fetch origin main",
+                "sudo -u ubuntu git -C /opt/mitr/MITR reset --hard",
                 "sudo -u ubuntu git -C /opt/mitr/MITR checkout --detach " + $sha,
                 "cd /opt/mitr/MITR/mitr-backend",
                 "export AWS_REGION=" + $region,
