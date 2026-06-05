@@ -258,6 +258,7 @@ jobs:
       id-token: write
     if: |
       github.event_name != 'pull_request' &&
+      vars.PRODUCTION_DEPLOY_ENABLED == 'true' &&
       (github.event_name == 'push' || inputs.deploy == true)
     timeout-minutes: 20
     steps:
