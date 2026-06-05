@@ -32,6 +32,42 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local tmp_file="${ENV_FILE}.tmp"
+
+  awk -v k="${key}" -v v="${value}" -F= '
+    BEGIN { updated=0 }
+    $1 == k {
+      if (!updated) {
+        print k "=" v
+        updated=1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!updated) print k "=" v
+    }
+  ' "${ENV_FILE}" > "${tmp_file}"
+  install -m 600 "${tmp_file}" "${ENV_FILE}"
+  rm -f "${tmp_file}"
+}
+
+# CI supplies immutable image references after the SSM environment has synced.
+# This prevents stale image values in Parameter Store from overriding the build
+# that triggered the deployment.
+if [[ -n "${DEPLOY_API_IMAGE:-}" ]]; then
+  set_env_value API_IMAGE "${DEPLOY_API_IMAGE}"
+fi
+if [[ -n "${DEPLOY_PIPECAT_GATEWAY_IMAGE:-}" ]]; then
+  set_env_value PIPECAT_GATEWAY_IMAGE "${DEPLOY_PIPECAT_GATEWAY_IMAGE}"
+fi
+if [[ -n "${DEPLOY_REMINDER_IMAGE:-}" ]]; then
+  set_env_value REMINDER_IMAGE "${DEPLOY_REMINDER_IMAGE}"
+fi
+
 bash "${SCRIPT_DIR}/bootstrap-service-env-files.sh" "${ENV_FILE}"
 
 for worker_env in \

@@ -252,163 +252,96 @@ jobs:
     name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: [build-api, build-pipecat-gateway]
+    environment: Production
+    permissions:
+      contents: read
+      id-token: write
     if: |
       github.event_name != 'pull_request' &&
+      vars.PRODUCTION_DEPLOY_ENABLED == 'true' &&
       (github.event_name == 'push' || inputs.deploy == true)
     timeout-minutes: 20
     steps:
       - name: Validate deploy secrets
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          GHCR_TOKEN: ${{ github.token }}
-          EC2_SG_ID: ${{ secrets.EC2_SG_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          PUBLIC_API_BASE_URL: ${{ secrets.PUBLIC_API_BASE_URL }}
         run: |
           set -euo pipefail
-          test -n "${EC2_HOST}" || { echo "Missing secret: EC2_HOST"; exit 1; }
-          test -n "${EC2_USER}" || { echo "Missing secret: EC2_USER"; exit 1; }
-          test -n "${EC2_SSH_KEY}" || { echo "Missing secret: EC2_SSH_KEY"; exit 1; }
-          test -n "${GHCR_TOKEN}" || { echo "Missing secret: GHCR_TOKEN"; exit 1; }
-          test -n "${EC2_SG_ID}" || { echo "Missing secret: EC2_SG_ID"; exit 1; }
-          test -n "${AWS_ACCESS_KEY_ID}" || { echo "Missing secret: AWS_ACCESS_KEY_ID"; exit 1; }
-          test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "Missing secret: AWS_SECRET_ACCESS_KEY"; exit 1; }
+          test -n "${AWS_DEPLOY_ROLE_ARN}" || { echo "Missing secret: AWS_DEPLOY_ROLE_ARN"; exit 1; }
           test -n "${AWS_REGION}" || { echo "Missing secret: AWS_REGION"; exit 1; }
+          test -n "${EC2_INSTANCE_ID}" || { echo "Missing secret: EC2_INSTANCE_ID"; exit 1; }
+          test -n "${PUBLIC_API_BASE_URL}" || { echo "Missing secret: PUBLIC_API_BASE_URL"; exit 1; }
 
-      - name: Add runner IP to security group
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          set -euo pipefail
-          RUNNER_IP=$(curl -sf https://checkip.amazonaws.com)
-          echo "RUNNER_IP=${RUNNER_IP}" >> $GITHUB_ENV
-          aws ec2 authorize-security-group-ingress \
-            --group-id ${{ secrets.EC2_SG_ID }} \
-            --protocol tcp \
-            --port 22 \
-            --cidr "${RUNNER_IP}/32"
-          echo "Allowed SSH from ${RUNNER_IP}/32"
-
-      - name: Deploy on EC2 over SSH
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
-          command_timeout: 20m
-          script: |
-            set -euo pipefail
-            set -x
-            trap 'rc=$?; line=${BASH_LINENO[0]:-unknown}; echo "[deploy] failed at line ${line} while running: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-            BASE_DIR="/opt/mitr"
-            REPO_DIR="${BASE_DIR}/MITR"
-            APP_DIR="${REPO_DIR}/mitr-backend"
-            REPO_URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-
-            mkdir -p "${BASE_DIR}"
-            if [ ! -d "${REPO_DIR}/.git" ]; then
-              echo "[deploy] cloning repo into ${REPO_DIR}"
-              git clone "${REPO_URL}" "${REPO_DIR}"
-            fi
-
-            echo "[deploy] preparing clean checkout"
-            cd "${REPO_DIR}"
-            git remote set-url origin "${REPO_URL}"
-            mkdir -p .deploy-tmp
-            if [ -f "mitr-backend/deploy/.env.prod" ]; then
-              cp "mitr-backend/deploy/.env.prod" ".deploy-tmp/env.prod"
-            fi
-            git reset --hard HEAD
-            git clean -fd \
-              -e .deploy-tmp/ \
-              -e mitr-backend/deploy/generated/ \
-              -e mitr-backend/deploy/www/
-            git fetch origin main
-            git checkout -B main origin/main
-            git reset --hard origin/main
-            git clean -fd \
-              -e .deploy-tmp/ \
-              -e mitr-backend/deploy/generated/ \
-              -e mitr-backend/deploy/www/
-            if [ -f ".deploy-tmp/env.prod" ]; then
-              mkdir -p "mitr-backend/deploy"
-              cp ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod" 2>/dev/null || sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" ".deploy-tmp/env.prod" "mitr-backend/deploy/.env.prod"
-            fi
-            rm -rf .deploy-tmp
-            echo "[deploy] checkout ready at $(git rev-parse --short HEAD)"
-
-            cd "${APP_DIR}"
-            echo "[deploy] app dir $(pwd)"
-            ls -ld deploy
-            if [ ! -f "deploy/.env.prod" ]; then
-              echo "Missing ${APP_DIR}/deploy/.env.prod. Create it manually from deploy/.env.prod.template"
-              ls -la deploy || true
-              exit 1
-            fi
-            echo "[deploy] found deploy/.env.prod"
-
-            update_env() {
-              key="$1"
-              value="$2"
-              # Keep this as a single shell line because appleboy/ssh-action injects
-              # guard code after each script line and breaks multiline inline scripts.
-              awk -v k="$key" -v v="$value" -F= 'BEGIN{done=0} $1==k {if(!done){print k "=" v; done=1} next} {print} END{if(!done) print k "=" v}' deploy/.env.prod > deploy/.env.prod.tmp && (mv deploy/.env.prod.tmp deploy/.env.prod 2>/dev/null || sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" deploy/.env.prod.tmp deploy/.env.prod)
-              echo "[deploy] set ${key}"
-            }
-
-            update_env "API_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
-            update_env "PIPECAT_GATEWAY_IMAGE" "${{ needs.build-pipecat-gateway.outputs.image_ref }}"
-            update_env "REMINDER_IMAGE" "${{ needs.build-api.outputs.image_ref }}"
-            update_env "ESP32_AUDIO_OUTPUT_GAIN" "2.0"
-
-            GHCR_USER="${{ github.actor }}"
-            GHCR_TOKEN_VALUE="${{ github.token }}"
-            export GHCR_USERNAME="${GHCR_USER}"
-            export GHCR_TOKEN="${GHCR_TOKEN_VALUE}"
-            export HEALTH_BASE_URL="http://127.0.0.1"
-            export RUN_DB_MIGRATIONS="true"
-            export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS="false"
-            export DEPLOY_PUBLIC_API_BASE_URL="${{ secrets.PUBLIC_API_BASE_URL }}"
-            export DEPLOY_EC2_HOST="${{ secrets.EC2_HOST }}"
-
-            echo "[deploy] running backend deployment"
-            chmod +x deploy/configure-nginx.sh deploy/setup-https.sh deploy/bootstrap-service-env-files.sh deploy/check-service-env-scope.sh deploy/preflight-prod-env.sh || true
-            chmod +x deploy/deploy.sh deploy/healthcheck.sh
-            bash deploy/deploy.sh
-
-            # Guard against stale image restarts.
-            ACTUAL_API_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-api)"
-            ACTUAL_PIPECAT_GATEWAY_IMAGE="$(docker inspect --format='{{.Config.Image}}' mitr-pipecat-gateway)"
-            if [ "${ACTUAL_API_IMAGE}" != "${{ needs.build-api.outputs.image_ref }}" ]; then
-              echo "API image mismatch. expected=${{ needs.build-api.outputs.image_ref }} actual=${ACTUAL_API_IMAGE}"
-              exit 1
-            fi
-            if [ "${ACTUAL_PIPECAT_GATEWAY_IMAGE}" != "${{ needs.build-pipecat-gateway.outputs.image_ref }}" ]; then
-              echo "Pipecat gateway image mismatch. expected=${{ needs.build-pipecat-gateway.outputs.image_ref }} actual=${ACTUAL_PIPECAT_GATEWAY_IMAGE}"
-              exit 1
-            fi
-
-      - name: Remove runner IP from security group
-        if: always()
+      - name: Deploy through Systems Manager
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          API_IMAGE: ${{ needs.build-api.outputs.image_ref }}
+          PIPECAT_GATEWAY_IMAGE: ${{ needs.build-pipecat-gateway.outputs.image_ref }}
         run: |
           set -euo pipefail
-          aws ec2 revoke-security-group-ingress \
-            --group-id ${{ secrets.EC2_SG_ID }} \
-            --protocol tcp \
-            --port 22 \
-            --cidr "${RUNNER_IP}/32" || true
-          echo "Removed SSH access for ${RUNNER_IP}/32"
+          jq -n \
+            --arg api_image "${API_IMAGE}" \
+            --arg gateway_image "${PIPECAT_GATEWAY_IMAGE}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg region "${AWS_REGION}" \
+            --arg sha "${GITHUB_SHA}" \
+            '{
+              commands: [
+                "set -euo pipefail",
+                "install -d -o ubuntu -g ubuntu -m 0755 /opt/mitr",
+                "if [ ! -d /opt/mitr/MITR/.git ]; then sudo -u ubuntu git clone https://github.com/" + $repository + ".git /opt/mitr/MITR; fi",
+                "sudo -u ubuntu git -C /opt/mitr/MITR fetch origin main",
+                "sudo -u ubuntu git -C /opt/mitr/MITR checkout --detach " + $sha,
+                "cd /opt/mitr/MITR/mitr-backend",
+                "export AWS_REGION=" + $region,
+                "export DEPLOY_API_IMAGE=" + $api_image,
+                "export DEPLOY_PIPECAT_GATEWAY_IMAGE=" + $gateway_image,
+                "export DEPLOY_REMINDER_IMAGE=" + $api_image,
+                "export HEALTH_BASE_URL=http://127.0.0.1",
+                "export RUN_DB_MIGRATIONS=true",
+                "export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS=false",
+                "bash deploy/deploy.sh",
+                "test \"$(docker inspect --format={{.Config.Image}} mitr-api)\" = \"" + $api_image + "\"",
+                "test \"$(docker inspect --format={{.Config.Image}} mitr-pipecat-gateway)\" = \"" + $gateway_image + "\""
+              ]
+            }' > ssm-parameters.json
+
+          command_id="$(
+            aws ssm send-command \
+              --region "${AWS_REGION}" \
+              --instance-ids "${EC2_INSTANCE_ID}" \
+              --document-name AWS-RunShellScript \
+              --comment "MITR deploy ${GITHUB_SHA}" \
+              --parameters file://ssm-parameters.json \
+              --cloud-watch-output-config \
+                CloudWatchOutputEnabled=true,CloudWatchLogGroupName=/mitr/deploy \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+
+          aws ssm wait command-executed \
+            --region "${AWS_REGION}" \
+            --command-id "${command_id}" \
+            --instance-id "${EC2_INSTANCE_ID}" || true
+
+          aws ssm get-command-invocation \
+            --region "${AWS_REGION}" \
+            --command-id "${command_id}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --output json > command-result.json
+
+          jq -r '.StandardOutputContent, .StandardErrorContent' command-result.json
+          test "$(jq -r '.Status' command-result.json)" = "Success"
 
   smoke-public:
     name: Public smoke check
@@ -420,10 +353,9 @@ jobs:
       - name: Check public health endpoints
         env:
           PUBLIC_API_BASE_URL: ${{ secrets.PUBLIC_API_BASE_URL }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           set -euo pipefail
-          BASE_URL="${PUBLIC_API_BASE_URL:-http://${EC2_HOST}}"
+          BASE_URL="${PUBLIC_API_BASE_URL}"
           BASE_URL="${BASE_URL%/}"
           curl -fsS --max-time 10 "${BASE_URL}/healthz" >/dev/null
           echo "Public smoke checks passed for ${BASE_URL}"
