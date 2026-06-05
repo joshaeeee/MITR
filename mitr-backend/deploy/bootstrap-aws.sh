@@ -22,14 +22,24 @@ done
 aws sts get-caller-identity >/dev/null
 gh auth status >/dev/null
 
-oidc_provider_arn="$(
-  aws iam list-open-id-connect-providers \
-    --query "OpenIDConnectProviderList[?contains(Arn, 'token.actions.githubusercontent.com')].Arn | [0]" \
-    --output text
-)"
 create_oidc_provider=true
-if [[ -n "${oidc_provider_arn}" && "${oidc_provider_arn}" != "None" ]]; then
-  create_oidc_provider=false
+stack_provider_status="$(
+  aws cloudformation describe-stack-resource \
+    --region "${AWS_REGION}" \
+    --stack-name "${STACK_NAME}" \
+    --logical-resource-id GitHubOidcProvider \
+    --query "StackResourceDetail.ResourceStatus" \
+    --output text 2>/dev/null || true
+)"
+if [[ -z "${stack_provider_status}" || "${stack_provider_status}" == "DELETE_COMPLETE" ]]; then
+  oidc_provider_arn="$(
+    aws iam list-open-id-connect-providers \
+      --query "OpenIDConnectProviderList[?contains(Arn, 'token.actions.githubusercontent.com')].Arn | [0]" \
+      --output text
+  )"
+  if [[ -n "${oidc_provider_arn}" && "${oidc_provider_arn}" != "None" ]]; then
+    create_oidc_provider=false
+  fi
 fi
 
 aws cloudformation deploy \
