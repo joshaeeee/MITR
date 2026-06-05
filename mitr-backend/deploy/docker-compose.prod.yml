@@ -3,7 +3,7 @@ services:
     image: redis:7-alpine
     container_name: mitr-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
     cpus: 0.10
     mem_limit: 128m
     logging:
