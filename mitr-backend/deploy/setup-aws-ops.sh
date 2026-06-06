@@ -34,6 +34,23 @@ aws iam update-account-password-policy \
   --password-reuse-prevention 24 \
   --hard-expiry >/dev/null
 
+echo "[aws-ops] enforcing account-level S3 public access block"
+aws s3control put-public-access-block \
+  --account-id "${ACCOUNT_ID}" \
+  --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+echo "[aws-ops] ensuring IAM Access Analyzer"
+if ! aws accessanalyzer list-analyzers \
+  --type ACCOUNT \
+  --query "analyzers[?name=='mitr-account-external-access'].arn" \
+  --output text | grep -q .; then
+  aws accessanalyzer create-analyzer \
+    --analyzer-name mitr-account-external-access \
+    --type ACCOUNT \
+    --tags "Project=${PROJECT_TAG},Environment=${ENVIRONMENT_TAG}" >/dev/null
+fi
+
 echo "[aws-ops] ensuring alert SNS topic"
 ALERT_TOPIC_ARN="$(aws sns create-topic \
   --name "${ALERT_TOPIC_NAME}" \
