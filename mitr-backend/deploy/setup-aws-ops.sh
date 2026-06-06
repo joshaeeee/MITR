@@ -257,7 +257,7 @@ if [[ -n "${VOLUME_IDS}" ]]; then
     --tags "Key=Project,Value=${PROJECT_TAG}" "Key=Environment,Value=${ENVIRONMENT_TAG}"
 fi
 
-if [[ -n "${MONTHLY_BUDGET_USD}" && -n "${ALERT_EMAIL}" ]]; then
+if [[ -n "${MONTHLY_BUDGET_USD}" ]]; then
   echo "[aws-ops] ensuring monthly budget ${MONTHLY_BUDGET_USD} USD"
   if ! aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name mitr-monthly-cost >/dev/null 2>&1; then
     aws budgets create-budget \
@@ -267,17 +267,32 @@ if [[ -n "${MONTHLY_BUDGET_USD}" && -n "${ALERT_EMAIL}" ]]; then
         \"BudgetLimit\":{\"Amount\":\"${MONTHLY_BUDGET_USD}\",\"Unit\":\"USD\"},
         \"TimeUnit\":\"MONTHLY\",
         \"BudgetType\":\"COST\"
-      }" \
-      --notifications-with-subscribers "[{
-        \"Notification\":{\"NotificationType\":\"ACTUAL\",\"ComparisonOperator\":\"GREATER_THAN\",\"Threshold\":80,\"ThresholdType\":\"PERCENTAGE\"},
-        \"Subscribers\":[{\"SubscriptionType\":\"EMAIL\",\"Address\":\"${ALERT_EMAIL}\"}]
-      },{
-        \"Notification\":{\"NotificationType\":\"FORECASTED\",\"ComparisonOperator\":\"GREATER_THAN\",\"Threshold\":100,\"ThresholdType\":\"PERCENTAGE\"},
-        \"Subscribers\":[{\"SubscriptionType\":\"EMAIL\",\"Address\":\"${ALERT_EMAIL}\"}]
-      }]" >/dev/null
+      }" >/dev/null
+  fi
+
+  if [[ -n "${ALERT_EMAIL}" ]]; then
+    NOTIFICATION_COUNT="$(aws budgets describe-notifications-for-budget \
+      --account-id "${ACCOUNT_ID}" \
+      --budget-name mitr-monthly-cost \
+      --query 'length(Notifications)' \
+      --output text)"
+    if [[ "${NOTIFICATION_COUNT}" == "0" ]]; then
+      aws budgets create-notification \
+        --account-id "${ACCOUNT_ID}" \
+        --budget-name mitr-monthly-cost \
+        --notification '{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"}' \
+        --subscribers "[{\"SubscriptionType\":\"EMAIL\",\"Address\":\"${ALERT_EMAIL}\"}]" >/dev/null
+      aws budgets create-notification \
+        --account-id "${ACCOUNT_ID}" \
+        --budget-name mitr-monthly-cost \
+        --notification '{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}' \
+        --subscribers "[{\"SubscriptionType\":\"EMAIL\",\"Address\":\"${ALERT_EMAIL}\"}]" >/dev/null
+    fi
+  else
+    echo "[aws-ops] ALERT_EMAIL not set; budget exists without email notifications"
   fi
 else
-  echo "[aws-ops] budget skipped; set ALERT_EMAIL to create budget notifications"
+  echo "[aws-ops] budget skipped because MONTHLY_BUDGET_USD is empty"
 fi
 
 echo "[aws-ops] complete"
