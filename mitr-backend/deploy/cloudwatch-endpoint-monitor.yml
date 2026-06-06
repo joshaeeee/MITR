@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Low-cost active endpoint monitoring for the MITR production API.
+Description: Unified endpoint, service log, and EC2 monitoring for MITR production.
 
 Parameters:
   BaseUrl:
@@ -11,6 +11,24 @@ Parameters:
   ScheduleExpression:
     Type: String
     Default: rate(5 minutes)
+  ProductionLogGroup:
+    Type: String
+    Default: /mitr/prod
+  DeployLogGroup:
+    Type: String
+    Default: /mitr/deploy
+  InstanceId:
+    Type: AWS::EC2::Instance::Id
+    Default: i-05e74a81566e8854e
+  InstanceType:
+    Type: String
+    Default: t3.medium
+  RootDiskDevice:
+    Type: String
+    Default: nvme0n1p1
+  RootDiskFstype:
+    Type: String
+    Default: ext4
 
 Resources:
   EndpointMonitorLogGroup:
@@ -278,6 +296,58 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt EndpointMonitorSchedule.Arn
 
+  BackendErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterName: mitr-prod-backend-errors
+      LogGroupName: !Ref ProductionLogGroup
+      FilterPattern: '{ $.level = "error" }'
+      MetricTransformations:
+        - MetricNamespace: Mitr/Services
+          MetricName: BackendErrorCount
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  WorkerJobFailureMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterName: mitr-prod-worker-job-failures
+      LogGroupName: !Ref ProductionLogGroup
+      FilterPattern: '?"Digest job failed" ?"Reminder job failed" ?"Insights job failed"'
+      MetricTransformations:
+        - MetricNamespace: Mitr/Services
+          MetricName: WorkerJobFailureCount
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  PipecatFailureMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterName: mitr-prod-pipecat-failures
+      LogGroupName: !Ref ProductionLogGroup
+      FilterPattern: '?"Pipecat model pipeline failed; reconnecting" ?"Backend Pipecat tool bridge failed" ?"Gemini Live tool call failed" ?"Pipecat tool call failed" ?"Gemini Live activity callback failed" ?"Gemini Live tool response handling failed"'
+      MetricTransformations:
+        - MetricNamespace: Mitr/Services
+          MetricName: PipecatFailureCount
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  Nginx5xxMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterName: mitr-prod-nginx-5xx
+      LogGroupName: !Ref ProductionLogGroup
+      FilterPattern: '% 5[0-9][0-9] %'
+      MetricTransformations:
+        - MetricNamespace: Mitr/Services
+          MetricName: Nginx5xxCount
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
   LivezAvailabilityAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -418,6 +488,70 @@ Resources:
       AlarmActions: [!Ref AlertTopicArn]
       OKActions: [!Ref AlertTopicArn]
 
+  BackendErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-service-backend-errors
+      AlarmDescription: The API or a Node worker emitted at least three error logs in five minutes.
+      Namespace: Mitr/Services
+      MetricName: BackendErrorCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  WorkerJobFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-service-worker-job-failures
+      AlarmDescription: A reminder, insights, or digest worker job failed.
+      Namespace: Mitr/Services
+      MetricName: WorkerJobFailureCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  PipecatFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-service-pipecat-failures
+      AlarmDescription: Pipecat emitted at least two pipeline, provider callback, or tool failures in five minutes.
+      Namespace: Mitr/Services
+      MetricName: PipecatFailureCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  Nginx5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-service-nginx-5xx
+      AlarmDescription: Nginx returned at least three server errors in five minutes.
+      Namespace: Mitr/Services
+      MetricName: Nginx5xxCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
   EndpointDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
@@ -431,7 +565,7 @@ Resources:
               "type": "metric",
               "x": 0,
               "y": 0,
-              "width": 24,
+              "width": 12,
               "height": 6,
               "properties": {
                 "title": "Endpoint availability",
@@ -450,9 +584,9 @@ Resources:
             },
             {
               "type": "metric",
-              "x": 0,
-              "y": 6,
-              "width": 24,
+              "x": 12,
+              "y": 0,
+              "width": 12,
               "height": 6,
               "properties": {
                 "title": "Endpoint latency (ms)",
@@ -468,13 +602,54 @@ Resources:
               }
             },
             {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Service failures from production logs",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 300,
+                "stat": "Sum",
+                "yAxis": {"left": {"min": 0}},
+                "metrics": [
+                  ["Mitr/Services", "BackendErrorCount", {"label": "API and worker errors"}],
+                  [".", "WorkerJobFailureCount", {"label": "Failed worker jobs"}],
+                  [".", "PipecatFailureCount", {"label": "Pipecat failures"}],
+                  [".", "Nginx5xxCount", {"label": "Nginx 5xx"}]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "EC2 CPU, memory, and disk utilization",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 300,
+                "stat": "Average",
+                "yAxis": {"left": {"min": 0, "max": 100}},
+                "metrics": [
+                  ["AWS/EC2", "CPUUtilization", "InstanceId", "${InstanceId}", {"label": "CPU"}],
+                  ["Mitr/EC2", "mem_used_percent", "InstanceId", "${InstanceId}", "InstanceType", "${InstanceType}", {"label": "Memory"}],
+                  [".", "disk_used_percent", "path", "/", "InstanceId", "${InstanceId}", "InstanceType", "${InstanceType}", "device", "${RootDiskDevice}", "fstype", "${RootDiskFstype}", {"label": "Root disk"}]
+                ]
+              }
+            },
+            {
               "type": "alarm",
               "x": 0,
               "y": 12,
               "width": 24,
               "height": 6,
               "properties": {
-                "title": "Production alarms",
+                "title": "All production alarms",
                 "alarms": [
                   "${LivezAvailabilityAlarm.Arn}",
                   "${HealthzAvailabilityAlarm.Arn}",
@@ -482,8 +657,94 @@ Resources:
                   "${SecurityBoundaryAlarm.Arn}",
                   "${LivezLatencyAlarm.Arn}",
                   "${HealthzLatencyAlarm.Arn}",
-                  "${ConnectLatencyAlarm.Arn}"
+                  "${ConnectLatencyAlarm.Arn}",
+                  "${BackendErrorAlarm.Arn}",
+                  "${WorkerJobFailureAlarm.Arn}",
+                  "${PipecatFailureAlarm.Arn}",
+                  "${Nginx5xxAlarm.Arn}",
+                  "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:mitr-prod-ec2-cpu-high",
+                  "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:mitr-prod-ec2-memory-high",
+                  "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:mitr-prod-ec2-disk-root-high",
+                  "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:mitr-prod-ec2-status-check-failed"
                 ]
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 18,
+              "width": 12,
+              "height": 8,
+              "properties": {
+                "title": "Pipecat failures and reconnects",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "SOURCE '${ProductionLogGroup}' | fields @timestamp, @message | filter @logStream = 'pipecat-gateway' | filter @message like /Pipecat model pipeline failed|Backend Pipecat tool bridge failed|Gemini Live tool call failed|Pipecat tool call failed|Gemini Live activity callback failed|Gemini Live tool response handling failed|reconnecting/ | sort @timestamp desc | limit 50"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 18,
+              "width": 12,
+              "height": 8,
+              "properties": {
+                "title": "API errors and warnings",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "SOURCE '${ProductionLogGroup}' | fields @timestamp, level, msg, meta | filter @logStream = 'api' | filter level in ['error', 'warn'] | sort @timestamp desc | limit 50"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 26,
+              "width": 12,
+              "height": 8,
+              "properties": {
+                "title": "Worker failures and warnings",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "SOURCE '${ProductionLogGroup}' | fields @timestamp, @logStream, level, msg, meta | filter @logStream in ['reminder-worker', 'insights-worker', 'digest-worker'] | filter level in ['error', 'warn'] | sort @timestamp desc | limit 50"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 26,
+              "width": 12,
+              "height": 8,
+              "properties": {
+                "title": "Nginx 5xx and rate-limited requests",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "SOURCE '${ProductionLogGroup}' | fields @timestamp, @message | filter @logStream = 'nginx' | parse @message /\"(?<method>\\S+) (?<path>\\S+) (?<protocol>[^\"]+)\" (?<status>\\d{3})/ | filter status >= 500 or status = 429 | display @timestamp, status, method, path, @message | sort @timestamp desc | limit 50"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 34,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Pipecat turn-to-first-audio latency",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "query": "SOURCE '${ProductionLogGroup}' | filter @logStream = 'pipecat-gateway' | filter @message like /Gemini Live first audio latency:/ | parse @message /'turn_to_first_audio_ms': (?<firstAudioMs>[0-9]+)/ | stats avg(firstAudioMs) as averageMs, pct(firstAudioMs, 95) as p95Ms, max(firstAudioMs) as maximumMs by bin(5m)"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 34,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Recent production deployments",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "SOURCE '${DeployLogGroup}' | fields @timestamp, @message | sort @timestamp desc | limit 50"
               }
             }
           ]
@@ -496,4 +757,5 @@ Outputs:
     Value: !Ref EndpointMonitorFunction
   ScheduleName:
     Value: !Ref EndpointMonitorSchedule
-
+  ProductionLogGroup:
+    Value: !Ref ProductionLogGroup
