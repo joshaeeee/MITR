@@ -7,6 +7,7 @@ PROJECT_TAG="${PROJECT_TAG:-MITR}"
 ENVIRONMENT_TAG="${ENVIRONMENT_TAG:-production}"
 MONTHLY_BUDGET_USD="${MONTHLY_BUDGET_USD:-25}"
 ALERT_EMAIL="${ALERT_EMAIL:-}"
+DISABLE_SSH="${DISABLE_SSH:-true}"
 
 if [[ -z "${INSTANCE_ID}" ]]; then
   echo "[aws-ops] INSTANCE_ID is required" >&2
@@ -323,6 +324,27 @@ if [[ -n "${MONTHLY_BUDGET_USD}" ]]; then
   fi
 else
   echo "[aws-ops] budget skipped because MONTHLY_BUDGET_USD is empty"
+fi
+
+if [[ "${DISABLE_SSH}" == "true" ]]; then
+  echo "[aws-ops] disabling SSH; SSM remains the production administration path"
+  SSH_COMMAND_ID="$(aws ssm send-command \
+    --instance-ids "${INSTANCE_ID}" \
+    --document-name AWS-RunShellScript \
+    --comment "Disable SSH after SSM setup" \
+    --parameters '{"commands":["systemctl disable --now ssh.socket ssh.service || true","if ss -lnt | grep -Eq \"[:.]22[[:space:]]\"; then echo \"SSH still listening on port 22\" >&2; exit 1; fi"]}' \
+    --query 'Command.CommandId' \
+    --output text)"
+  aws ssm wait command-executed \
+    --command-id "${SSH_COMMAND_ID}" \
+    --instance-id "${INSTANCE_ID}"
+  aws ssm get-command-invocation \
+    --command-id "${SSH_COMMAND_ID}" \
+    --instance-id "${INSTANCE_ID}" \
+    --query '{Status:Status,ResponseCode:ResponseCode}' \
+    --output table
+else
+  echo "[aws-ops] leaving SSH service unchanged because DISABLE_SSH=${DISABLE_SSH}"
 fi
 
 echo "[aws-ops] complete"
