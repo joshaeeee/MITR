@@ -94,6 +94,19 @@ aws s3api put-bucket-encryption \
   --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket "${TRAIL_BUCKET}" \
+  --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "expire-cloudtrail-logs",
+      "Status": "Enabled",
+      "Filter": {"Prefix": ""},
+      "Expiration": {"Days": 90},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}
+    }]
+  }'
+
 TRAIL_BUCKET_POLICY="$(mktemp)"
 trap 'rm -f "${TRAIL_BUCKET_POLICY}"' EXIT
 cat > "${TRAIL_BUCKET_POLICY}" <<JSON
