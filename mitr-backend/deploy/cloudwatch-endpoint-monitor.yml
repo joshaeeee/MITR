@@ -1,0 +1,499 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Low-cost active endpoint monitoring for the MITR production API.
+
+Parameters:
+  BaseUrl:
+    Type: String
+    Default: https://api.heyreca.com
+  AlertTopicArn:
+    Type: String
+    Description: SNS topic ARN for alarm and recovery notifications.
+  ScheduleExpression:
+    Type: String
+    Default: rate(5 minutes)
+
+Resources:
+  EndpointMonitorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/mitr-prod-endpoint-monitor
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: MITR
+        - Key: Environment
+          Value: production
+
+  EndpointMonitorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Least-privilege execution role for the MITR endpoint monitor.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteEndpointMonitorLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/mitr-prod-endpoint-monitor:*
+      Tags:
+        - Key: Project
+          Value: MITR
+        - Key: Environment
+          Value: production
+
+  EndpointMonitorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: EndpointMonitorLogGroup
+    Properties:
+      FunctionName: mitr-prod-endpoint-monitor
+      Description: Checks MITR public endpoints and emits CloudWatch embedded metrics.
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt EndpointMonitorRole.Arn
+      MemorySize: 128
+      Timeout: 25
+      Environment:
+        Variables:
+          BASE_URL: !Ref BaseUrl
+      Code:
+        ZipFile: |
+          const https = require("node:https");
+          const { performance } = require("node:perf_hooks");
+
+          const baseUrl = process.env.BASE_URL;
+          const timeoutMs = 8000;
+
+          const parseJson = (body) => {
+            try {
+              return JSON.parse(body);
+            } catch {
+              return null;
+            }
+          };
+
+          const executeRequest = (check) =>
+            new Promise((resolve) => {
+              const startedAt = performance.now();
+              let settled = false;
+              const finish = (statusCode, body, error) => {
+                if (settled) return;
+                settled = true;
+                const latencyMs = Math.round(performance.now() - startedAt);
+                const validationError = error || check.validate(statusCode, body);
+                resolve({
+                  name: check.name,
+                  statusCode: statusCode || 0,
+                  latencyMs,
+                  ok: !validationError,
+                  error: validationError || null
+                });
+              };
+
+              const payload = check.body || "";
+              const request = https.request(
+                new URL(check.path, baseUrl),
+                {
+                  method: check.method || "GET",
+                  headers: {
+                    "User-Agent": "mitr-cloudwatch-endpoint-monitor/1.0",
+                    ...(payload
+                      ? {
+                          "Content-Type": "application/json",
+                          "Content-Length": Buffer.byteLength(payload)
+                        }
+                      : {}),
+                    ...(check.headers || {})
+                  }
+                },
+                (response) => {
+                  const chunks = [];
+                  response.on("data", (chunk) => chunks.push(chunk));
+                  response.on("end", () =>
+                    finish(
+                      response.statusCode,
+                      Buffer.concat(chunks).toString("utf8")
+                    )
+                  );
+                }
+              );
+
+              request.on("upgrade", (response, socket) => {
+                socket.destroy();
+                finish(response.statusCode || 101, "");
+              });
+              request.on("error", (error) =>
+                finish(0, "", `request failed: ${error.message}`)
+              );
+              request.setTimeout(timeoutMs, () => {
+                request.destroy();
+                finish(0, "", `request timed out after ${timeoutMs}ms`);
+              });
+              if (payload) request.write(payload);
+              request.end();
+            });
+
+          const emitMetric = (endpoint, availability, latencyMs) => {
+            const metrics = [{ Name: "Availability", Unit: "Percent" }];
+            const document = {
+              _aws: {
+                Timestamp: Date.now(),
+                CloudWatchMetrics: [
+                  {
+                    Namespace: "Mitr/Endpoints",
+                    Dimensions: [["Endpoint"]],
+                    Metrics: metrics
+                  }
+                ]
+              },
+              Endpoint: endpoint,
+              Availability: availability
+            };
+            if (latencyMs !== undefined) {
+              metrics.push({ Name: "Latency", Unit: "Milliseconds" });
+              document.Latency = latencyMs;
+            }
+            console.log(JSON.stringify(document));
+          };
+
+          exports.handler = async () => {
+            const checks = [
+              {
+                name: "livez",
+                path: "/livez",
+                validate: (statusCode, body) => {
+                  const data = parseJson(body);
+                  return statusCode === 200 && data?.ok === true
+                    ? null
+                    : `expected 200 with ok=true, received ${statusCode}`;
+                }
+              },
+              {
+                name: "healthz",
+                path: "/healthz",
+                validate: (statusCode, body) => {
+                  const data = parseJson(body);
+                  return statusCode === 200 && data?.ok === true
+                    ? null
+                    : `expected 200 with ok=true, received ${statusCode}`;
+                }
+              },
+              {
+                name: "connect",
+                path: "/connect",
+                method: "POST",
+                body: "{}",
+                validate: (statusCode, body) => {
+                  const data = parseJson(body);
+                  return statusCode === 200 &&
+                    data?.wsUrl === "wss://api.heyreca.com/ws" &&
+                    data?.protocol === "mitr-esp32-pcm16-v1"
+                    ? null
+                    : `unexpected gateway contract, received ${statusCode}`;
+                }
+              },
+              {
+                name: "ws-auth",
+                path: "/ws",
+                headers: {
+                  Connection: "Upgrade",
+                  Upgrade: "websocket",
+                  "Sec-WebSocket-Version": "13",
+                  "Sec-WebSocket-Key": "bWl0ci1tb25pdG9yLWtleQ=="
+                },
+                validate: (statusCode) =>
+                  statusCode === 403
+                    ? null
+                    : `unauthenticated websocket expected 403, received ${statusCode}`
+              },
+              {
+                name: "internal-boundary",
+                path: "/internal/device-sessions/active",
+                validate: (statusCode) =>
+                  statusCode === 404
+                    ? null
+                    : `public internal route expected 404, received ${statusCode}`
+              }
+            ];
+
+            const results = await Promise.all(checks.map(executeRequest));
+            const functional = results.filter((result) =>
+              ["livez", "healthz", "connect"].includes(result.name)
+            );
+            for (const result of functional) {
+              emitMetric(result.name, result.ok ? 100 : 0, result.latencyMs);
+            }
+
+            const securityResults = results.filter((result) =>
+              ["ws-auth", "internal-boundary"].includes(result.name)
+            );
+            emitMetric(
+              "security-boundary",
+              securityResults.every((result) => result.ok) ? 100 : 0
+            );
+
+            console.log(JSON.stringify({ type: "endpoint-check-summary", results }));
+            const failures = results.filter((result) => !result.ok);
+            if (failures.length > 0) {
+              throw new Error(
+                failures.map((result) => `${result.name}: ${result.error}`).join("; ")
+              );
+            }
+            return { ok: true, checked: results.length };
+          };
+      Tags:
+        - Key: Project
+          Value: MITR
+        - Key: Environment
+          Value: production
+
+  EndpointMonitorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: mitr-prod-endpoint-monitor
+      Description: Run the MITR endpoint monitor every five minutes.
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt EndpointMonitorFunction.Arn
+          Id: EndpointMonitor
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 300
+            MaximumRetryAttempts: 1
+
+  EndpointMonitorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EndpointMonitorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EndpointMonitorSchedule.Arn
+
+  LivezAvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-endpoint-livez-down
+      AlarmDescription: MITR /livez failed or endpoint monitoring stopped for 10 minutes.
+      Namespace: Mitr/Endpoints
+      MetricName: Availability
+      Dimensions:
+        - Name: Endpoint
+          Value: livez
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 100
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  HealthzAvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-endpoint-healthz-down
+      AlarmDescription: MITR dependency health check failed twice consecutively.
+      Namespace: Mitr/Endpoints
+      MetricName: Availability
+      Dimensions:
+        - Name: Endpoint
+          Value: healthz
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 100
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  ConnectAvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-endpoint-connect-down
+      AlarmDescription: MITR Pipecat gateway connection contract failed twice consecutively.
+      Namespace: Mitr/Endpoints
+      MetricName: Availability
+      Dimensions:
+        - Name: Endpoint
+          Value: connect
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 100
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  SecurityBoundaryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-endpoint-security-boundary-failed
+      AlarmDescription: Public internal routes or unauthenticated WebSocket access are not being rejected.
+      Namespace: Mitr/Endpoints
+      MetricName: Availability
+      Dimensions:
+        - Name: Endpoint
+          Value: security-boundary
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 100
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  LivezLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-endpoint-livez-latency-high
+      AlarmDescription: MITR /livez latency exceeded 1 second in two of three checks.
+      Namespace: Mitr/Endpoints
+      MetricName: Latency
+      Dimensions:
+        - Name: Endpoint
+          Value: livez
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  HealthzLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-endpoint-healthz-latency-high
+      AlarmDescription: MITR /healthz latency exceeded 3 seconds in two of three checks.
+      Namespace: Mitr/Endpoints
+      MetricName: Latency
+      Dimensions:
+        - Name: Endpoint
+          Value: healthz
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 3000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  ConnectLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mitr-prod-endpoint-connect-latency-high
+      AlarmDescription: MITR /connect latency exceeded 1.5 seconds in two of three checks.
+      Namespace: Mitr/Endpoints
+      MetricName: Latency
+      Dimensions:
+        - Name: Endpoint
+          Value: connect
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 1500
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  EndpointDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: MITR-Production
+      DashboardBody: !Sub |
+        {
+          "start": "-PT6H",
+          "periodOverride": "inherit",
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "title": "Endpoint availability",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 300,
+                "stat": "Minimum",
+                "yAxis": {"left": {"min": 0, "max": 100}},
+                "metrics": [
+                  ["Mitr/Endpoints", "Availability", "Endpoint", "livez"],
+                  [".", ".", ".", "healthz"],
+                  [".", ".", ".", "connect"],
+                  [".", ".", ".", "security-boundary"]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "title": "Endpoint latency (ms)",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 300,
+                "stat": "Average",
+                "metrics": [
+                  ["Mitr/Endpoints", "Latency", "Endpoint", "livez"],
+                  [".", ".", ".", "healthz"],
+                  [".", ".", ".", "connect"]
+                ]
+              }
+            },
+            {
+              "type": "alarm",
+              "x": 0,
+              "y": 12,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "title": "Production alarms",
+                "alarms": [
+                  "${LivezAvailabilityAlarm.Arn}",
+                  "${HealthzAvailabilityAlarm.Arn}",
+                  "${ConnectAvailabilityAlarm.Arn}",
+                  "${SecurityBoundaryAlarm.Arn}",
+                  "${LivezLatencyAlarm.Arn}",
+                  "${HealthzLatencyAlarm.Arn}",
+                  "${ConnectLatencyAlarm.Arn}"
+                ]
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardName:
+    Value: !Ref EndpointDashboard
+  MonitorFunctionName:
+    Value: !Ref EndpointMonitorFunction
+  ScheduleName:
+    Value: !Ref EndpointMonitorSchedule
+
