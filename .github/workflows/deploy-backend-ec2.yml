@@ -37,16 +37,16 @@ jobs:
         working-directory: mitr-backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.6.5
           run_install: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -141,13 +141,13 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build API Dockerfile (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./mitr-backend
           file: mitr-backend/Dockerfile.api
@@ -157,7 +157,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=mitr-api-pr
 
       - name: Build Pipecat Gateway Dockerfile (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./mitr-backend
           file: mitr-backend/Dockerfile.agent
@@ -177,10 +177,10 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Validate ECR deploy secrets
         env:
@@ -209,7 +209,7 @@ jobs:
           aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ecr_registry}"
 
       - name: Build and push API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./mitr-backend
           file: mitr-backend/Dockerfile.api
@@ -232,10 +232,10 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Validate ECR deploy secrets
         env:
@@ -264,7 +264,7 @@ jobs:
           aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ecr_registry}"
 
       - name: Build and push Pipecat gateway image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./mitr-backend
           file: mitr-backend/Dockerfile.agent
