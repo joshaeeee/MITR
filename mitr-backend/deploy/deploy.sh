@@ -132,8 +132,8 @@ fi
 if [[ -x "${SCRIPT_DIR}/configure-nginx.sh" ]]; then
   bash "${SCRIPT_DIR}/configure-nginx.sh"
   if docker inspect mitr-nginx >/dev/null 2>&1; then
+    docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --force-recreate --no-deps nginx
     docker exec mitr-nginx nginx -t
-    docker exec mitr-nginx nginx -s reload
   fi
 fi
 
