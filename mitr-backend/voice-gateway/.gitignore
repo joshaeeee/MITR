@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.log
+bench/audio/*.pcm
+bench/audio/*.wav
+bench/results/*.json
