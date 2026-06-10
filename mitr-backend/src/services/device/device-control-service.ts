@@ -179,7 +179,7 @@ const toDate = (value: number): Date => new Date(value);
 const slug = (input: string): string => input.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'device';
 
 const normalizeMetadata = (value: Record<string, unknown> | null | undefined): Record<string, unknown> => value ?? {};
-const pipecatGatewayWsUrl = (): string => env.PIPECAT_GATEWAY_PUBLIC_WS_URL;
+const pipecatGatewayWsUrl = (): string => env.VOICE_GATEWAY_PUBLIC_WS_URL;
 
 const toMillis = (value: Date | null | undefined): number | null => value?.getTime() ?? null;
 

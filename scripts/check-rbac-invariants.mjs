@@ -120,7 +120,7 @@ const insightsWorker = 'mitr-backend/src/workers/insights-worker.ts';
 const digestWorker = 'mitr-backend/src/workers/digest-worker.ts';
 const insightsPipeline = 'mitr-backend/src/services/insights/insights-pipeline-service.ts';
 const recommendationFeedback = 'mitr-backend/src/services/insights/recommendation-feedback-service.ts';
-const gatewayAuth = 'mitr-backend/pipecat-gateway/mitr_pipecat_gateway/auth.py';
+const gatewayAuth = 'mitr-backend/voice-gateway/src/auth.ts';
 const webSimulator = 'mitr-backend/tools/web-sim/index.html';
 
 requireFunctionContains(
@@ -506,16 +506,16 @@ requireContains(
 requireContains(
   gatewayAuth,
   'AUTH_TOKEN_SUBPROTOCOL_PREFIX = "mitr-token-"',
-  'browser Pipecat gateway auth must support token transport outside the URL query'
+  'browser voice gateway auth must support token transport outside the URL query'
 );
 requireNotContains(
   gatewayAuth,
-  'query_params.get("accessToken"',
-  'Pipecat gateway must not accept bearer tokens in WebSocket URL query strings'
+  'get("accessToken"',
+  'voice gateway must not accept bearer tokens in WebSocket URL query strings'
 );
 requireContains(
   gatewayAuth,
-  'select_websocket_subprotocol',
+  'export function selectSubprotocol',
   'gateway must select a known audio WebSocket subprotocol when browser clients request one'
 );
 requireContains(

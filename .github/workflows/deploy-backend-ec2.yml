@@ -108,12 +108,12 @@ jobs:
         working-directory: mitr-backend
         run: |
           set -euo pipefail
-          cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
+          cp deploy/.env.prod.voice-gateway.template deploy/.env.prod.voice-gateway
           cp deploy/.env.prod.reminder-worker.template deploy/.env.prod.reminder-worker
           cp deploy/.env.prod.insights-worker.template deploy/.env.prod.insights-worker
           cp deploy/.env.prod.digest-worker.template deploy/.env.prod.digest-worker
           deploy/check-service-env-scope.sh
-          rm -f deploy/.env.prod.pipecat-gateway deploy/.env.prod.reminder-worker deploy/.env.prod.insights-worker deploy/.env.prod.digest-worker
+          rm -f deploy/.env.prod.voice-gateway deploy/.env.prod.reminder-worker deploy/.env.prod.insights-worker deploy/.env.prod.digest-worker
 
       - name: Production preflight template guard
         working-directory: mitr-backend
@@ -121,7 +121,7 @@ jobs:
           set -euo pipefail
           test -x deploy/preflight-prod-env.sh
           cp deploy/.env.prod.template deploy/.env.prod
-          cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
+          cp deploy/.env.prod.voice-gateway.template deploy/.env.prod.voice-gateway
           cp deploy/.env.prod.reminder-worker.template deploy/.env.prod.reminder-worker
           cp deploy/.env.prod.insights-worker.template deploy/.env.prod.insights-worker
           cp deploy/.env.prod.digest-worker.template deploy/.env.prod.digest-worker
@@ -129,7 +129,7 @@ jobs:
             echo "Template preflight should fail while placeholders are present." >&2
             exit 1
           fi
-          rm -f deploy/.env.prod deploy/.env.prod.pipecat-gateway deploy/.env.prod.reminder-worker deploy/.env.prod.insights-worker deploy/.env.prod.digest-worker
+          rm -f deploy/.env.prod deploy/.env.prod.voice-gateway deploy/.env.prod.reminder-worker deploy/.env.prod.insights-worker deploy/.env.prod.digest-worker
 
       - name: Build
         run: pnpm build
@@ -156,15 +156,15 @@ jobs:
           cache-from: type=gha,scope=mitr-api-pr
           cache-to: type=gha,mode=max,scope=mitr-api-pr
 
-      - name: Build Pipecat Gateway Dockerfile (no push)
+      - name: Build voice gateway Dockerfile (no push)
         uses: docker/build-push-action@v7
         with:
-          context: ./mitr-backend
-          file: mitr-backend/Dockerfile.agent
+          context: ./mitr-backend/voice-gateway
+          file: mitr-backend/voice-gateway/Dockerfile
           push: false
           load: false
-          cache-from: type=gha,scope=mitr-pipecat-gateway-pr
-          cache-to: type=gha,mode=max,scope=mitr-pipecat-gateway-pr
+          cache-from: type=gha,scope=mitr-voice-gateway-pr
+          cache-to: type=gha,mode=max,scope=mitr-voice-gateway-pr
 
   build-api:
     name: Build + push API image
@@ -221,8 +221,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=mitr-api
           provenance: false
 
-  build-pipecat-gateway:
-    name: Build + push Pipecat gateway image
+  build-voice-gateway:
+    name: Build + push voice gateway image
     runs-on: ubuntu-latest
     needs: [ci]
     if: github.event_name != 'pull_request'
@@ -241,12 +241,12 @@ jobs:
         env:
           AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
+          ECR_VOICE_GATEWAY_REPOSITORY: ${{ secrets.ECR_VOICE_GATEWAY_REPOSITORY }}
         run: |
           set -euo pipefail
           test -n "${AWS_DEPLOY_ROLE_ARN}" || { echo "Missing secret: AWS_DEPLOY_ROLE_ARN"; exit 1; }
           test -n "${AWS_REGION}" || { echo "Missing secret: AWS_REGION"; exit 1; }
-          test -n "${ECR_PIPECAT_GATEWAY_REPOSITORY}" || { echo "Missing secret: ECR_PIPECAT_GATEWAY_REPOSITORY"; exit 1; }
+          test -n "${ECR_VOICE_GATEWAY_REPOSITORY}" || { echo "Missing secret: ECR_VOICE_GATEWAY_REPOSITORY"; exit 1; }
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
@@ -257,29 +257,29 @@ jobs:
       - name: Login to Amazon ECR
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
+          ECR_VOICE_GATEWAY_REPOSITORY: ${{ secrets.ECR_VOICE_GATEWAY_REPOSITORY }}
         run: |
           set -euo pipefail
-          ecr_registry="${ECR_PIPECAT_GATEWAY_REPOSITORY%%/*}"
+          ecr_registry="${ECR_VOICE_GATEWAY_REPOSITORY%%/*}"
           aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ecr_registry}"
 
-      - name: Build and push Pipecat gateway image
+      - name: Build and push voice gateway image
         uses: docker/build-push-action@v7
         with:
-          context: ./mitr-backend
-          file: mitr-backend/Dockerfile.agent
+          context: ./mitr-backend/voice-gateway
+          file: mitr-backend/voice-gateway/Dockerfile
           push: true
           tags: |
-            ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}:sha-${{ github.sha }}
-            ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}:prod-latest
-          cache-from: type=gha,scope=mitr-pipecat-gateway
-          cache-to: type=gha,mode=max,scope=mitr-pipecat-gateway
+            ${{ secrets.ECR_VOICE_GATEWAY_REPOSITORY }}:sha-${{ github.sha }}
+            ${{ secrets.ECR_VOICE_GATEWAY_REPOSITORY }}:prod-latest
+          cache-from: type=gha,scope=mitr-voice-gateway
+          cache-to: type=gha,mode=max,scope=mitr-voice-gateway
           provenance: false
 
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
-    needs: [build-api, build-pipecat-gateway]
+    needs: [build-api, build-voice-gateway]
     environment: Production
     permissions:
       contents: read
@@ -314,15 +314,15 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
           ECR_API_REPOSITORY: ${{ secrets.ECR_API_REPOSITORY }}
-          ECR_PIPECAT_GATEWAY_REPOSITORY: ${{ secrets.ECR_PIPECAT_GATEWAY_REPOSITORY }}
+          ECR_VOICE_GATEWAY_REPOSITORY: ${{ secrets.ECR_VOICE_GATEWAY_REPOSITORY }}
         run: |
           set -euo pipefail
           API_IMAGE="${ECR_API_REPOSITORY}:sha-${GITHUB_SHA}"
-          PIPECAT_GATEWAY_IMAGE="${ECR_PIPECAT_GATEWAY_REPOSITORY}:sha-${GITHUB_SHA}"
+          VOICE_GATEWAY_IMAGE="${ECR_VOICE_GATEWAY_REPOSITORY}:sha-${GITHUB_SHA}"
 
           jq -n \
             --arg api_image "${API_IMAGE}" \
-            --arg gateway_image "${PIPECAT_GATEWAY_IMAGE}" \
+            --arg gateway_image "${VOICE_GATEWAY_IMAGE}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg region "${AWS_REGION}" \
             --arg sha "${GITHUB_SHA}" \
@@ -337,14 +337,14 @@ jobs:
                 "cd /opt/mitr/MITR/mitr-backend",
                 "export AWS_REGION=" + $region,
                 "export DEPLOY_API_IMAGE=" + $api_image,
-                "export DEPLOY_PIPECAT_GATEWAY_IMAGE=" + $gateway_image,
+                "export DEPLOY_VOICE_GATEWAY_IMAGE=" + $gateway_image,
                 "export DEPLOY_REMINDER_IMAGE=" + $api_image,
                 "export HEALTH_BASE_URL=http://127.0.0.1",
                 "export RUN_DB_MIGRATIONS=true",
                 "export ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIONS=false",
                 "bash deploy/deploy.sh",
                 "test \"$(docker inspect --format={{.Config.Image}} mitr-api)\" = \"" + $api_image + "\"",
-                "test \"$(docker inspect --format={{.Config.Image}} mitr-pipecat-gateway)\" = \"" + $gateway_image + "\""
+                "test \"$(docker inspect --format={{.Config.Image}} mitr-voice-gateway)\" = \"" + $gateway_image + "\""
               ]
             }' > ssm-parameters.json
 

@@ -7,11 +7,11 @@
   "scripts": {
     "dev": "pnpm dev:api",
     "dev:api": "tsx watch src/index.ts",
-    "dev:agent": "cd pipecat-gateway && uv run python -m mitr_pipecat_gateway.server",
+    "dev:agent": "cd voice-gateway && pnpm dev",
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "start": "pnpm start:api",
     "start:api": "node dist/src/index.js",
-    "start:agent": "cd pipecat-gateway && uv run python -m mitr_pipecat_gateway.server",
+    "start:agent": "cd voice-gateway && pnpm start",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "worker": "tsx src/workers/reminder-worker.ts",
     "worker:insights": "tsx src/workers/insights-worker.ts",

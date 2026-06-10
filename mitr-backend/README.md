@@ -1,21 +1,21 @@
-# Mitr Backend (Pipecat + OpenAI Realtime)
+# Mitr Backend (API + voice gateway)
 
-Mitr uses the Fastify API for product/auth/data flows and the Python Pipecat
+Mitr uses the Fastify API for product/auth/data flows and the TypeScript voice
 gateway for realtime voice.
 
 ## Architecture
 
 - `mitr-api` (Fastify): app auth, device auth, onboarding/profile APIs,
   sessions, telemetry, pairing, long-session HTTP APIs, health endpoints.
-- `mitr-pipecat-gateway` (Python): ESP32 and browser PCM WebSocket transport,
+- `voice-gateway` (TypeScript): ESP32 and browser PCM WebSocket transport,
   wake phrase handling, OpenAI Realtime voice, and voice tool calls.
 - `tools/web-sim`: local browser simulator that streams PCM directly to the
-  Pipecat gateway WebSocket.
+  voice gateway WebSocket.
 
 ## Stack
 
 - API runtime: Node.js + TypeScript
-- Voice runtime: Pipecat + OpenAI Realtime
+- Voice runtime: Saaras v3 STT -> Gemini 2.5 Flash -> Eleven v3 TTS (voice-gateway/)
 - Data: Postgres + Drizzle, Redis + BullMQ, Qdrant, Mem0
 - Retrieval/news/media: Exa, Prokerala, Bhagavad Gita API, yt-dlp
 
@@ -38,11 +38,11 @@ PORT=8081 \
 Start the voice gateway:
 
 ```sh
-cd pipecat-gateway
+cd voice-gateway
 MITR_GATEWAY_WAKE_PHRASES="hi mitr,hey mitr,hi mitra,hey mitra,hi reca,hey reca,hi rekha,hey rekha,hi r e k a,hey r e k a,hi reka,hey reka,hi esp,hey esp,hi e s p,हाय मित्र,हे मित्र,हाय रेका,हाय रेखा" \
 MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC=45 \
 OPENAI_REALTIME_STT_LANGUAGE=en \
-uv run python -m mitr_pipecat_gateway.server
+pnpm install --ignore-workspace && pnpm dev
 ```
 
 Start the web simulator:
@@ -58,7 +58,7 @@ Open `http://localhost:8787`.
 - `POST /session/start`
   - returns `{ sessionId, transport: "pipecat", onboarding }`
 - `POST /pipecat/connect`
-  - returns Pipecat connection metadata for web clients:
+  - returns voice gateway connection metadata for web clients (path kept for app compatibility):
     `transport`, `wsUrl`, `serverUrl`, `identity`, `agentName`, `dispatchMetadata`
 - `POST /pipecat/gateway/auth`
   - verifies authenticated web voice sessions for the Python gateway
@@ -132,9 +132,9 @@ MEM0_SEARCH_RERANK=false
 ## Scripts
 
 - `pnpm dev:api` -> API dev server
-- `pnpm dev:agent` -> Pipecat gateway dev server
+- `pnpm dev:agent` -> voice gateway dev server
 - `pnpm start:api` -> API production start
-- `pnpm start:agent` -> Pipecat gateway production start
+- `pnpm start:agent` -> voice gateway production start
 - `pnpm worker` -> reminder worker
 - `pnpm test:web` -> local Pipecat web simulator
 - `pnpm test:agent` -> Node tool registry smoke script

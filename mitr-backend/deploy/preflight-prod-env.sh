@@ -243,17 +243,17 @@ require_postgres_sslmode() {
 }
 
 require_not_placeholder "${ENV_FILE}" API_IMAGE
-require_not_placeholder "${ENV_FILE}" PIPECAT_GATEWAY_IMAGE
+require_not_placeholder "${ENV_FILE}" VOICE_GATEWAY_IMAGE
 require_not_placeholder "${ENV_FILE}" REMINDER_IMAGE
 require_true "${ENV_FILE}" ENABLE_HTTPS
 require_not_placeholder "${ENV_FILE}" PUBLIC_HOSTNAME
 require_not_placeholder "${ENV_FILE}" API_PUBLIC_BASE_URL
-require_not_placeholder "${ENV_FILE}" PIPECAT_GATEWAY_PUBLIC_WS_URL
-require_not_placeholder "${ENV_FILE}" PIPECAT_GATEWAY_PUBLIC_HTTP_URL
+require_not_placeholder "${ENV_FILE}" VOICE_GATEWAY_PUBLIC_WS_URL
+require_not_placeholder "${ENV_FILE}" VOICE_GATEWAY_PUBLIC_HTTP_URL
 require_https_origin_list "${ENV_FILE}" CORS_ORIGINS
 require_url_prefix "${ENV_FILE}" API_PUBLIC_BASE_URL "https://"
-require_url_prefix "${ENV_FILE}" PIPECAT_GATEWAY_PUBLIC_WS_URL "wss://"
-require_url_prefix "${ENV_FILE}" PIPECAT_GATEWAY_PUBLIC_HTTP_URL "https://"
+require_url_prefix "${ENV_FILE}" VOICE_GATEWAY_PUBLIC_WS_URL "wss://"
+require_url_prefix "${ENV_FILE}" VOICE_GATEWAY_PUBLIC_HTTP_URL "https://"
 require_postgres_sslmode "${ENV_FILE}" POSTGRES_URL
 require_nonempty "${ENV_FILE}" REDIS_URL
 require_secret_min_length "${ENV_FILE}" INTERNAL_SERVICE_TOKEN 32
@@ -287,7 +287,7 @@ elif [[ "${otp_mode}" == "twilio" ]]; then
 fi
 
 for service_env in \
-  "${SCRIPT_DIR}/.env.prod.pipecat-gateway" \
+  "${SCRIPT_DIR}/.env.prod.voice-gateway" \
   "${SCRIPT_DIR}/.env.prod.reminder-worker" \
   "${SCRIPT_DIR}/.env.prod.insights-worker" \
   "${SCRIPT_DIR}/.env.prod.digest-worker"
@@ -298,8 +298,8 @@ do
   fi
 done
 
-if [[ -f "${SCRIPT_DIR}/.env.prod.pipecat-gateway" ]]; then
-  gateway_env="${SCRIPT_DIR}/.env.prod.pipecat-gateway"
+if [[ -f "${SCRIPT_DIR}/.env.prod.voice-gateway" ]]; then
+  gateway_env="${SCRIPT_DIR}/.env.prod.voice-gateway"
   require_not_placeholder "${gateway_env}" MITR_GATEWAY_PUBLIC_WS_URL
   require_url_prefix "${gateway_env}" MITR_GATEWAY_PUBLIC_WS_URL "wss://"
   require_https_origin_list "${gateway_env}" MITR_GATEWAY_CORS_ORIGINS
@@ -309,19 +309,12 @@ if [[ -f "${SCRIPT_DIR}/.env.prod.pipecat-gateway" ]]; then
   require_false_or_empty "${gateway_env}" MITR_GATEWAY_LOG_TRANSCRIPTS
   require_secret_min_length "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN 32
   require_same_value "${ENV_FILE}" INTERNAL_SERVICE_TOKEN "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN
-  require_not_placeholder "${gateway_env}" OPENAI_API_KEY
-  require_same_value "${ENV_FILE}" OPENAI_API_KEY "${gateway_env}" OPENAI_API_KEY
-  require_same_value "${ENV_FILE}" OPENAI_REALTIME_STT_LANGUAGE "${gateway_env}" OPENAI_REALTIME_STT_LANGUAGE
-  require_exact_value "${gateway_env}" OPENAI_REALTIME_STT_LANGUAGE "hi-IN"
-  if [[ "$(env_value "${gateway_env}" MITR_GATEWAY_REALTIME_PROVIDER)" == "gemini_live" ]]; then
-    require_not_placeholder "${gateway_env}" GOOGLE_API_KEY
-    require_same_value "${ENV_FILE}" GOOGLE_API_KEY "${gateway_env}" GOOGLE_API_KEY
-    require_exact_value "${gateway_env}" GEMINI_LIVE_SERVICE "direct_sdk"
-    require_exact_value "${gateway_env}" GEMINI_LIVE_MODEL "models/gemini-3.1-flash-live-preview"
-    require_exact_value "${gateway_env}" GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC "0"
-    require_exact_value "${gateway_env}" ESP32_AUDIO_OUT_SAMPLE_RATE "24000"
-  fi
-  require_exact_value "${gateway_env}" OPENAI_REALTIME_TURN_DETECTION "manual"
+  # Final stack: Saaras v3 STT -> Gemini 2.5 Flash -> Eleven v3 TTS.
+  require_not_placeholder "${gateway_env}" SARVAM_API_KEY
+  require_not_placeholder "${gateway_env}" GOOGLE_API_KEY
+  require_not_placeholder "${gateway_env}" ELEVENLABS_API_KEY
+  require_not_placeholder "${gateway_env}" ELEVENLABS_VOICE_ID
+  require_exact_value "${gateway_env}" ESP32_AUDIO_OUT_SAMPLE_RATE "16000"
   require_false_or_empty "${gateway_env}" MITR_GATEWAY_SEND_INTERIM_TRANSCRIPTS
 fi
 

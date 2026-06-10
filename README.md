@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Built with Pipecat &middot; OpenAI Realtime &middot; Expo &middot; Node.js
+  Built with a custom TypeScript voice gateway &middot; Gemini &middot; Expo &middot; Node.js
 </p>
 
 ---
@@ -47,7 +47,7 @@ Interactive scripture sessions with structured flow control. MITR can lead a use
 - Guided scripture walkthroughs with `flow_start` / `flow_next` / `flow_stop`
 - Covers all 18 Mahapuranas, Ramayana (regional versions), Mahabharata, Bhagavata
 - Multi-faith: Hinduism, Sikhism, Jainism, and Islam at depth
-- Voice-led ambient devotional sessions through the Pipecat gateway
+- Voice-led ambient devotional sessions through the voice gateway
 
 ### Stories & Oral Tradition
 Stories from Panchatantra, Jataka tales, lives of saints (Mirabai, Kabir, Tukaram, Guru Nanak, Vivekananda), and regional folk mythology. The same story can be told in 2 minutes or 20, depending on mood.
@@ -98,14 +98,14 @@ Voice-recorded journal entries. MITR prompts with questions and records answers 
 ## Architecture
 
 ```
-mitr-backend/          API server + Pipecat gateway + all tools/services
+mitr-backend/          API server + voice gateway + all tools/services
 mitr-mobile/           Family caregiver app (Expo Router, iOS)
 stories_curated.jsonl  Curated story corpus
 ```
 
 The backend runs two processes:
 1. **API Server** — REST endpoints for auth, elder management, family connections, device status, and health checks
-2. **Pipecat Gateway** — WebSocket voice gateway that handles wake phrase detection, OpenAI Realtime audio, and tool calls
+2. **Voice Gateway** — WebSocket voice gateway (TypeScript) that handles wake phrase detection, Saaras STT -> Gemini -> Eleven v3 TTS, and tool calls
 
 ### Tool Surface
 All tools are optimized for voice latency — async tools return a fast acknowledgment first, then deliver detailed results as a follow-up:
