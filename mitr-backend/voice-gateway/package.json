@@ -1,0 +1,34 @@
+{
+  "name": "mitr-voice-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight multi-provider voice gateway for Mitr ESP32 (no Pipecat). WebSocket PCM16 in/out; ElevenLabs/Sarvam STT+TTS, Claude LLM.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node --import tsx dist/server.js",
+    "serve": "tsx src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "bench": "tsx bench/run-bench.ts",
+    "bench:make-audio": "tsx bench/make-audio.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.1",
+    "@google/genai": "^1.43.0",
+    "openai": "^4.104.0",
+    "sarvamai": "^1.1.7",
+    "dotenv": "^16.4.7",
+    "ws": "^8.19.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.8",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
