@@ -1,1 +1,0 @@
-"""Mitr Pipecat gateway prototype."""

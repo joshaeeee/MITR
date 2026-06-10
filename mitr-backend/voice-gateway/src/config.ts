@@ -31,19 +31,11 @@ function list(name: string, fallback: string[]): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
-function intList(name: string, fallback: number[]): number[] {
-  const v = process.env[name];
-  if (v === undefined || v.trim() === "") return fallback;
-  const parts = v
-    .split(",")
-    .map((s) => Number.parseInt(s.trim(), 10))
-    .filter((n) => Number.isFinite(n));
-  return parts.length ? parts : fallback;
-}
-
-export type SttProviderName = "elevenlabs" | "sarvam";
-export type TtsProviderName = "elevenlabs" | "eleven-v3" | "sarvam";
-export type LlmProviderName = "claude" | "gemini" | "sarvam" | "echo";
+// Final production stack. The names stay open unions so a future provider is one
+// adapter + one factory case away (see git history for the removed experiments).
+export type SttProviderName = "sarvam";
+export type TtsProviderName = "eleven-v3";
+export type LlmProviderName = "gemini";
 
 const DEFAULT_WAKE_PHRASES = [
   "hi mitr", "hey mitr", "hi mitra", "hey mitra",
@@ -80,10 +72,10 @@ export const config = {
   audioPacketMs: int("ESP32_AUDIO_PACKET_MS", 20),
   audioOutputGain: Math.max(0, Math.min(3, float("ESP32_AUDIO_OUTPUT_GAIN", 1.0))),
 
-  // ---- provider selection ----
-  sttProvider: str("MITR_GATEWAY_STT_PROVIDER", "elevenlabs") as SttProviderName,
-  ttsProvider: str("MITR_GATEWAY_TTS_PROVIDER", "elevenlabs") as TtsProviderName,
-  llmProvider: str("MITR_GATEWAY_LLM_PROVIDER", "claude") as LlmProviderName,
+  // ---- provider selection (final stack: Saaras STT -> Gemini Flash -> Eleven v3) ----
+  sttProvider: str("MITR_GATEWAY_STT_PROVIDER", "sarvam") as SttProviderName,
+  ttsProvider: str("MITR_GATEWAY_TTS_PROVIDER", "eleven-v3") as TtsProviderName,
+  llmProvider: str("MITR_GATEWAY_LLM_PROVIDER", "gemini") as LlmProviderName,
 
   // ---- wake phrase ----
   wakePhrases: list("MITR_GATEWAY_WAKE_PHRASES", DEFAULT_WAKE_PHRASES),
@@ -112,62 +104,22 @@ export const config = {
   echoSuppressionTailMs: int("MITR_GATEWAY_ECHO_SUPPRESSION_TAIL_MS", 2500),
   toolInputSuppressionTailMs: int("MITR_GATEWAY_TOOL_INPUT_SUPPRESSION_TAIL_MS", 500),
 
-  // ---- ElevenLabs STT (Scribe v2 realtime) ----
+  // ---- ElevenLabs (Eleven v3 expressive TTS via sentence-pipelined HTTP streaming) ----
   elevenlabsApiKey: str("ELEVENLABS_API_KEY"),
-  elevenlabsSttModel: str("ELEVENLABS_STT_MODEL", "scribe_v2_realtime"),
-  elevenlabsSttLanguage: str("ELEVENLABS_STT_LANGUAGE", ""), // "" = auto-detect
-  elevenlabsSttBaseUrl: str(
-    "ELEVENLABS_STT_WS_URL",
-    "wss://api.elevenlabs.io/v1/speech-to-text/realtime",
-  ),
-
-  // ---- ElevenLabs TTS (Flash v2.5) ----
   elevenlabsVoiceId: str("ELEVENLABS_VOICE_ID") || str("ELEVENLABS_VOICE"),
-  elevenlabsTtsModel: str("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5"),
   elevenlabsTtsLanguage: str("ELEVENLABS_TTS_LANGUAGE", ""),
-  elevenlabsTtsBaseUrl: str("ELEVENLABS_TTS_WS_BASE", "wss://api.elevenlabs.io"),
-  elevenlabsAutoMode: bool("ELEVENLABS_AUTO_MODE", true),
-  elevenlabsChunkLengthSchedule: intList(
-    "ELEVENLABS_CHUNK_LENGTH_SCHEDULE",
-    [80, 160, 250, 290],
-  ),
-  // HTTP-streaming TTS for non-realtime models (provider "eleven-v3"): sentence-buffered.
   elevenlabsHttpTtsModel: str("ELEVENLABS_HTTP_TTS_MODEL", "eleven_v3"),
   // Sentence requests synthesized concurrently (audio still emitted strictly in order).
   elevenlabsHttpConcurrency: int("ELEVENLABS_HTTP_CONCURRENCY", 2),
-  elevenlabsStability: float("ELEVENLABS_STABILITY", 0.5),
-  elevenlabsSimilarityBoost: float("ELEVENLABS_SIMILARITY_BOOST", 0.8),
-  elevenlabsStyle: float("ELEVENLABS_STYLE", 0.0),
-  elevenlabsSpeed: float("ELEVENLABS_SPEED", 1.0),
-  elevenlabsUseSpeakerBoost: bool("ELEVENLABS_USE_SPEAKER_BOOST", true),
 
-  // ---- Sarvam (India-hosted: STT + LLM + TTS) ----
+  // ---- Sarvam (India-hosted Saaras v3 streaming STT) ----
   sarvamApiKey: str("SARVAM_API_KEY"),
-  // STT (Saaras streaming)
   sarvamSttModel: str("SARVAM_STT_MODEL", "saaras:v3"),
-  sarvamSttWsUrl: str("SARVAM_STT_WS_URL", "wss://api.sarvam.ai/speech-to-text/ws"),
   sarvamSttLanguage: str("SARVAM_STT_LANGUAGE", "hi-IN"),
   sarvamSttMode: str("SARVAM_STT_MODE", "codemix"), // best for Hinglish
-  // TTS (Bulbul streaming) — pcm/LINEAR16 @ sarvamTtsSampleRate, resampled to the device rate
-  sarvamTtsModel: str("SARVAM_TTS_MODEL", "bulbul:v3"),
-  sarvamTtsWsUrl: str("SARVAM_TTS_WS_URL", "wss://api.sarvam.ai/text-to-speech/ws"),
-  sarvamTtsSpeaker: str("SARVAM_TTS_SPEAKER", "shubh"), // lowercase; Bulbul speaker ids are lowercase
-  sarvamTtsLanguage: str("SARVAM_TTS_LANGUAGE", "hi-IN"),
-  sarvamTtsSampleRate: int("SARVAM_TTS_SAMPLE_RATE", 22050), // SDK config default; we resample -> audioOut
-  sarvamTtsPace: float("SARVAM_TTS_PACE", 1.0),
-  // LLM (Sarvam-M, OpenAI-compatible)
-  sarvamLlmBaseUrl: str("SARVAM_LLM_BASE_URL", "https://api.sarvam.ai/v1"),
-  sarvamLlmModel: str("SARVAM_LLM_MODEL", "sarvam-30b"), // sarvam-m deprecated; sarvam-30b / sarvam-105b
-  sarvamLlmMaxTokens: int("SARVAM_LLM_MAX_TOKENS", 512),
-  sarvamLlmTemperature: float("SARVAM_LLM_TEMPERATURE", 0.7),
-  sarvamLlmReasoning: str("SARVAM_LLM_REASONING", "off"), // "off" => reasoning_effort:null (lowest TTFT); else low|medium|high
 
-  // ---- Claude LLM ----
-  anthropicApiKey: str("ANTHROPIC_API_KEY"),
-  claudeModel: str("CLAUDE_MODEL", "claude-sonnet-4-6"),
-  claudeMaxTokens: int("CLAUDE_MAX_TOKENS", 512),
-  claudeTemperature: float("CLAUDE_TEMPERATURE", 0.7),
-  claudeSystemPromptPath: str("MITR_SYSTEM_PROMPT_PATH", ""), // "" => bundled default
+  // ---- system prompt ----
+  systemPromptPath: str("MITR_SYSTEM_PROMPT_PATH", ""), // "" => bundled default
 
   // ---- Gemini Flash LLM (low-latency text LLM; thinking disabled by default) ----
   geminiApiKey: str("GEMINI_API_KEY") || str("GOOGLE_API_KEY"),
@@ -187,9 +139,9 @@ export const config = {
 
 export type Config = typeof config;
 
-const VALID_STT: readonly string[] = ["elevenlabs", "sarvam"];
-const VALID_TTS: readonly string[] = ["elevenlabs", "eleven-v3", "sarvam"];
-const VALID_LLM: readonly string[] = ["claude", "gemini", "sarvam", "echo"];
+const VALID_STT: readonly string[] = ["sarvam"];
+const VALID_TTS: readonly string[] = ["eleven-v3"];
+const VALID_LLM: readonly string[] = ["gemini"];
 const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "::1"];
 
 /** Validate config for the selected providers; throws with a clear message. */
@@ -230,26 +182,16 @@ export function validateConfig(): void {
   if (config.backendToolTimeoutSec <= 0) {
     errs.push(`MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC must be > 0 (got ${config.backendToolTimeoutSec})`);
   }
-  if (config.sttProvider === "elevenlabs" && !config.elevenlabsApiKey) {
-    errs.push("ELEVENLABS_API_KEY is required for the ElevenLabs STT provider");
-  }
-  if (config.ttsProvider === "elevenlabs" || config.ttsProvider === "eleven-v3") {
+  if (config.ttsProvider === "eleven-v3") {
     if (!config.elevenlabsApiKey) errs.push("ELEVENLABS_API_KEY is required for ElevenLabs TTS");
     if (!config.elevenlabsVoiceId) errs.push("ELEVENLABS_VOICE_ID is required for ElevenLabs TTS");
   }
-  if (
-    (config.sttProvider === "sarvam" || config.ttsProvider === "sarvam" || config.llmProvider === "sarvam") &&
-    !config.sarvamApiKey
-  ) {
-    errs.push("SARVAM_API_KEY is required for the Sarvam provider");
-  }
-  if (config.llmProvider === "claude" && !config.anthropicApiKey) {
-    errs.push("ANTHROPIC_API_KEY is required for the Claude LLM");
+  if (config.sttProvider === "sarvam" && !config.sarvamApiKey) {
+    errs.push("SARVAM_API_KEY is required for the Sarvam STT provider");
   }
   if (config.llmProvider === "gemini" && !config.geminiApiKey) {
     errs.push("GEMINI_API_KEY / GOOGLE_API_KEY is required for the Gemini LLM");
   }
-  // "echo" needs no key (offline stub for smoke tests / audio-loop benchmarks).
   if (errs.length) {
     throw new Error("Invalid voice-gateway config:\n  - " + errs.join("\n  - "));
   }
