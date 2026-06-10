@@ -111,10 +111,10 @@ Resources:
         - Key: Project
           Value: MITR
 
-  PipecatGatewayRepository:
+  VoiceGatewayRepository:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: mitr-pipecat-gateway
+      RepositoryName: mitr-voice-gateway
       ImageScanningConfiguration:
         ScanOnPush: true
       EncryptionConfiguration:
@@ -205,7 +205,7 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                 Resource:
                   - !GetAtt ApiRepository.Arn
-                  - !GetAtt PipecatGatewayRepository.Arn
+                  - !GetAtt VoiceGatewayRepository.Arn
               - !If
                 - HasKmsKey
                 - Sid: DecryptProductionParameters
@@ -281,7 +281,7 @@ Resources:
                   - ecr:UploadLayerPart
                 Resource:
                   - !GetAtt ApiRepository.Arn
-                  - !GetAtt PipecatGatewayRepository.Arn
+                  - !GetAtt VoiceGatewayRepository.Arn
       Tags:
         - Key: Project
           Value: MITR
@@ -289,8 +289,8 @@ Resources:
 Outputs:
   ApiRepositoryUri:
     Value: !GetAtt ApiRepository.RepositoryUri
-  PipecatGatewayRepositoryUri:
-    Value: !GetAtt PipecatGatewayRepository.RepositoryUri
+  VoiceGatewayRepositoryUri:
+    Value: !GetAtt VoiceGatewayRepository.RepositoryUri
   Ec2InstanceProfileName:
     Value: !Ref Ec2InstanceProfile
   Ec2RoleArn:

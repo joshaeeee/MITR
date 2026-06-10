@@ -52,31 +52,31 @@ services:
       redis:
         condition: service_started
 
-  pipecat-gateway:
-    image: ${PIPECAT_GATEWAY_IMAGE}
-    container_name: mitr-pipecat-gateway
+  voice-gateway:
+    image: ${VOICE_GATEWAY_IMAGE}
+    container_name: mitr-voice-gateway
     restart: unless-stopped
     env_file:
-      - .env.prod.pipecat-gateway
+      - .env.prod.voice-gateway
     environment:
       NODE_ENV: production
       MITR_BACKEND_BASE_URL: http://api:8080
       MITR_GATEWAY_HOST: 0.0.0.0
-      MITR_GATEWAY_PORT: 7860
-    command: ["uv", "run", "python", "-m", "mitr_pipecat_gateway.server"]
+      MITR_GATEWAY_PORT: 7861
+      MITR_GATEWAY_AUTH_MODE: backend
     expose:
-      - "7860"
+      - "7861"
     depends_on:
       api:
         condition: service_healthy
     cpus: 1.0
-    mem_limit: 900m
+    mem_limit: 512m
     logging:
       driver: awslogs
       options:
         awslogs-region: ${AWS_REGION}
         awslogs-group: ${CLOUDWATCH_LOG_GROUP}
-        awslogs-stream: pipecat-gateway
+        awslogs-stream: voice-gateway
         awslogs-create-group: "true"
     networks:
       - mitr-internal
@@ -169,7 +169,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      pipecat-gateway:
+      voice-gateway:
         condition: service_started
     ports:
       - "80:80"

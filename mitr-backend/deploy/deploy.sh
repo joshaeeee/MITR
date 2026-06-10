@@ -61,8 +61,8 @@ set_env_value() {
 if [[ -n "${DEPLOY_API_IMAGE:-}" ]]; then
   set_env_value API_IMAGE "${DEPLOY_API_IMAGE}"
 fi
-if [[ -n "${DEPLOY_PIPECAT_GATEWAY_IMAGE:-}" ]]; then
-  set_env_value PIPECAT_GATEWAY_IMAGE "${DEPLOY_PIPECAT_GATEWAY_IMAGE}"
+if [[ -n "${DEPLOY_VOICE_GATEWAY_IMAGE:-}" ]]; then
+  set_env_value VOICE_GATEWAY_IMAGE "${DEPLOY_VOICE_GATEWAY_IMAGE}"
 fi
 if [[ -n "${DEPLOY_REMINDER_IMAGE:-}" ]]; then
   set_env_value REMINDER_IMAGE "${DEPLOY_REMINDER_IMAGE}"
@@ -76,7 +76,7 @@ login_ecr_registries() {
   local image registry
   local -a images=(
     "$(grep -E '^API_IMAGE=' "${ENV_FILE}" | tail -1 | cut -d= -f2- || true)"
-    "$(grep -E '^PIPECAT_GATEWAY_IMAGE=' "${ENV_FILE}" | tail -1 | cut -d= -f2- || true)"
+    "$(grep -E '^VOICE_GATEWAY_IMAGE=' "${ENV_FILE}" | tail -1 | cut -d= -f2- || true)"
     "$(grep -E '^REMINDER_IMAGE=' "${ENV_FILE}" | tail -1 | cut -d= -f2- || true)"
   )
   local -a registries=()
@@ -98,7 +98,7 @@ login_ecr_registries() {
 bash "${SCRIPT_DIR}/bootstrap-service-env-files.sh" "${ENV_FILE}"
 
 for worker_env in \
-  "${SCRIPT_DIR}/.env.prod.pipecat-gateway" \
+  "${SCRIPT_DIR}/.env.prod.voice-gateway" \
   "${SCRIPT_DIR}/.env.prod.reminder-worker" \
   "${SCRIPT_DIR}/.env.prod.insights-worker" \
   "${SCRIPT_DIR}/.env.prod.digest-worker"
@@ -146,7 +146,7 @@ dump_deploy_diagnostics() {
   echo "[deploy] docker compose status"
   docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" ps || true
 
-  for container in mitr-api mitr-pipecat-gateway mitr-reminder-worker mitr-insights-worker mitr-digest-worker mitr-nginx; do
+  for container in mitr-api mitr-voice-gateway mitr-reminder-worker mitr-insights-worker mitr-digest-worker mitr-nginx; do
     echo "[deploy] diagnostics for ${container}"
     docker inspect --format='state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}} exit={{.State.ExitCode}} error={{.State.Error}}' "${container}" 2>/dev/null || true
     docker logs --tail=80 "${container}" 2>&1 || true
@@ -159,12 +159,12 @@ dump_deploy_diagnostics() {
 }
 
 PREV_API_IMAGE="$(running_image mitr-api)"
-PREV_PIPECAT_GATEWAY_IMAGE="$(running_image mitr-pipecat-gateway)"
+PREV_VOICE_GATEWAY_IMAGE="$(running_image mitr-voice-gateway)"
 PREV_REMINDER_IMAGE="$(running_image mitr-reminder-worker)"
 
 echo "[deploy] previous images:"
 echo "  api=${PREV_API_IMAGE:-<none>}"
-echo "  pipecat-gateway=${PREV_PIPECAT_GATEWAY_IMAGE:-<none>}"
+echo "  voice-gateway=${PREV_VOICE_GATEWAY_IMAGE:-<none>}"
 echo "  reminder=${PREV_REMINDER_IMAGE:-<none>}"
 
 echo "[deploy] pulling latest images"
@@ -201,9 +201,9 @@ if [[ "${RUN_DB_MIGRATIONS}" == "true" && "${ALLOW_IMAGE_ROLLBACK_AFTER_MIGRATIO
   exit 1
 fi
 
-if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_PIPECAT_GATEWAY_IMAGE}" && -n "${PREV_REMINDER_IMAGE}" ]]; then
+if [[ -n "${PREV_API_IMAGE}" && -n "${PREV_VOICE_GATEWAY_IMAGE}" && -n "${PREV_REMINDER_IMAGE}" ]]; then
   API_IMAGE="${PREV_API_IMAGE}" \
-  PIPECAT_GATEWAY_IMAGE="${PREV_PIPECAT_GATEWAY_IMAGE}" \
+  VOICE_GATEWAY_IMAGE="${PREV_VOICE_GATEWAY_IMAGE}" \
   REMINDER_IMAGE="${PREV_REMINDER_IMAGE}" \
   docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --remove-orphans
 
