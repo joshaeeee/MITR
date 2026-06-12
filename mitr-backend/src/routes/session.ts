@@ -191,8 +191,8 @@ export const registerSessionRoutes = (
 
     return reply.send({
       transport: 'pipecat',
-      wsUrl: env.PIPECAT_GATEWAY_PUBLIC_WS_URL,
-      serverUrl: env.PIPECAT_GATEWAY_PUBLIC_WS_URL,
+      wsUrl: env.VOICE_GATEWAY_PUBLIC_WS_URL,
+      serverUrl: env.VOICE_GATEWAY_PUBLIC_WS_URL,
       identity,
       agentName: 'pipecat-gateway',
       dispatchMetadata

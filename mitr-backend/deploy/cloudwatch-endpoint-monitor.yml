@@ -322,15 +322,15 @@ Resources:
           DefaultValue: 0
           Unit: Count
 
-  PipecatFailureMetricFilter:
+  VoiceGatewayFailureMetricFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
-      FilterName: mitr-prod-pipecat-failures
+      FilterName: mitr-prod-voice-gateway-failures
       LogGroupName: !Ref ProductionLogGroup
-      FilterPattern: '?"Pipecat model pipeline failed; reconnecting" ?"Backend Pipecat tool bridge failed" ?"Gemini Live tool call failed" ?"Pipecat tool call failed" ?"Gemini Live activity callback failed" ?"Gemini Live tool response handling failed"'
+      FilterPattern: '?"turn failed" ?"gemini stream failed" ?"stt error" ?"tts error" ?"tool backend error" ?"session start failed"'
       MetricTransformations:
         - MetricNamespace: Mitr/Services
-          MetricName: PipecatFailureCount
+          MetricName: VoiceGatewayFailureCount
           MetricValue: "1"
           DefaultValue: 0
           Unit: Count
@@ -392,7 +392,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: mitr-prod-endpoint-connect-down
-      AlarmDescription: MITR Pipecat gateway connection contract failed twice consecutively.
+      AlarmDescription: MITR voice gateway connection contract failed twice consecutively.
       Namespace: Mitr/Endpoints
       MetricName: Availability
       Dimensions:
@@ -520,13 +520,13 @@ Resources:
       AlarmActions: [!Ref AlertTopicArn]
       OKActions: [!Ref AlertTopicArn]
 
-  PipecatFailureAlarm:
+  VoiceGatewayFailureAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: mitr-prod-service-pipecat-failures
-      AlarmDescription: Pipecat emitted at least two pipeline, provider callback, or tool failures in five minutes.
+      AlarmName: mitr-prod-service-voice-gateway-failures
+      AlarmDescription: Voice gateway emitted at least two turn, provider, or tool failures in five minutes.
       Namespace: Mitr/Services
-      MetricName: PipecatFailureCount
+      MetricName: VoiceGatewayFailureCount
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
@@ -617,7 +617,7 @@ Resources:
                 "metrics": [
                   ["Mitr/Services", "BackendErrorCount", {"label": "API and worker errors"}],
                   [".", "WorkerJobFailureCount", {"label": "Failed worker jobs"}],
-                  [".", "PipecatFailureCount", {"label": "Pipecat failures"}],
+                  [".", "VoiceGatewayFailureCount", {"label": "Voice gateway failures"}],
                   [".", "Nginx5xxCount", {"label": "Nginx 5xx"}]
                 ]
               }
@@ -660,7 +660,7 @@ Resources:
                   "${ConnectLatencyAlarm.Arn}",
                   "${BackendErrorAlarm.Arn}",
                   "${WorkerJobFailureAlarm.Arn}",
-                  "${PipecatFailureAlarm.Arn}",
+                  "${VoiceGatewayFailureAlarm.Arn}",
                   "${Nginx5xxAlarm.Arn}",
                   "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:mitr-prod-ec2-cpu-high",
                   "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:mitr-prod-ec2-memory-high",
@@ -676,10 +676,10 @@ Resources:
               "width": 12,
               "height": 8,
               "properties": {
-                "title": "Pipecat failures and reconnects",
+                "title": "Voice gateway failures and reconnects",
                 "region": "${AWS::Region}",
                 "view": "table",
-                "query": "SOURCE '${ProductionLogGroup}' | fields @timestamp, @message | filter @logStream = 'pipecat-gateway' | filter @message like /Pipecat model pipeline failed|Backend Pipecat tool bridge failed|Gemini Live tool call failed|Pipecat tool call failed|Gemini Live activity callback failed|Gemini Live tool response handling failed|reconnecting/ | sort @timestamp desc | limit 50"
+                "query": "SOURCE '${ProductionLogGroup}' | fields @timestamp, @message | filter @logStream = 'voice-gateway' | filter @message like /turn failed|gemini stream failed|stt error|tts error|tool backend error|session start failed|reconnect/ | sort @timestamp desc | limit 50"
               }
             },
             {
@@ -728,10 +728,10 @@ Resources:
               "width": 12,
               "height": 6,
               "properties": {
-                "title": "Pipecat turn-to-first-audio latency",
+                "title": "Voice gateway turn-to-first-audio latency",
                 "region": "${AWS::Region}",
                 "view": "timeSeries",
-                "query": "SOURCE '${ProductionLogGroup}' | filter @logStream = 'pipecat-gateway' | filter @message like /Gemini Live first audio latency:/ | parse @message /'turn_to_first_audio_ms': (?<firstAudioMs>[0-9]+)/ | stats avg(firstAudioMs) as averageMs, pct(firstAudioMs, 95) as p95Ms, max(firstAudioMs) as maximumMs by bin(5m)"
+                "query": "SOURCE '${ProductionLogGroup}' | filter @logStream = 'voice-gateway' | filter @message like /turn latency/ | parse @message /\\"userFinalToFirstAudioMs\\":(?<firstAudioMs>[0-9]+)/ | stats avg(firstAudioMs) as averageMs, pct(firstAudioMs, 95) as p95Ms, max(firstAudioMs) as maximumMs by bin(5m)"
               }
             },
             {

@@ -34,7 +34,7 @@ check_file() {
 WORKER_FORBIDDEN='^(OPENAI|OPENROUTER|GOOGLE|CARTESIA|SARVAM|EXA|PROKERALA|BHAGAVAD_GITA|YOUTUBE|YTDLP|AUTH_|TWILIO_|DEVICE_(ACCESS|PAIRING|BOOTSTRAP|SECRET|AUTH)|INTERNAL_SERVICE_TOKEN|SHORT_CODE_PEPPER|MEM0_|QDRANT_|EMBEDDING_|VOICE_NOTES_)'
 GATEWAY_FORBIDDEN='^(POSTGRES_URL|REDIS_URL|MEM0_|QDRANT_|EMBEDDING_|EXA_|PROKERALA_|BHAGAVAD_GITA_|AUTH_|TWILIO_|DEVICE_|VOICE_NOTES_|EXPO_ACCESS_TOKEN|CORS_ORIGINS|API_PUBLIC_BASE_URL)'
 
-check_file "pipecat-gateway" "${SCRIPT_DIR}/.env.prod.pipecat-gateway" "${GATEWAY_FORBIDDEN}" '^$'
+check_file "voice-gateway" "${SCRIPT_DIR}/.env.prod.voice-gateway" "${GATEWAY_FORBIDDEN}" '^$'
 check_file "reminder-worker" "${SCRIPT_DIR}/.env.prod.reminder-worker" "${WORKER_FORBIDDEN}" '^$'
 check_file "insights-worker" "${SCRIPT_DIR}/.env.prod.insights-worker" "${WORKER_FORBIDDEN}" '^$'
 check_file "digest-worker" "${SCRIPT_DIR}/.env.prod.digest-worker" "${WORKER_FORBIDDEN}" '^(EXPO_ACCESS_TOKEN)$'

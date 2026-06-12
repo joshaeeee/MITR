@@ -61,8 +61,8 @@ const baseEnvSchema = z.object({
   PROD_SECRETS_OUT_OF_REPO_ACK: envBoolean(false),
   POSTGRES_STORAGE_ENCRYPTION_ACK: envBoolean(false),
   POSTGRES_BACKUPS_ENCRYPTION_ACK: envBoolean(false),
-  PIPECAT_GATEWAY_PUBLIC_WS_URL: z.string().url().default('ws://localhost:7860/ws'),
-  PIPECAT_GATEWAY_PUBLIC_HTTP_URL: z.string().url().default('http://localhost:7860'),
+  VOICE_GATEWAY_PUBLIC_WS_URL: z.string().url().default('ws://localhost:7861/ws'),
+  VOICE_GATEWAY_PUBLIC_HTTP_URL: z.string().url().default('http://localhost:7861'),
 
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_CHAT_MODEL: z.string().default('gpt-4.1-mini'),
@@ -333,18 +333,18 @@ const apiEnvSchema = baseEnvSchema.superRefine((env, ctx) => {
     });
   }
 
-  if (!env.PIPECAT_GATEWAY_PUBLIC_WS_URL.startsWith('wss://') || isProductionPlaceholder(env.PIPECAT_GATEWAY_PUBLIC_WS_URL)) {
+  if (!env.VOICE_GATEWAY_PUBLIC_WS_URL.startsWith('wss://') || isProductionPlaceholder(env.VOICE_GATEWAY_PUBLIC_WS_URL)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['PIPECAT_GATEWAY_PUBLIC_WS_URL'],
+      path: ['VOICE_GATEWAY_PUBLIC_WS_URL'],
       message: 'Pipecat gateway WebSocket URL must be a real wss:// URL in production'
     });
   }
 
-  if (!env.PIPECAT_GATEWAY_PUBLIC_HTTP_URL.startsWith('https://') || isProductionPlaceholder(env.PIPECAT_GATEWAY_PUBLIC_HTTP_URL)) {
+  if (!env.VOICE_GATEWAY_PUBLIC_HTTP_URL.startsWith('https://') || isProductionPlaceholder(env.VOICE_GATEWAY_PUBLIC_HTTP_URL)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['PIPECAT_GATEWAY_PUBLIC_HTTP_URL'],
+      path: ['VOICE_GATEWAY_PUBLIC_HTTP_URL'],
       message: 'Pipecat gateway HTTP URL must be a real https:// URL in production'
     });
   }

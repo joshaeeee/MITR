@@ -231,7 +231,7 @@ derive_https_base_url() {
   local public_hostname
   local candidate
   existing_api="$(env_value API_PUBLIC_BASE_URL)"
-  existing_http="$(env_value PIPECAT_GATEWAY_PUBLIC_HTTP_URL)"
+  existing_http="$(env_value VOICE_GATEWAY_PUBLIC_HTTP_URL)"
   public_hostname="$(env_value PUBLIC_HOSTNAME)"
 
   for candidate in "${explicit}" "${existing_api}" "${existing_http}" "${public_hostname}" "${DEPLOY_EC2_HOST:-}"; do
@@ -253,8 +253,8 @@ ensure_core_env() {
   if [[ -n "${api_base}" ]]; then
     ws_base="${api_base/https:\/\//wss://}/ws"
     set_env_value "${ENV_FILE}" API_PUBLIC_BASE_URL "${api_base}"
-    set_env_value "${ENV_FILE}" PIPECAT_GATEWAY_PUBLIC_HTTP_URL "${api_base}"
-    set_env_value "${ENV_FILE}" PIPECAT_GATEWAY_PUBLIC_WS_URL "${ws_base}"
+    set_env_value "${ENV_FILE}" VOICE_GATEWAY_PUBLIC_HTTP_URL "${api_base}"
+    set_env_value "${ENV_FILE}" VOICE_GATEWAY_PUBLIC_WS_URL "${ws_base}"
     if is_placeholder "$(env_value PUBLIC_HOSTNAME)"; then
       public_host="${api_base#https://}"
       public_host="${public_host%%/*}"
@@ -295,70 +295,33 @@ ensure_core_env() {
 ensure_core_env
 require_canonical_value OPENAI_API_KEY
 
-gateway_env="${SCRIPT_DIR}/.env.prod.pipecat-gateway"
-ensure_from_template "${gateway_env}" "${SCRIPT_DIR}/.env.prod.pipecat-gateway.template" "pipecat-gateway"
+gateway_env="${SCRIPT_DIR}/.env.prod.voice-gateway"
+ensure_from_template "${gateway_env}" "${SCRIPT_DIR}/.env.prod.voice-gateway.template" "voice-gateway"
 set_from_env "${gateway_env}" LOG_LEVEL LOG_LEVEL
 set_env_value "${gateway_env}" MITR_BACKEND_BASE_URL "http://api:8080"
 set_from_env "${gateway_env}" MITR_BACKEND_INTERNAL_TOKEN INTERNAL_SERVICE_TOKEN
 set_from_env "${gateway_env}" MITR_GATEWAY_AUTH_MODE MITR_GATEWAY_AUTH_MODE
-set_from_env "${gateway_env}" MITR_GATEWAY_REALTIME_PROVIDER MITR_GATEWAY_REALTIME_PROVIDER
-set_from_env "${gateway_env}" MITR_GATEWAY_PUBLIC_WS_URL PIPECAT_GATEWAY_PUBLIC_WS_URL
+set_from_env "${gateway_env}" MITR_GATEWAY_PUBLIC_WS_URL VOICE_GATEWAY_PUBLIC_WS_URL
 set_from_env "${gateway_env}" MITR_GATEWAY_CORS_ORIGINS CORS_ORIGINS
 set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_PHRASES MITR_GATEWAY_WAKE_PHRASES
 ensure_current_wake_phrases "${gateway_env}"
 set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC MITR_GATEWAY_WAKE_IDLE_TIMEOUT_SEC
-set_from_env "${gateway_env}" MITR_GATEWAY_WAKE_USE_INTERIM_TRANSCRIPTS MITR_GATEWAY_WAKE_USE_INTERIM_TRANSCRIPTS
 set_from_env "${gateway_env}" MITR_GATEWAY_LOG_TRANSCRIPTS MITR_GATEWAY_LOG_TRANSCRIPTS
 set_from_env "${gateway_env}" MITR_GATEWAY_SEND_INTERIM_TRANSCRIPTS MITR_GATEWAY_SEND_INTERIM_TRANSCRIPTS
 set_from_env "${gateway_env}" MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC MITR_GATEWAY_BACKEND_TOOL_TIMEOUT_SEC
-set_from_env "${gateway_env}" MITR_GATEWAY_TOOL_TIMEOUT_SEC MITR_GATEWAY_TOOL_TIMEOUT_SEC
-set_from_env "${gateway_env}" MITR_GATEWAY_ACK_SLOW_TOOLS MITR_GATEWAY_ACK_SLOW_TOOLS
 set_from_env "${gateway_env}" MITR_GATEWAY_SESSION_TIMEOUT_SEC MITR_GATEWAY_SESSION_TIMEOUT_SEC
 set_from_env "${gateway_env}" MITR_GATEWAY_ECHO_SUPPRESSION MITR_GATEWAY_ECHO_SUPPRESSION
-set_from_env "${gateway_env}" MITR_GATEWAY_INJECT_BOOT_CONTEXT MITR_GATEWAY_INJECT_BOOT_CONTEXT
-set_from_env "${gateway_env}" MITR_GATEWAY_CONTEXT_PACKET_BACKGROUND_TIMEOUT_SEC MITR_GATEWAY_CONTEXT_PACKET_BACKGROUND_TIMEOUT_SEC
-set_from_env "${gateway_env}" AGNOST_ENABLED AGNOST_ENABLED
-set_from_env "${gateway_env}" AGNOST_ORG_ID AGNOST_ORG_ID
-set_from_env "${gateway_env}" AGNOST_BASE_URL AGNOST_BASE_URL
-set_from_env "${gateway_env}" AGNOST_CLIENT_CONFIG AGNOST_CLIENT_CONFIG
-set_from_env "${gateway_env}" AGNOST_AGENT_NAME AGNOST_AGENT_NAME
-set_from_env "${gateway_env}" AGNOST_TIMEOUT_MS AGNOST_TIMEOUT_MS
-set_from_env "${gateway_env}" AGNOST_MAX_PAYLOAD_CHARS AGNOST_MAX_PAYLOAD_CHARS
-set_from_env "${gateway_env}" AGNOST_API_KEY AGNOST_API_KEY
-set_from_env "${gateway_env}" OPENAI_API_KEY OPENAI_API_KEY
+set_from_env "${gateway_env}" MITR_GATEWAY_ECHO_SUPPRESSION_TAIL_MS MITR_GATEWAY_ECHO_SUPPRESSION_TAIL_MS
+set_from_env "${gateway_env}" MITR_GATEWAY_TOOLS_ENABLED MITR_GATEWAY_TOOLS_ENABLED
+set_from_env "${gateway_env}" SARVAM_API_KEY SARVAM_API_KEY
+set_from_env "${gateway_env}" SARVAM_STT_LANGUAGE SARVAM_STT_LANGUAGE
+set_from_env "${gateway_env}" SARVAM_STT_MODE SARVAM_STT_MODE
 set_from_env "${gateway_env}" GOOGLE_API_KEY GOOGLE_API_KEY
-set_from_env "${gateway_env}" OPENAI_REALTIME_MODEL OPENAI_REALTIME_MODEL
-set_from_env "${gateway_env}" OPENAI_REALTIME_STT_MODEL OPENAI_REALTIME_STT_MODEL
-set_from_env "${gateway_env}" OPENAI_REALTIME_STT_LANGUAGE OPENAI_REALTIME_STT_LANGUAGE
-set_from_env "${gateway_env}" OPENAI_REALTIME_WAKE_STT_MODEL OPENAI_REALTIME_WAKE_STT_MODEL
-set_from_env "${gateway_env}" OPENAI_REALTIME_VOICE OPENAI_REALTIME_VOICE
-set_from_env "${gateway_env}" OPENAI_REALTIME_MAX_OUTPUT_TOKENS OPENAI_REALTIME_MAX_OUTPUT_TOKENS
-set_env_value "${gateway_env}" OPENAI_REALTIME_TURN_DETECTION "manual"
-set_from_env "${gateway_env}" OPENAI_REALTIME_INTERRUPT_RESPONSE OPENAI_REALTIME_INTERRUPT_RESPONSE
-set_from_env "${gateway_env}" GEMINI_LIVE_SERVICE GEMINI_LIVE_SERVICE
-set_from_env "${gateway_env}" GEMINI_LIVE_MODEL GEMINI_LIVE_MODEL
-set_from_env "${gateway_env}" GEMINI_LIVE_VOICE GEMINI_LIVE_VOICE
-set_from_env "${gateway_env}" GEMINI_LIVE_LANGUAGE GEMINI_LIVE_LANGUAGE
-set_from_env "${gateway_env}" GEMINI_LIVE_PROMPT_MODE GEMINI_LIVE_PROMPT_MODE
-set_from_env "${gateway_env}" GEMINI_LIVE_ACTIVITY_MODE GEMINI_LIVE_ACTIVITY_MODE
-set_from_env "${gateway_env}" GEMINI_LIVE_AUDIO_SEND_PACING GEMINI_LIVE_AUDIO_SEND_PACING
-set_from_env "${gateway_env}" GEMINI_LIVE_INPUT_BATCH_MS GEMINI_LIVE_INPUT_BATCH_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_BACKLOG_INPUT_BATCH_MS GEMINI_LIVE_BACKLOG_INPUT_BATCH_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_PREROLL_FLUSH_BATCH_MS GEMINI_LIVE_PREROLL_FLUSH_BATCH_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_EXPLICIT_VAD_SIGNAL GEMINI_LIVE_EXPLICIT_VAD_SIGNAL
-set_from_env "${gateway_env}" GEMINI_LIVE_STALE_OUTPUT_GUARD_MS GEMINI_LIVE_STALE_OUTPUT_GUARD_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_ECHO_SUPPRESSION_TAIL_MS GEMINI_LIVE_ECHO_SUPPRESSION_TAIL_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_SERVER_VAD GEMINI_LIVE_SERVER_VAD
-set_from_env "${gateway_env}" GEMINI_LIVE_SERVER_VAD_START_MS GEMINI_LIVE_SERVER_VAD_START_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_SERVER_VAD_STOP_MS GEMINI_LIVE_SERVER_VAD_STOP_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_SERVER_VAD_PREROLL_MS GEMINI_LIVE_SERVER_VAD_PREROLL_MS
-set_from_env "${gateway_env}" GEMINI_LIVE_SERVER_VAD_SPEECH_PEAK GEMINI_LIVE_SERVER_VAD_SPEECH_PEAK
-set_from_env "${gateway_env}" GEMINI_LIVE_SERVER_VAD_SILENCE_PEAK GEMINI_LIVE_SERVER_VAD_SILENCE_PEAK
-set_from_env "${gateway_env}" GEMINI_LIVE_PRECONNECT_ON_CONNECT GEMINI_LIVE_PRECONNECT_ON_CONNECT
-set_from_env "${gateway_env}" GEMINI_LIVE_PRECONNECT_BEFORE_LISTENING GEMINI_LIVE_PRECONNECT_BEFORE_LISTENING
-set_from_env "${gateway_env}" GEMINI_LIVE_PRECONNECT_TIMEOUT_SEC GEMINI_LIVE_PRECONNECT_TIMEOUT_SEC
-set_from_env "${gateway_env}" GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC GEMINI_LIVE_TRANSCRIPT_WAKE_PREROLL_SEC
-set_from_env "${gateway_env}" GEMINI_LIVE_WAKE_IDLE_TIMEOUT_SEC GEMINI_LIVE_WAKE_IDLE_TIMEOUT_SEC
+set_from_env "${gateway_env}" GEMINI_MODEL GEMINI_MODEL
+set_from_env "${gateway_env}" ELEVENLABS_API_KEY ELEVENLABS_API_KEY
+set_from_env "${gateway_env}" ELEVENLABS_VOICE_ID ELEVENLABS_VOICE_ID
+set_from_env "${gateway_env}" ELEVENLABS_HTTP_TTS_MODEL ELEVENLABS_HTTP_TTS_MODEL
+set_from_env "${gateway_env}" ELEVENLABS_HTTP_CONCURRENCY ELEVENLABS_HTTP_CONCURRENCY
 set_from_env "${gateway_env}" ESP32_AUDIO_IN_SAMPLE_RATE ESP32_AUDIO_IN_SAMPLE_RATE
 set_from_env "${gateway_env}" ESP32_AUDIO_OUT_SAMPLE_RATE ESP32_AUDIO_OUT_SAMPLE_RATE
 set_from_env "${gateway_env}" ESP32_AUDIO_OUTPUT_GAIN ESP32_AUDIO_OUTPUT_GAIN

@@ -11,7 +11,7 @@ let cachedTemplate: string | null = null;
 
 function loadTemplate(): string {
   if (cachedTemplate !== null) return cachedTemplate;
-  const path = config.claudeSystemPromptPath || DEFAULT_PROMPT_PATH;
+  const path = config.systemPromptPath || DEFAULT_PROMPT_PATH;
   cachedTemplate = readFileSync(path, "utf8");
   return cachedTemplate;
 }

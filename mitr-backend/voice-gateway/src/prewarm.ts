@@ -11,15 +11,9 @@ let lastPrewarmAt = 0;
 
 function targets(): string[] {
   const urls = new Set<string>();
-  if (config.ttsProvider === "elevenlabs" || config.ttsProvider === "eleven-v3") {
-    urls.add("https://api.elevenlabs.io/");
-  }
-  if (config.sttProvider === "elevenlabs") urls.add("https://api.elevenlabs.io/");
+  if (config.ttsProvider === "eleven-v3") urls.add("https://api.elevenlabs.io/");
   if (config.llmProvider === "gemini") urls.add("https://generativelanguage.googleapis.com/");
-  if (config.llmProvider === "claude") urls.add("https://api.anthropic.com/");
-  if (config.llmProvider === "sarvam" || config.sttProvider === "sarvam" || config.ttsProvider === "sarvam") {
-    urls.add("https://api.sarvam.ai/");
-  }
+  if (config.sttProvider === "sarvam") urls.add("https://api.sarvam.ai/");
   return [...urls];
 }
 

@@ -28,7 +28,7 @@ cleanup_env_files() {
     "${ROOT_DIR}"/repo-secret-scan-test.*.env \
     "${ROOT_DIR}"/.context/local-secret-scan-test.* \
     "${DEPLOY_DIR}/.env.prod" \
-    "${DEPLOY_DIR}/.env.prod.pipecat-gateway" \
+    "${DEPLOY_DIR}/.env.prod.voice-gateway" \
     "${DEPLOY_DIR}/.env.prod.reminder-worker" \
     "${DEPLOY_DIR}/.env.prod.insights-worker" \
     "${DEPLOY_DIR}/.env.prod.digest-worker"
@@ -136,35 +136,33 @@ node ./node_modules/typescript/bin/tsc --noEmit
 log "backend unit tests"
 npm run test:unit
 
-log "Pipecat gateway Python compile"
-cd "${BACKEND_DIR}/pipecat-gateway"
-uv run python -m compileall mitr_pipecat_gateway
-rm -rf mitr_pipecat_gateway/__pycache__
+log "voice gateway typecheck"
+cd "${BACKEND_DIR}/voice-gateway"
+pnpm install --frozen-lockfile --ignore-workspace >/dev/null
+pnpm typecheck
 
-log "Pipecat gateway production env guard"
-if NODE_ENV=production \
-  MITR_GATEWAY_AUTH_MODE=local \
-  MITR_GATEWAY_PUBLIC_WS_URL=wss://api.mitr.app/ws \
-  MITR_GATEWAY_CORS_ORIGINS=https://app.mitr.app \
-  MITR_BACKEND_INTERNAL_TOKEN="$(node -e "console.log('a'.repeat(64))")" \
-  OPENAI_API_KEY=test-openai-key-12345678901234567890 \
-  uv run python -c 'import mitr_pipecat_gateway.server' >/tmp/mitr-gateway-prod-guard.out 2>&1; then
+log "voice gateway production env guard"
+if MITR_GATEWAY_AUTH_MODE=local \
+  MITR_GATEWAY_HOST=0.0.0.0 \
+  node_modules/.bin/tsx -e 'import("./src/config.js").then((m) => m.validateConfig())' \
+  >/tmp/mitr-gateway-prod-guard.out 2>&1; then
   cat /tmp/mitr-gateway-prod-guard.out
-  echo "[security-checks] expected Pipecat gateway prod guard to reject local auth mode" >&2
+  echo "[security-checks] expected voice gateway config guard to reject open local auth on 0.0.0.0" >&2
   exit 1
 fi
 head -n 5 /tmp/mitr-gateway-prod-guard.out
-NODE_ENV=production \
-  MITR_GATEWAY_PUBLIC_WS_URL=wss://api.mitr.app/ws \
-  MITR_GATEWAY_CORS_ORIGINS=https://app.mitr.app \
-  MITR_BACKEND_INTERNAL_TOKEN="$(node -e "console.log('a'.repeat(64))")" \
-  OPENAI_API_KEY=test-openai-key-12345678901234567890 \
-  uv run python -c 'import mitr_pipecat_gateway.server'
+MITR_GATEWAY_AUTH_MODE=backend \
+  MITR_BACKEND_BASE_URL=https://api.mitr.app \
+  SARVAM_API_KEY=test-sarvam-key \
+  GOOGLE_API_KEY=test-google-key \
+  ELEVENLABS_API_KEY=test-elevenlabs-key \
+  ELEVENLABS_VOICE_ID=test-voice \
+  node_modules/.bin/tsx -e 'import("./src/config.js").then((m) => m.validateConfig())' 
 
 log "service env scope guard"
 cd "${BACKEND_DIR}"
 cleanup_env_files
-cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
+cp deploy/.env.prod.voice-gateway.template deploy/.env.prod.voice-gateway
 cp deploy/.env.prod.reminder-worker.template deploy/.env.prod.reminder-worker
 cp deploy/.env.prod.insights-worker.template deploy/.env.prod.insights-worker
 cp deploy/.env.prod.digest-worker.template deploy/.env.prod.digest-worker
@@ -173,7 +171,7 @@ cleanup_env_files
 
 log "production preflight rejects placeholder templates"
 cp deploy/.env.prod.template deploy/.env.prod
-cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
+cp deploy/.env.prod.voice-gateway.template deploy/.env.prod.voice-gateway
 cp deploy/.env.prod.reminder-worker.template deploy/.env.prod.reminder-worker
 cp deploy/.env.prod.insights-worker.template deploy/.env.prod.insights-worker
 cp deploy/.env.prod.digest-worker.template deploy/.env.prod.digest-worker
@@ -192,19 +190,19 @@ openai_key='test-openai-key-12345678901234567890'
 google_key='test-google-key-12345678901234567890'
 postgres_url='postgresql://mitr:secret@db.example.com:5432/mitr?sslmode=verify-full'
 cp deploy/.env.prod.template deploy/.env.prod
-cp deploy/.env.prod.pipecat-gateway.template deploy/.env.prod.pipecat-gateway
+cp deploy/.env.prod.voice-gateway.template deploy/.env.prod.voice-gateway
 cp deploy/.env.prod.reminder-worker.template deploy/.env.prod.reminder-worker
 cp deploy/.env.prod.insights-worker.template deploy/.env.prod.insights-worker
 cp deploy/.env.prod.digest-worker.template deploy/.env.prod.digest-worker
 set_kv deploy/.env.prod API_IMAGE ghcr.io/acme/mitr-api:sha-test
-set_kv deploy/.env.prod PIPECAT_GATEWAY_IMAGE ghcr.io/acme/mitr-pipecat-gateway:sha-test
+set_kv deploy/.env.prod VOICE_GATEWAY_IMAGE ghcr.io/acme/mitr-voice-gateway:sha-test
 set_kv deploy/.env.prod REMINDER_IMAGE ghcr.io/acme/mitr-api:sha-test
 set_kv deploy/.env.prod ENABLE_HTTPS true
 set_kv deploy/.env.prod PUBLIC_HOSTNAME api.mitr.app
 set_kv deploy/.env.prod CORS_ORIGINS https://app.mitr.app
 set_kv deploy/.env.prod API_PUBLIC_BASE_URL https://api.mitr.app
-set_kv deploy/.env.prod PIPECAT_GATEWAY_PUBLIC_WS_URL wss://api.mitr.app/ws
-set_kv deploy/.env.prod PIPECAT_GATEWAY_PUBLIC_HTTP_URL https://api.mitr.app
+set_kv deploy/.env.prod VOICE_GATEWAY_PUBLIC_WS_URL wss://api.mitr.app/ws
+set_kv deploy/.env.prod VOICE_GATEWAY_PUBLIC_HTTP_URL https://api.mitr.app
 set_kv deploy/.env.prod POSTGRES_URL "${postgres_url}"
 set_kv deploy/.env.prod INTERNAL_SERVICE_TOKEN "${internal_token}"
 set_kv deploy/.env.prod SHORT_CODE_PEPPER "$(node -e "console.log('c'.repeat(64))")"
@@ -219,12 +217,12 @@ set_kv deploy/.env.prod SECURITY_KEYS_ROTATED_ACK true
 set_kv deploy/.env.prod PROD_SECRETS_OUT_OF_REPO_ACK true
 set_kv deploy/.env.prod POSTGRES_STORAGE_ENCRYPTION_ACK true
 set_kv deploy/.env.prod POSTGRES_BACKUPS_ENCRYPTION_ACK true
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_PUBLIC_WS_URL wss://api.mitr.app/ws
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_CORS_ORIGINS https://app.mitr.app
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_LOG_TRANSCRIPTS false
-set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
-set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY "${openai_key}"
-set_kv deploy/.env.prod.pipecat-gateway GOOGLE_API_KEY "${google_key}"
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_PUBLIC_WS_URL wss://api.mitr.app/ws
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_CORS_ORIGINS https://app.mitr.app
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_LOG_TRANSCRIPTS false
+set_kv deploy/.env.prod.voice-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
+set_kv deploy/.env.prod.voice-gateway OPENAI_API_KEY "${openai_key}"
+set_kv deploy/.env.prod.voice-gateway GOOGLE_API_KEY "${google_key}"
 for worker_env in \
   deploy/.env.prod.reminder-worker \
   deploy/.env.prod.insights-worker \
@@ -234,7 +232,7 @@ do
 done
 deploy/preflight-prod-env.sh deploy/.env.prod
 
-set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN "$(node -e "console.log('b'.repeat(64))")"
+set_kv deploy/.env.prod.voice-gateway MITR_BACKEND_INTERNAL_TOKEN "$(node -e "console.log('b'.repeat(64))")"
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-mismatch.out 2>&1; then
   cat /tmp/mitr-preflight-mismatch.out
   echo "[security-checks] expected preflight to reject mismatched internal service tokens" >&2
@@ -242,8 +240,8 @@ if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-mismatch.o
 fi
 head -n 5 /tmp/mitr-preflight-mismatch.out
 
-set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
-set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY test-stale-service-openai-key-1234567890
+set_kv deploy/.env.prod.voice-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
+set_kv deploy/.env.prod.voice-gateway OPENAI_API_KEY test-stale-service-openai-key-1234567890
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-openai-mismatch.out 2>&1; then
   cat /tmp/mitr-preflight-openai-mismatch.out
   echo "[security-checks] expected preflight to reject mismatched OpenAI API keys" >&2
@@ -251,9 +249,9 @@ if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-openai-mis
 fi
 head -n 5 /tmp/mitr-preflight-openai-mismatch.out
 
-set_kv deploy/.env.prod.pipecat-gateway OPENAI_API_KEY "${openai_key}"
+set_kv deploy/.env.prod.voice-gateway OPENAI_API_KEY "${openai_key}"
 set_kv deploy/.env.prod INTERNAL_SERVICE_TOKEN short
-set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN short
+set_kv deploy/.env.prod.voice-gateway MITR_BACKEND_INTERNAL_TOKEN short
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-weak-token.out 2>&1; then
   cat /tmp/mitr-preflight-weak-token.out
   echo "[security-checks] expected preflight to reject weak internal service tokens" >&2
@@ -262,8 +260,8 @@ fi
 head -n 5 /tmp/mitr-preflight-weak-token.out
 
 set_kv deploy/.env.prod INTERNAL_SERVICE_TOKEN "${internal_token}"
-set_kv deploy/.env.prod.pipecat-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_AUTH_MODE local
+set_kv deploy/.env.prod.voice-gateway MITR_BACKEND_INTERNAL_TOKEN "${internal_token}"
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_AUTH_MODE local
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-local-auth.out 2>&1; then
   cat /tmp/mitr-preflight-gateway-local-auth.out
   echo "[security-checks] expected preflight to reject gateway local auth mode" >&2
@@ -271,8 +269,8 @@ if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-lo
 fi
 head -n 5 /tmp/mitr-preflight-gateway-local-auth.out
 
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_AUTH_MODE ""
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_LOG_TRANSCRIPTS true
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_AUTH_MODE ""
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_LOG_TRANSCRIPTS true
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-transcripts.out 2>&1; then
   cat /tmp/mitr-preflight-gateway-transcripts.out
   echo "[security-checks] expected preflight to reject gateway transcript logging" >&2
@@ -280,8 +278,8 @@ if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-tr
 fi
 head -n 5 /tmp/mitr-preflight-gateway-transcripts.out
 
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_LOG_TRANSCRIPTS false
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_CORS_ORIGINS "http://localhost:8787"
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_LOG_TRANSCRIPTS false
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_CORS_ORIGINS "http://localhost:8787"
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-cors.out 2>&1; then
   cat /tmp/mitr-preflight-gateway-cors.out
   echo "[security-checks] expected preflight to reject gateway dev CORS origins" >&2
@@ -289,16 +287,16 @@ if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-co
 fi
 head -n 5 /tmp/mitr-preflight-gateway-cors.out
 
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_CORS_ORIGINS https://app.mitr.app
-set_kv deploy/.env.prod PIPECAT_GATEWAY_PUBLIC_HTTP_URL http://api.mitr.app
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_CORS_ORIGINS https://app.mitr.app
+set_kv deploy/.env.prod VOICE_GATEWAY_PUBLIC_HTTP_URL http://api.mitr.app
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-http.out 2>&1; then
   cat /tmp/mitr-preflight-gateway-http.out
-  echo "[security-checks] expected preflight to reject non-HTTPS Pipecat gateway HTTP URL" >&2
+  echo "[security-checks] expected preflight to reject non-HTTPS voice gateway HTTP URL" >&2
   exit 1
 fi
 head -n 5 /tmp/mitr-preflight-gateway-http.out
 
-set_kv deploy/.env.prod PIPECAT_GATEWAY_PUBLIC_HTTP_URL https://api.mitr.app
+set_kv deploy/.env.prod VOICE_GATEWAY_PUBLIC_HTTP_URL https://api.mitr.app
 set_kv deploy/.env.prod CORS_ORIGINS "https://app.mitr.app,http://localhost:8787"
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-api-cors.out 2>&1; then
   cat /tmp/mitr-preflight-api-cors.out
@@ -308,7 +306,7 @@ fi
 head -n 5 /tmp/mitr-preflight-api-cors.out
 
 set_kv deploy/.env.prod CORS_ORIGINS https://app.mitr.app
-set_kv deploy/.env.prod.pipecat-gateway MITR_GATEWAY_CORS_ORIGINS "https://app.mitr.app,http://localhost:8787"
+set_kv deploy/.env.prod.voice-gateway MITR_GATEWAY_CORS_ORIGINS "https://app.mitr.app,http://localhost:8787"
 if deploy/preflight-prod-env.sh deploy/.env.prod >/tmp/mitr-preflight-gateway-mixed-cors.out 2>&1; then
   cat /tmp/mitr-preflight-gateway-mixed-cors.out
   echo "[security-checks] expected preflight to reject non-HTTPS gateway CORS origins" >&2

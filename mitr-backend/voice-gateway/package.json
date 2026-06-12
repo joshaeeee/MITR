@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "node --import tsx dist/server.js",
+    "start": "tsx src/server.ts",
     "serve": "tsx src/server.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "rm -rf dist && tsc -p tsconfig.json",
@@ -17,18 +17,23 @@
     "bench:make-audio": "tsx bench/make-audio.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.40.1",
     "@google/genai": "^1.43.0",
-    "openai": "^4.104.0",
     "sarvamai": "^1.1.7",
     "dotenv": "^16.4.7",
     "ws": "^8.19.0",
-    "zod": "^3.24.2"
+    "tsx": "^4.19.3"
   },
   "devDependencies": {
     "@types/node": "^22.13.8",
     "@types/ws": "^8.5.13",
-    "tsx": "^4.19.3",
     "typescript": "^5.8.2"
-  }
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@google/genai",
+      "esbuild",
+      "protobufjs"
+    ]
+  },
+  "packageManager": "pnpm@9.15.0"
 }

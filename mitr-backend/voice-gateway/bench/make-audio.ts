@@ -31,7 +31,8 @@ async function main(): Promise<void> {
     headers: { "xi-api-key": config.elevenlabsApiKey, "content-type": "application/json" },
     body: JSON.stringify({
       text: DEFAULT_TEXT,
-      model_id: config.elevenlabsTtsModel,
+      // Fast cheap model is fine for a canned bench utterance; not part of the live stack.
+      model_id: process.env.BENCH_TTS_MODEL || "eleven_flash_v2_5",
       voice_settings: { stability: 0.5, similarity_boost: 0.8 },
     }),
   });
