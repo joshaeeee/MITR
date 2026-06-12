@@ -606,7 +606,18 @@ export class Session {
 
   private resetIdle(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => this.goSleep("idle_timeout"), config.wakeIdleTimeoutSec * 1000);
+    this.idleTimer = setTimeout(() => {
+      // "Idle" means the USER stayed silent after Mitr finished speaking. A long reply
+      // must not count toward it: if the timer lands while a turn is running, audio is
+      // still draining, or the echo-mute tail is active, restart the countdown instead
+      // of going to sleep mid-speech. (produceTurnOutput's finally also resets it the
+      // moment the reply fully drains, so the window effectively starts there.)
+      if (this.turnInProgress || (this.pacer && !this.pacer.drained) || Date.now() < this.muteUntil) {
+        this.resetIdle();
+        return;
+      }
+      this.goSleep("idle_timeout");
+    }, config.wakeIdleTimeoutSec * 1000);
   }
 
   async stop(): Promise<void> {
