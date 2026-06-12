@@ -27,5 +27,12 @@
     "@types/node": "^22.13.8",
     "@types/ws": "^8.5.13",
     "typescript": "^5.8.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@google/genai",
+      "esbuild",
+      "protobufjs"
+    ]
   }
 }
