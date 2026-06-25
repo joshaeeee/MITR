@@ -120,6 +120,20 @@
       "when": 1778839800000,
       "tag": "0016_mem0_memory_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1778843400000,
+      "tag": "0017_swiggy_mcp",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1782316577000,
+      "tag": "0018_checkout_orders_promos",
+      "breakpoints": true
     }
   ]
 }

@@ -205,7 +205,15 @@ const baseEnvSchema = z.object({
   DIGEST_DEFAULT_MINUTE: z.coerce.number().min(0).max(59).default(30),
   EXPO_ACCESS_TOKEN: z.string().optional(),
   MAINTENANCE_CLEANUP_INTERVAL_SEC: z.coerce.number().default(900),
-  USER_EVENT_STREAM_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 14)
+  USER_EVENT_STREAM_RETENTION_SEC: z.coerce.number().default(60 * 60 * 24 * 14),
+
+  CHECKOUT_ENABLED: envBoolean(false),
+  CHECKOUT_DEFAULT_PRODUCT_ID: z.string().default('reca-suno'),
+  CHECKOUT_PROMO_RESERVATION_TTL_SEC: z.coerce.number().int().min(60).default(45 * 60),
+  CHECKOUT_DEV_PRICE_OVERRIDE_PAISE: z.coerce.number().int().min(100).optional(),
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional()
 });
 
 const requireProductionPostgresTls = (
@@ -423,6 +431,26 @@ const apiEnvSchema = baseEnvSchema.superRefine((env, ctx) => {
       path: ['SWIGGY_TOKEN_ENCRYPTION_KEY_B64'],
       message: 'SWIGGY_TOKEN_ENCRYPTION_KEY_B64 must decode to 32 bytes'
     });
+  }
+
+  if (env.CHECKOUT_ENABLED) {
+    if (env.CHECKOUT_DEV_PRICE_OVERRIDE_PAISE !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CHECKOUT_DEV_PRICE_OVERRIDE_PAISE'],
+        message: 'CHECKOUT_DEV_PRICE_OVERRIDE_PAISE is for local development only and is not allowed in production'
+      });
+    }
+
+    for (const key of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] as const) {
+      if (!env[key]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} is required when CHECKOUT_ENABLED=true in production`
+        });
+      }
+    }
   }
 });
 
