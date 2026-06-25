@@ -134,6 +134,13 @@
       "when": 1782316577000,
       "tag": "0018_checkout_orders_promos",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1782396000000,
+      "tag": "0019_checkout_admin_users",
+      "breakpoints": true
     }
   ]
 }

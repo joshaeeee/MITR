@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const strongInternalToken = 'a'.repeat(64);
+const strongCheckoutAdminServiceToken = 'c'.repeat(64);
+const strongCheckoutAdminAuthTokenSecret = 'd'.repeat(64);
 const productionGuardAcks: Record<string, string | undefined> = {
   REDIS_URL: 'redis://localhost:6379',
   QDRANT_API_KEY: 'qdrant-test-key',
@@ -405,6 +407,73 @@ test('production env rejects checkout dev price override', async () => {
     },
     () => {
       assert.throws(() => validateEnv(), /CHECKOUT_DEV_PRICE_OVERRIDE_PAISE/);
+    }
+  );
+});
+
+test('production checkout requires dedicated admin secrets and bootstrap password', async () => {
+  const { validateEnv } = await import('./env.js');
+  await withEnv(
+    {
+      NODE_ENV: 'production',
+      ...productionGuardAcks,
+      POSTGRES_URL: 'postgresql://mitr:secret@db.example.com:5432/mitr?sslmode=verify-full',
+      MEM0_API_KEY: 'mem0-test',
+      QDRANT_URL: 'https://qdrant.mitr.app',
+      CORS_ORIGINS: 'https://app.mitr.app',
+      API_PUBLIC_BASE_URL: 'https://api.mitr.app',
+      VOICE_GATEWAY_PUBLIC_WS_URL: 'wss://api.mitr.app/ws',
+      VOICE_GATEWAY_PUBLIC_HTTP_URL: 'https://api.mitr.app',
+      INTERNAL_SERVICE_TOKEN: strongInternalToken,
+      AUTH_DEV_OTP_BYPASS: 'false',
+      AUTH_OTP_DELIVERY_MODE: 'disabled',
+      VOICE_NOTES_LOCAL_STORAGE_ACK_RISK: 'true',
+      VOICE_NOTES_ENCRYPTION_KEY_B64: Buffer.alloc(32, 1).toString('base64'),
+      CHECKOUT_ENABLED: 'true',
+      CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD: '',
+      CHECKOUT_ADMIN_SERVICE_TOKEN: '',
+      CHECKOUT_ADMIN_AUTH_TOKEN_SECRET: '',
+      RAZORPAY_KEY_ID: 'rzp_live_key',
+      RAZORPAY_KEY_SECRET: 'razorpay-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'razorpay-webhook-secret'
+    },
+    () => {
+      assert.throws(
+        () => validateEnv(),
+        /CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD|CHECKOUT_ADMIN_SERVICE_TOKEN|CHECKOUT_ADMIN_AUTH_TOKEN_SECRET/
+      );
+    }
+  );
+});
+
+test('production checkout accepts separate high-entropy admin secrets', async () => {
+  const { validateEnv } = await import('./env.js');
+  await withEnv(
+    {
+      NODE_ENV: 'production',
+      ...productionGuardAcks,
+      POSTGRES_URL: 'postgresql://mitr:secret@db.example.com:5432/mitr?sslmode=verify-full',
+      MEM0_API_KEY: 'mem0-test',
+      QDRANT_URL: 'https://qdrant.mitr.app',
+      CORS_ORIGINS: 'https://app.mitr.app',
+      API_PUBLIC_BASE_URL: 'https://api.mitr.app',
+      VOICE_GATEWAY_PUBLIC_WS_URL: 'wss://api.mitr.app/ws',
+      VOICE_GATEWAY_PUBLIC_HTTP_URL: 'https://api.mitr.app',
+      INTERNAL_SERVICE_TOKEN: strongInternalToken,
+      AUTH_DEV_OTP_BYPASS: 'false',
+      AUTH_OTP_DELIVERY_MODE: 'disabled',
+      VOICE_NOTES_LOCAL_STORAGE_ACK_RISK: 'true',
+      VOICE_NOTES_ENCRYPTION_KEY_B64: Buffer.alloc(32, 1).toString('base64'),
+      CHECKOUT_ENABLED: 'true',
+      CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD: 'Strong-Checkout-Admin-Password-9!',
+      CHECKOUT_ADMIN_SERVICE_TOKEN: strongCheckoutAdminServiceToken,
+      CHECKOUT_ADMIN_AUTH_TOKEN_SECRET: strongCheckoutAdminAuthTokenSecret,
+      RAZORPAY_KEY_ID: 'rzp_live_key',
+      RAZORPAY_KEY_SECRET: 'razorpay-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'razorpay-webhook-secret'
+    },
+    () => {
+      assert.doesNotThrow(() => validateEnv());
     }
   );
 });

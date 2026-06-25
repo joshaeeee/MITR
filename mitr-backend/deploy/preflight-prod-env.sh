@@ -147,6 +147,27 @@ require_secret_min_length() {
   fi
 }
 
+require_password_policy() {
+  local file="$1"
+  local key="$2"
+  local value
+  local categories=0
+  value="$(trim "$(env_value "${file}" "${key}" || true)")"
+  if [[ "${#value}" -lt 12 || "${#value}" -gt 128 ]]; then
+    echo "[preflight] ${file}: ${key} must be between 12 and 128 characters" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  [[ "${value}" =~ [a-z] ]] && categories=$((categories + 1))
+  [[ "${value}" =~ [A-Z] ]] && categories=$((categories + 1))
+  [[ "${value}" =~ [0-9] ]] && categories=$((categories + 1))
+  [[ "${value}" =~ [^a-zA-Z0-9] ]] && categories=$((categories + 1))
+  if [[ "${categories}" -lt 3 ]]; then
+    echo "[preflight] ${file}: ${key} must use at least three of lowercase, uppercase, number, or symbol" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 require_same_value() {
   local file_a="$1"
   local key_a="$2"
@@ -158,6 +179,20 @@ require_same_value() {
   value_b="$(trim "$(env_value "${file_b}" "${key_b}" || true)")"
   if [[ -n "${value_a}" && -n "${value_b}" && "${value_a}" != "${value_b}" ]]; then
     echo "[preflight] ${file_b}: ${key_b} must match ${key_a} from ${file_a}" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+require_different_value() {
+  local file="$1"
+  local key_a="$2"
+  local key_b="$3"
+  local value_a
+  local value_b
+  value_a="$(trim "$(env_value "${file}" "${key_a}" || true)")"
+  value_b="$(trim "$(env_value "${file}" "${key_b}" || true)")"
+  if [[ -n "${value_a}" && -n "${value_b}" && "${value_a}" == "${value_b}" ]]; then
+    echo "[preflight] ${file}: ${key_a} and ${key_b} must use different secrets" >&2
     failures=$((failures + 1))
   fi
 }
@@ -258,6 +293,15 @@ require_postgres_sslmode "${ENV_FILE}" POSTGRES_URL
 require_nonempty "${ENV_FILE}" REDIS_URL
 require_secret_min_length "${ENV_FILE}" INTERNAL_SERVICE_TOKEN 32
 require_secret_min_length "${ENV_FILE}" SHORT_CODE_PEPPER 32
+require_true "${ENV_FILE}" CHECKOUT_ENABLED
+require_password_policy "${ENV_FILE}" CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD
+require_secret_min_length "${ENV_FILE}" CHECKOUT_ADMIN_SERVICE_TOKEN 32
+require_secret_min_length "${ENV_FILE}" CHECKOUT_ADMIN_AUTH_TOKEN_SECRET 32
+require_different_value "${ENV_FILE}" INTERNAL_SERVICE_TOKEN CHECKOUT_ADMIN_SERVICE_TOKEN
+require_different_value "${ENV_FILE}" CHECKOUT_ADMIN_SERVICE_TOKEN CHECKOUT_ADMIN_AUTH_TOKEN_SECRET
+require_nonempty "${ENV_FILE}" RAZORPAY_KEY_ID
+require_nonempty "${ENV_FILE}" RAZORPAY_KEY_SECRET
+require_nonempty "${ENV_FILE}" RAZORPAY_WEBHOOK_SECRET
 require_not_placeholder "${ENV_FILE}" OPENAI_API_KEY
 validate_openai_api_key "${ENV_FILE}" OPENAI_API_KEY
 require_exact_value "${ENV_FILE}" OPENAI_REALTIME_STT_LANGUAGE "hi-IN"
