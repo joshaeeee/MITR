@@ -8,5 +8,6 @@ declare module 'fastify' {
     auth?: AuthContext;
     deviceAuth?: DeviceAuthContext;
     internalAuth?: InternalServiceAuthContext;
+    rawBody?: string;
   }
 }

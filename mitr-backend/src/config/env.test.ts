@@ -2,14 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const strongInternalToken = 'a'.repeat(64);
-const productionGuardAcks = {
+const productionGuardAcks: Record<string, string | undefined> = {
   REDIS_URL: 'redis://localhost:6379',
   QDRANT_API_KEY: 'qdrant-test-key',
   SHORT_CODE_PEPPER: 'b'.repeat(64),
   SECURITY_KEYS_ROTATED_ACK: 'true',
   PROD_SECRETS_OUT_OF_REPO_ACK: 'true',
   POSTGRES_STORAGE_ENCRYPTION_ACK: 'true',
-  POSTGRES_BACKUPS_ENCRYPTION_ACK: 'true'
+  POSTGRES_BACKUPS_ENCRYPTION_ACK: 'true',
+  CHECKOUT_DEV_PRICE_OVERRIDE_PAISE: undefined
 };
 
 const withEnv = async (patch: Record<string, string | undefined>, fn: () => void | Promise<void>) => {
@@ -374,6 +375,36 @@ test('production env accepts remote Postgres verify-full SSL mode', async () => 
     },
     () => {
       assert.doesNotThrow(() => validateEnv());
+    }
+  );
+});
+
+test('production env rejects checkout dev price override', async () => {
+  const { validateEnv } = await import('./env.js');
+  await withEnv(
+    {
+      NODE_ENV: 'production',
+      ...productionGuardAcks,
+      POSTGRES_URL: 'postgresql://mitr:secret@db.example.com:5432/mitr?sslmode=verify-full',
+      MEM0_API_KEY: 'mem0-test',
+      QDRANT_URL: 'https://qdrant.mitr.app',
+      CORS_ORIGINS: 'https://app.mitr.app',
+      API_PUBLIC_BASE_URL: 'https://api.mitr.app',
+      VOICE_GATEWAY_PUBLIC_WS_URL: 'wss://api.mitr.app/ws',
+      VOICE_GATEWAY_PUBLIC_HTTP_URL: 'https://api.mitr.app',
+      INTERNAL_SERVICE_TOKEN: strongInternalToken,
+      AUTH_DEV_OTP_BYPASS: 'false',
+      AUTH_OTP_DELIVERY_MODE: 'disabled',
+      VOICE_NOTES_LOCAL_STORAGE_ACK_RISK: 'true',
+      VOICE_NOTES_ENCRYPTION_KEY_B64: Buffer.alloc(32, 1).toString('base64'),
+      CHECKOUT_ENABLED: 'true',
+      CHECKOUT_DEV_PRICE_OVERRIDE_PAISE: '100',
+      RAZORPAY_KEY_ID: 'rzp_test_key',
+      RAZORPAY_KEY_SECRET: 'razorpay-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'razorpay-webhook-secret'
+    },
+    () => {
+      assert.throws(() => validateEnv(), /CHECKOUT_DEV_PRICE_OVERRIDE_PAISE/);
     }
   );
 });

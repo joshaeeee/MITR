@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import { env, validateEnv } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { createRateLimit } from './lib/rate-limit.js';
+import { registerRawJsonBodyParser } from './lib/raw-json-body.js';
 import { setSecurityHeaders } from './lib/security-headers.js';
 
 validateEnv();
@@ -20,6 +21,7 @@ import { registerAgentRoutes } from './routes/agent.js';
 import { registerHomeRoutes } from './routes/home.js';
 import { registerNotificationsRoutes } from './routes/notifications.js';
 import { registerInternalDeviceSessionRoutes } from './routes/internal-device-session.js';
+import { registerCheckoutRoutes } from './routes/checkout.js';
 import { ProfileService } from './services/profile/profile-service.js';
 import { SessionStore } from './services/session-store.js';
 import { SessionRecoveryService } from './services/long-session/session-recovery-service.js';
@@ -69,6 +71,7 @@ const shutdown = async (signal: string): Promise<void> => {
 const bootstrap = async (): Promise<void> => {
   const app = Fastify({ logger: false, trustProxy: env.TRUST_PROXY });
   appRef = app;
+  registerRawJsonBodyParser(app);
   const store = new SessionStore();
   const profiles = new ProfileService();
   const auth = new AuthService();
@@ -123,6 +126,7 @@ const bootstrap = async (): Promise<void> => {
   registerHomeRoutes(app, auth);
   registerNotificationsRoutes(app, auth);
   registerInternalDeviceSessionRoutes(app);
+  registerCheckoutRoutes(app);
   registerSessionRoutes(app, store, profiles, auth);
 
   await db.execute(sql`select 1`);

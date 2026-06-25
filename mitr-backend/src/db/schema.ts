@@ -1003,3 +1003,164 @@ export const digestDeliveryLogs = pgTable('digest_delivery_logs', {
   dedupeUnique: uniqueIndex('digest_delivery_logs_dedupe_uq').on(table.digestId, table.userId, table.deliveryChannel),
   userCreatedIdx: index('digest_delivery_logs_user_created_idx').on(table.userId, table.createdAt)
 }));
+
+export const checkoutProducts = pgTable('checkout_products', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  pricePaise: integer('price_paise').notNull(),
+  mrpPaise: integer('mrp_paise'),
+  currency: text('currency').default('INR').notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  activeIdx: index('checkout_products_active_idx').on(table.isActive)
+}));
+
+export const checkoutPromoCodes = pgTable('checkout_promo_codes', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  code: text('code').notNull(),
+  label: text('label').notNull(),
+  kind: text('kind').$type<'promo' | 'referral' | 'affiliate'>().default('promo').notNull(),
+  discountType: text('discount_type').$type<'flat' | 'percent'>().notNull(),
+  discountValue: integer('discount_value').notNull(),
+  maxDiscountPaise: integer('max_discount_paise'),
+  minOrderPaise: integer('min_order_paise').default(0).notNull(),
+  currency: text('currency').default('INR').notNull(),
+  startsAt: timestamp('starts_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  maxRedemptions: integer('max_redemptions'),
+  maxRedemptionsPerCustomer: integer('max_redemptions_per_customer'),
+  redeemedCount: integer('redeemed_count').default(0).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  affiliateId: text('affiliate_id'),
+  referrerId: text('referrer_id'),
+  campaign: text('campaign'),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  codeUnique: uniqueIndex('checkout_promo_codes_code_uq').on(table.code),
+  activeCodeIdx: index('checkout_promo_codes_active_code_idx').on(table.isActive, table.code),
+  affiliateIdx: index('checkout_promo_codes_affiliate_idx').on(table.affiliateId),
+  referrerIdx: index('checkout_promo_codes_referrer_idx').on(table.referrerId)
+}));
+
+export const checkoutOrders = pgTable('checkout_orders', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  idempotencyKey: text('idempotency_key'),
+  requestFingerprint: text('request_fingerprint').notNull(),
+  productId: text('product_id').notNull(),
+  productName: text('product_name').notNull(),
+  status: text('status')
+    .$type<
+      | 'draft'
+      | 'payment_order_failed'
+      | 'payment_pending'
+      | 'payment_signature_failed'
+      | 'payment_authorized'
+      | 'paid'
+      | 'payment_failed'
+      | 'payment_review_required'
+      | 'cancelled'
+      | 'expired'
+    >()
+    .default('draft')
+    .notNull(),
+  baseAmountPaise: integer('base_amount_paise').notNull(),
+  discountPaise: integer('discount_paise').default(0).notNull(),
+  amountPaise: integer('amount_paise').notNull(),
+  currency: text('currency').default('INR').notNull(),
+  promoCodeId: uuid('promo_code_id'),
+  promoCode: text('promo_code'),
+  promoKind: text('promo_kind').$type<'promo' | 'referral' | 'affiliate'>(),
+  affiliateId: text('affiliate_id'),
+  referrerId: text('referrer_id'),
+  campaign: text('campaign'),
+  razorpayOrderId: text('razorpay_order_id'),
+  razorpayPaymentId: text('razorpay_payment_id'),
+  paymentSignatureValid: boolean('payment_signature_valid'),
+  paymentVerifiedAt: timestamp('payment_verified_at', { withTimezone: true }),
+  paidAt: timestamp('paid_at', { withTimezone: true }),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+  customerName: text('customer_name').notNull(),
+  customerEmail: text('customer_email').notNull(),
+  customerPhone: text('customer_phone').notNull(),
+  receiveUpdates: boolean('receive_updates').default(true).notNull(),
+  shippingAddressJson: jsonb('shipping_address_json').$type<Record<string, string>>().default({}).notNull(),
+  shippingAddressText: text('shipping_address_text').notNull(),
+  personalizedMessage: text('personalized_message'),
+  customerEmailHash: text('customer_email_hash').notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  idempotencyUnique: uniqueIndex('checkout_orders_idempotency_key_uq').on(table.idempotencyKey),
+  razorpayOrderUnique: uniqueIndex('checkout_orders_razorpay_order_uq').on(table.razorpayOrderId),
+  razorpayPaymentUnique: uniqueIndex('checkout_orders_razorpay_payment_uq').on(table.razorpayPaymentId),
+  statusCreatedIdx: index('checkout_orders_status_created_idx').on(table.status, table.createdAt),
+  customerCreatedIdx: index('checkout_orders_customer_created_idx').on(table.customerEmailHash, table.createdAt),
+  promoCreatedIdx: index('checkout_orders_promo_created_idx').on(table.promoCodeId, table.createdAt),
+  affiliateCreatedIdx: index('checkout_orders_affiliate_created_idx').on(table.affiliateId, table.createdAt)
+}));
+
+export const checkoutPromoRedemptions = pgTable('checkout_promo_redemptions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  promoCodeId: uuid('promo_code_id').notNull(),
+  orderId: uuid('order_id').notNull(),
+  customerEmailHash: text('customer_email_hash').notNull(),
+  status: text('status').$type<'reserved' | 'redeemed' | 'released'>().default('reserved').notNull(),
+  discountPaise: integer('discount_paise').notNull(),
+  reservedExpiresAt: timestamp('reserved_expires_at', { withTimezone: true }).notNull(),
+  redeemedAt: timestamp('redeemed_at', { withTimezone: true }),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  orderUnique: uniqueIndex('checkout_promo_redemptions_order_uq').on(table.orderId),
+  promoStatusIdx: index('checkout_promo_redemptions_promo_status_idx').on(table.promoCodeId, table.status, table.reservedExpiresAt),
+  customerPromoIdx: index('checkout_promo_redemptions_customer_promo_idx').on(table.customerEmailHash, table.promoCodeId, table.status)
+}));
+
+export const checkoutPayments = pgTable('checkout_payments', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  orderId: uuid('order_id').notNull(),
+  provider: text('provider').default('razorpay').notNull(),
+  providerOrderId: text('provider_order_id').notNull(),
+  providerPaymentId: text('provider_payment_id'),
+  status: text('status').notNull(),
+  amountPaise: integer('amount_paise'),
+  currency: text('currency'),
+  signatureValid: boolean('signature_valid'),
+  errorCode: text('error_code'),
+  errorDescription: text('error_description'),
+  rawJson: jsonb('raw_json').$type<Record<string, unknown>>().default({}).notNull(),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  capturedAt: timestamp('captured_at', { withTimezone: true }),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  providerPaymentUnique: uniqueIndex('checkout_payments_provider_payment_uq').on(table.providerPaymentId),
+  orderCreatedIdx: index('checkout_payments_order_created_idx').on(table.orderId, table.createdAt),
+  providerOrderIdx: index('checkout_payments_provider_order_idx').on(table.providerOrderId)
+}));
+
+export const checkoutPaymentEvents = pgTable('checkout_payment_events', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  orderId: uuid('order_id'),
+  paymentId: uuid('payment_id'),
+  provider: text('provider').default('razorpay').notNull(),
+  providerEventId: text('provider_event_id'),
+  eventType: text('event_type').notNull(),
+  signatureValid: boolean('signature_valid').notNull(),
+  payloadJson: jsonb('payload_json').$type<Record<string, unknown>>().default({}).notNull(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  providerEventUnique: uniqueIndex('checkout_payment_events_provider_event_uq').on(table.providerEventId),
+  orderReceivedIdx: index('checkout_payment_events_order_received_idx').on(table.orderId, table.receivedAt),
+  eventTypeIdx: index('checkout_payment_events_type_idx').on(table.eventType, table.receivedAt)
+}));
