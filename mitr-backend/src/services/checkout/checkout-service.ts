@@ -1,7 +1,9 @@
 import type { PoolClient } from 'pg';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { pgPool } from '../../db/client.js';
 import { logger } from '../../lib/logger.js';
+import { validatePasswordPolicy } from '../auth/password-policy.js';
 import {
   calculatePromoDiscount,
   formatAddress,
@@ -22,9 +24,25 @@ import {
   RazorpayApiError,
   type RazorpayPayment
 } from './razorpay-client.js';
+import { issueCheckoutAdminSessionToken } from './checkout-admin-auth.js';
 
 type PromoKind = 'promo' | 'referral' | 'affiliate';
 type DiscountType = 'flat' | 'percent';
+
+export const CHECKOUT_ORDER_STATUSES = [
+  'draft',
+  'payment_order_failed',
+  'payment_pending',
+  'payment_signature_failed',
+  'payment_authorized',
+  'paid',
+  'payment_failed',
+  'payment_review_required',
+  'cancelled',
+  'expired'
+] as const;
+
+export type CheckoutOrderStatus = typeof CHECKOUT_ORDER_STATUSES[number];
 
 export class CheckoutError extends Error {
   constructor(
@@ -81,6 +99,62 @@ export interface CreatePromoCodeInput {
   createdBy?: string;
 }
 
+export interface ListCheckoutOrdersInput {
+  status?: CheckoutOrderStatus;
+  promoCode?: string;
+  email?: string;
+  q?: string;
+  from?: Date;
+  to?: Date;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface UpdatePromoCodeInput {
+  label?: string;
+  kind?: PromoKind;
+  discountType?: DiscountType;
+  discountValue?: number;
+  maxDiscountPaise?: number | null;
+  minOrderPaise?: number;
+  currency?: string;
+  startsAt?: Date | null;
+  expiresAt?: Date | null;
+  maxRedemptions?: number | null;
+  maxRedemptionsPerCustomer?: number | null;
+  affiliateId?: string | null;
+  referrerId?: string | null;
+  campaign?: string | null;
+  isActive?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateCheckoutProductInput {
+  name?: string;
+  description?: string | null;
+  pricePaise?: number;
+  mrpPaise?: number | null;
+  currency?: string;
+  isActive?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface LoginCheckoutAdminInput {
+  email: string;
+  password: string;
+}
+
+export interface CreateCheckoutAdminUserInput {
+  email: string;
+  createdBy: string;
+}
+
+export interface ChangeCheckoutAdminPasswordInput {
+  adminId: string;
+  currentPassword: string;
+  newPassword: string;
+}
+
 interface ProductRow {
   id: string;
   name: string;
@@ -89,6 +163,9 @@ interface ProductRow {
   mrp_paise: number | null;
   currency: string;
   is_active: boolean;
+  metadata_json?: Record<string, unknown>;
+  created_at?: Date;
+  updated_at?: Date;
 }
 
 interface PromoRow {
@@ -110,6 +187,10 @@ interface PromoRow {
   affiliate_id: string | null;
   referrer_id: string | null;
   campaign: string | null;
+  metadata_json?: Record<string, unknown>;
+  created_by?: string | null;
+  created_at?: Date;
+  updated_at?: Date;
 }
 
 interface OrderRow {
@@ -131,8 +212,34 @@ interface OrderRow {
   campaign: string | null;
   razorpay_order_id: string | null;
   razorpay_payment_id: string | null;
+  payment_signature_valid: boolean | null;
+  payment_verified_at: Date | null;
+  paid_at: Date | null;
+  failed_at: Date | null;
+  customer_name: string;
+  customer_email: string;
+  customer_phone: string;
+  receive_updates: boolean;
+  shipping_address_json: Record<string, unknown>;
+  shipping_address_text: string;
+  personalized_message: string | null;
   customer_email_hash: string;
+  metadata_json: Record<string, unknown>;
   created_at: Date;
+  updated_at: Date;
+}
+
+interface CheckoutAdminUserRow {
+  id: string;
+  email: string;
+  password_hash: string;
+  role: 'owner' | 'admin';
+  is_active: boolean;
+  must_change_password: boolean;
+  created_by: string | null;
+  last_login_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 interface PaymentEvent {
@@ -178,6 +285,59 @@ const checkoutKeyId = (): string => {
     throw new CheckoutError(503, 'Razorpay key id is not configured', 'razorpay_not_configured');
   }
   return env.RAZORPAY_KEY_ID;
+};
+
+const hashAdminPassword = (password: string): string => {
+  const salt = randomBytes(16).toString('hex');
+  const derived = scryptSync(password, salt, 64).toString('hex');
+  return `scrypt$${salt}$${derived}`;
+};
+
+const verifyAdminPasswordHash = (password: string, encoded: string): boolean => {
+  const [scheme, salt, storedHex] = encoded.split('$');
+  if (scheme !== 'scrypt' || !salt || !storedHex) return false;
+  const derived = scryptSync(password, salt, 64);
+  const stored = Buffer.from(storedHex, 'hex');
+  if (stored.length !== derived.length) return false;
+  return timingSafeEqual(stored, derived);
+};
+
+const DUMMY_ADMIN_PASSWORD_HASH = hashAdminPassword(randomBytes(24).toString('base64url'));
+
+const generateTemporaryAdminPassword = (): string => `Rc-${randomBytes(14).toString('base64url')}9!`;
+
+const publicCheckoutAdminUser = (row: CheckoutAdminUserRow) => ({
+  id: row.id,
+  email: row.email,
+  role: row.role,
+  isActive: row.is_active,
+  mustChangePassword: row.must_change_password,
+  createdBy: row.created_by,
+  lastLoginAt: iso(row.last_login_at),
+  createdAt: iso(row.created_at),
+  updatedAt: iso(row.updated_at)
+});
+
+const ensureBootstrapCheckoutAdminUser = async (client: PoolClient): Promise<void> => {
+  const countResult = await client.query<{ count: string }>('select count(*) as count from checkout_admin_users');
+  if (Number(countResult.rows[0]?.count ?? 0) > 0) return;
+
+  const bootstrapEmail = normalizeEmail(env.CHECKOUT_ADMIN_BOOTSTRAP_EMAIL || 'shivansh@heyreca.com');
+  const bootstrapPassword = env.CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD?.trim();
+  if (!bootstrapPassword) return;
+
+  const policy = validatePasswordPolicy({ password: bootstrapPassword, email: bootstrapEmail });
+  if (!policy.ok) {
+    logger.error('Checkout admin bootstrap password failed policy', { reason: policy.reason });
+    return;
+  }
+
+  await client.query(
+    `insert into checkout_admin_users (email, password_hash, role, must_change_password, created_by)
+     values ($1, $2, 'owner', true, 'bootstrap')
+     on conflict (email) do nothing`,
+    [bootstrapEmail, hashAdminPassword(bootstrapPassword)]
+  );
 };
 
 const getProduct = async (client: PoolClient, productId?: string): Promise<ProductRow> => {
@@ -521,11 +681,611 @@ const orderResponse = (order: OrderRow) => ({
   razorpayKeyId: checkoutKeyId()
 });
 
+const iso = (value: Date | null | undefined): string | null => value?.toISOString() ?? null;
+
+const formattedAmount = (amountPaise: number, currency: string): string =>
+  currency === 'INR' ? formatINR(amountPaise) : `${currency} ${amountPaise}`;
+
+const publicAdminProduct = (row: ProductRow) => ({
+  id: row.id,
+  name: row.name,
+  description: row.description,
+  pricePaise: row.price_paise,
+  mrpPaise: row.mrp_paise,
+  currency: row.currency,
+  isActive: row.is_active,
+  formattedPrice: formattedAmount(row.price_paise, row.currency),
+  formattedMrp: row.mrp_paise === null ? null : formattedAmount(row.mrp_paise, row.currency),
+  metadata: row.metadata_json ?? {},
+  createdAt: iso(row.created_at),
+  updatedAt: iso(row.updated_at)
+});
+
+const publicPromoCode = (
+  row: PromoRow,
+  counts: { activeRedemptions?: number; redeemedCount?: number; orderCount?: number } = {}
+) => ({
+  id: row.id,
+  code: row.code,
+  label: row.label,
+  kind: row.kind,
+  discountType: row.discount_type,
+  discountValue: row.discount_value,
+  maxDiscountPaise: row.max_discount_paise,
+  minOrderPaise: row.min_order_paise,
+  currency: row.currency,
+  startsAt: iso(row.starts_at),
+  expiresAt: iso(row.expires_at),
+  maxRedemptions: row.max_redemptions,
+  maxRedemptionsPerCustomer: row.max_redemptions_per_customer,
+  redeemedCount: counts.redeemedCount ?? row.redeemed_count,
+  activeRedemptions: counts.activeRedemptions ?? 0,
+  orderCount: counts.orderCount ?? 0,
+  isActive: row.is_active,
+  affiliateId: row.affiliate_id,
+  referrerId: row.referrer_id,
+  campaign: row.campaign,
+  createdBy: row.created_by ?? null,
+  createdAt: iso(row.created_at),
+  updatedAt: iso(row.updated_at)
+});
+
+const publicOrderSummary = (row: OrderRow) => ({
+  id: row.id,
+  status: row.status,
+  product: {
+    id: row.product_id,
+    name: row.product_name
+  },
+  baseAmountPaise: row.base_amount_paise,
+  discountPaise: row.discount_paise,
+  amountPaise: row.amount_paise,
+  currency: row.currency,
+  formattedAmount: formattedAmount(row.amount_paise, row.currency),
+  promo: row.promo_code
+    ? {
+        code: row.promo_code,
+        kind: row.promo_kind,
+        affiliateId: row.affiliate_id,
+        referrerId: row.referrer_id,
+        campaign: row.campaign
+      }
+    : null,
+  customer: {
+    name: row.customer_name,
+    email: row.customer_email,
+    phone: row.customer_phone,
+    receiveUpdates: row.receive_updates
+  },
+  razorpayOrderId: row.razorpay_order_id,
+  razorpayPaymentId: row.razorpay_payment_id,
+  paymentSignatureValid: row.payment_signature_valid,
+  paymentVerifiedAt: iso(row.payment_verified_at),
+  paidAt: iso(row.paid_at),
+  failedAt: iso(row.failed_at),
+  createdAt: iso(row.created_at),
+  updatedAt: iso(row.updated_at)
+});
+
+const encodeOrdersCursor = (row: OrderRow): string =>
+  Buffer.from(JSON.stringify({ createdAt: row.created_at.toISOString(), id: row.id })).toString('base64url');
+
+const decodeOrdersCursor = (cursor: string): { createdAt: Date; id: string } => {
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
+      createdAt?: unknown;
+      id?: unknown;
+    };
+    if (
+      typeof decoded.createdAt !== 'string' ||
+      typeof decoded.id !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decoded.id)
+    ) {
+      throw new Error('invalid cursor shape');
+    }
+    const createdAt = new Date(decoded.createdAt);
+    if (Number.isNaN(createdAt.getTime())) throw new Error('invalid cursor date');
+    return { createdAt, id: decoded.id };
+  } catch {
+    throw new CheckoutError(400, 'Invalid orders cursor', 'invalid_cursor');
+  }
+};
+
 export const getCheckoutProduct = async (productId?: string): Promise<ReturnType<typeof publicProduct>> => {
   checkoutEnabled();
   const client = await pgPool.connect();
   try {
     return publicProduct(await getProduct(client, productId));
+  } finally {
+    client.release();
+  }
+};
+
+export const listCheckoutProducts = async (): Promise<{ products: ReturnType<typeof publicAdminProduct>[] }> => {
+  checkoutEnabled();
+  const result = await pgPool.query<ProductRow>(
+    `select id, name, description, price_paise, mrp_paise, currency, is_active, metadata_json, created_at, updated_at
+     from checkout_products
+     order by created_at desc, id asc`
+  );
+  return { products: result.rows.map(publicAdminProduct) };
+};
+
+export const updateCheckoutProduct = async (
+  productId: string,
+  input: UpdateCheckoutProductInput
+): Promise<ReturnType<typeof publicAdminProduct>> => {
+  checkoutEnabled();
+  const resolvedProductId = productId.trim();
+  if (!resolvedProductId) throw new CheckoutError(400, 'Product id is required', 'missing_product_id');
+  if (input.pricePaise !== undefined && input.pricePaise < MIN_CHECKOUT_AMOUNT_PAISE) {
+    throw new CheckoutError(400, 'Product price is below the minimum checkout amount', 'invalid_product_price');
+  }
+  if (input.mrpPaise !== undefined && input.mrpPaise !== null && input.mrpPaise < MIN_CHECKOUT_AMOUNT_PAISE) {
+    throw new CheckoutError(400, 'Product MRP is below the minimum checkout amount', 'invalid_product_mrp');
+  }
+  if (input.currency !== undefined && input.currency.trim().length !== 3) {
+    throw new CheckoutError(400, 'Product currency must be a 3-letter code', 'invalid_currency');
+  }
+
+  const assignments: string[] = [];
+  const values: unknown[] = [resolvedProductId];
+  const add = (sql: string, value: unknown) => {
+    values.push(value);
+    assignments.push(sql.replace('?', `$${values.length}`));
+  };
+
+  if (input.name !== undefined) add('name = ?', input.name.trim());
+  if (input.description !== undefined) add('description = ?', input.description?.trim() || null);
+  if (input.pricePaise !== undefined) add('price_paise = ?', input.pricePaise);
+  if (input.mrpPaise !== undefined) add('mrp_paise = ?', input.mrpPaise);
+  if (input.currency !== undefined) add('currency = ?', input.currency.trim().toUpperCase());
+  if (input.isActive !== undefined) add('is_active = ?', input.isActive);
+  if (input.metadata !== undefined) add('metadata_json = metadata_json || ?::jsonb', JSON.stringify(input.metadata));
+
+  if (assignments.length === 0) {
+    const current = await pgPool.query<ProductRow>(
+      `select id, name, description, price_paise, mrp_paise, currency, is_active, metadata_json, created_at, updated_at
+       from checkout_products
+       where id = $1`,
+      [resolvedProductId]
+    );
+    const row = current.rows[0];
+    if (!row) throw new CheckoutError(404, 'Checkout product was not found', 'product_not_found');
+    return publicAdminProduct(row);
+  }
+
+  try {
+    const result = await pgPool.query<ProductRow>(
+      `update checkout_products
+       set ${assignments.join(', ')}, updated_at = now()
+       where id = $1
+       returning id, name, description, price_paise, mrp_paise, currency, is_active, metadata_json, created_at, updated_at`,
+      values
+    );
+    const row = result.rows[0];
+    if (!row) throw new CheckoutError(404, 'Checkout product was not found', 'product_not_found');
+    return publicAdminProduct(row);
+  } catch (error) {
+    if ((error as { code?: string }).code === '23514') {
+      throw new CheckoutError(400, 'Product pricing failed validation', 'invalid_product_pricing');
+    }
+    if (error instanceof CheckoutError) throw error;
+    throw new CheckoutError(500, 'Could not update checkout product', 'product_update_failed');
+  }
+};
+
+export const listCheckoutOrders = async (input: ListCheckoutOrdersInput): Promise<{
+  orders: ReturnType<typeof publicOrderSummary>[];
+  nextCursor: string | null;
+}> => {
+  checkoutEnabled();
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const values: unknown[] = [];
+  const where: string[] = [];
+  const addValue = (value: unknown): string => {
+    values.push(value);
+    return `$${values.length}`;
+  };
+
+  if (input.status) where.push(`status = ${addValue(input.status)}`);
+  if (input.promoCode) where.push(`promo_code = ${addValue(normalizePromoCode(input.promoCode))}`);
+  if (input.email) where.push(`customer_email ilike ${addValue(`%${normalizeEmail(input.email)}%`)}`);
+  if (input.from) where.push(`created_at >= ${addValue(input.from)}`);
+  if (input.to) where.push(`created_at < ${addValue(input.to)}`);
+  if (input.q?.trim()) {
+    const search = `%${input.q.trim()}%`;
+    const placeholder = addValue(search);
+    where.push(`(
+      id::text ilike ${placeholder}
+      or customer_name ilike ${placeholder}
+      or customer_email ilike ${placeholder}
+      or customer_phone ilike ${placeholder}
+      or coalesce(promo_code, '') ilike ${placeholder}
+      or coalesce(razorpay_order_id, '') ilike ${placeholder}
+      or coalesce(razorpay_payment_id, '') ilike ${placeholder}
+    )`);
+  }
+  if (input.cursor) {
+    const cursor = decodeOrdersCursor(input.cursor);
+    const createdAtPlaceholder = addValue(cursor.createdAt);
+    const idPlaceholder = addValue(cursor.id);
+    where.push(`(created_at < ${createdAtPlaceholder} or (created_at = ${createdAtPlaceholder} and id < ${idPlaceholder}::uuid))`);
+  }
+
+  const result = await pgPool.query<OrderRow>(
+    `select *
+     from checkout_orders
+     ${where.length ? `where ${where.join(' and ')}` : ''}
+     order by created_at desc, id desc
+     limit ${addValue(limit + 1)}`,
+    values
+  );
+  const page = result.rows.slice(0, limit);
+  const nextCursor = result.rows.length > limit ? encodeOrdersCursor(page[page.length - 1]) : null;
+  return {
+    orders: page.map(publicOrderSummary),
+    nextCursor
+  };
+};
+
+export const getCheckoutOrderDetail = async (orderId: string): Promise<{
+  order: ReturnType<typeof publicOrderSummary> & {
+    customer: ReturnType<typeof publicOrderSummary>['customer'] & {
+      address: Record<string, unknown>;
+      addressText: string;
+    };
+    personalizedMessage: string | null;
+    metadata: Record<string, unknown>;
+  };
+  payments: Array<{
+    id: string;
+    provider: string;
+    providerOrderId: string;
+    providerPaymentId: string | null;
+    status: string;
+    amountPaise: number | null;
+    currency: string | null;
+    signatureValid: boolean | null;
+    errorCode: string | null;
+    errorDescription: string | null;
+    verifiedAt: string | null;
+    capturedAt: string | null;
+    failedAt: string | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+  }>;
+  events: Array<{
+    id: string;
+    provider: string;
+    providerEventId: string | null;
+    eventType: string;
+    signatureValid: boolean;
+    receivedAt: string | null;
+  }>;
+  promoRedemption: {
+    id: string;
+    status: string;
+    discountPaise: number;
+    reservedExpiresAt: string | null;
+    redeemedAt: string | null;
+    releasedAt: string | null;
+  } | null;
+}> => {
+  checkoutEnabled();
+  const client = await pgPool.connect();
+  try {
+    const orderResult = await client.query<OrderRow>(
+      `select *
+       from checkout_orders
+       where id = $1`,
+      [orderId]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw new CheckoutError(404, 'Checkout order was not found', 'order_not_found');
+
+    const paymentsResult = await client.query<{
+      id: string;
+      provider: string;
+      provider_order_id: string;
+      provider_payment_id: string | null;
+      status: string;
+      amount_paise: number | null;
+      currency: string | null;
+      signature_valid: boolean | null;
+      error_code: string | null;
+      error_description: string | null;
+      verified_at: Date | null;
+      captured_at: Date | null;
+      failed_at: Date | null;
+      created_at: Date;
+      updated_at: Date;
+    }>(
+      `select id, provider, provider_order_id, provider_payment_id, status, amount_paise,
+              currency, signature_valid, error_code, error_description, verified_at,
+              captured_at, failed_at, created_at, updated_at
+       from checkout_payments
+       where order_id = $1
+       order by created_at desc`,
+      [orderId]
+    );
+    const eventsResult = await client.query<{
+      id: string;
+      provider: string;
+      provider_event_id: string | null;
+      event_type: string;
+      signature_valid: boolean;
+      received_at: Date;
+    }>(
+      `select id, provider, provider_event_id, event_type, signature_valid, received_at
+       from checkout_payment_events
+       where order_id = $1
+       order by received_at desc
+       limit 50`,
+      [orderId]
+    );
+    const redemptionResult = await client.query<{
+      id: string;
+      status: string;
+      discount_paise: number;
+      reserved_expires_at: Date;
+      redeemed_at: Date | null;
+      released_at: Date | null;
+    }>(
+      `select id, status, discount_paise, reserved_expires_at, redeemed_at, released_at
+       from checkout_promo_redemptions
+       where order_id = $1
+       order by created_at desc
+       limit 1`,
+      [orderId]
+    );
+
+    const summary = publicOrderSummary(order);
+    return {
+      order: {
+        ...summary,
+        customer: {
+          ...summary.customer,
+          address: order.shipping_address_json,
+          addressText: order.shipping_address_text
+        },
+        personalizedMessage: order.personalized_message,
+        metadata: order.metadata_json ?? {}
+      },
+      payments: paymentsResult.rows.map((payment) => ({
+        id: payment.id,
+        provider: payment.provider,
+        providerOrderId: payment.provider_order_id,
+        providerPaymentId: payment.provider_payment_id,
+        status: payment.status,
+        amountPaise: payment.amount_paise,
+        currency: payment.currency,
+        signatureValid: payment.signature_valid,
+        errorCode: payment.error_code,
+        errorDescription: payment.error_description,
+        verifiedAt: iso(payment.verified_at),
+        capturedAt: iso(payment.captured_at),
+        failedAt: iso(payment.failed_at),
+        createdAt: iso(payment.created_at),
+        updatedAt: iso(payment.updated_at)
+      })),
+      events: eventsResult.rows.map((event) => ({
+        id: event.id,
+        provider: event.provider,
+        providerEventId: event.provider_event_id,
+        eventType: event.event_type,
+        signatureValid: event.signature_valid,
+        receivedAt: iso(event.received_at)
+      })),
+      promoRedemption: redemptionResult.rows[0]
+        ? {
+            id: redemptionResult.rows[0].id,
+            status: redemptionResult.rows[0].status,
+            discountPaise: redemptionResult.rows[0].discount_paise,
+            reservedExpiresAt: iso(redemptionResult.rows[0].reserved_expires_at),
+            redeemedAt: iso(redemptionResult.rows[0].redeemed_at),
+            releasedAt: iso(redemptionResult.rows[0].released_at)
+          }
+        : null
+    };
+  } finally {
+    client.release();
+  }
+};
+
+export const getCheckoutAdminStats = async (): Promise<{
+  statusBuckets: Array<{ status: string; count: number; revenuePaise: number }>;
+  pendingPayments: number;
+  paidRevenuePaise: number;
+  activePromoCodes: number;
+  expiringPromoCodes: number;
+}> => {
+  checkoutEnabled();
+  const [statusResult, promoResult] = await Promise.all([
+    pgPool.query<{ status: string; count: string; revenue_paise: string | null }>(
+      `select status, count(*) as count, coalesce(sum(amount_paise) filter (where status = 'paid'), 0) as revenue_paise
+       from checkout_orders
+       group by status
+       order by status asc`
+    ),
+    pgPool.query<{ active_count: string; expiring_count: string }>(
+      `select
+         count(*) filter (
+           where is_active = true
+             and (starts_at is null or starts_at <= now())
+             and (expires_at is null or expires_at > now())
+         ) as active_count,
+         count(*) filter (
+           where is_active = true
+             and expires_at > now()
+             and expires_at <= now() + interval '7 days'
+         ) as expiring_count
+       from checkout_promo_codes`
+    )
+  ]);
+  const statusBuckets = statusResult.rows.map((row) => ({
+    status: row.status,
+    count: Number(row.count),
+    revenuePaise: Number(row.revenue_paise ?? 0)
+  }));
+  return {
+    statusBuckets,
+    pendingPayments: statusBuckets
+      .filter((bucket) => ['draft', 'payment_order_failed', 'payment_pending', 'payment_authorized'].includes(bucket.status))
+      .reduce((sum, bucket) => sum + bucket.count, 0),
+    paidRevenuePaise: statusBuckets.reduce((sum, bucket) => sum + bucket.revenuePaise, 0),
+    activePromoCodes: Number(promoResult.rows[0]?.active_count ?? 0),
+    expiringPromoCodes: Number(promoResult.rows[0]?.expiring_count ?? 0)
+  };
+};
+
+export const loginCheckoutAdmin = async (
+  input: LoginCheckoutAdminInput
+): Promise<{ admin: ReturnType<typeof publicCheckoutAdminUser>; sessionToken: string }> => {
+  checkoutEnabled();
+  const email = normalizeEmail(input.email);
+  if (!email || !input.password) {
+    throw new CheckoutError(401, 'Invalid admin email or password', 'invalid_admin_login');
+  }
+
+  const client = await pgPool.connect();
+  try {
+    await ensureBootstrapCheckoutAdminUser(client);
+    const result = await client.query<CheckoutAdminUserRow>(
+      `select id, email, password_hash, role, is_active, must_change_password,
+              created_by, last_login_at, created_at, updated_at
+       from checkout_admin_users
+       where email = $1`,
+      [email]
+    );
+    const admin = result.rows[0];
+    const passwordValid = verifyAdminPasswordHash(
+      input.password,
+      admin?.password_hash ?? DUMMY_ADMIN_PASSWORD_HASH
+    );
+    if (!admin || !admin.is_active || !passwordValid) {
+      throw new CheckoutError(401, 'Invalid admin email or password', 'invalid_admin_login');
+    }
+
+    const updated = await client.query<CheckoutAdminUserRow>(
+      `update checkout_admin_users
+       set last_login_at = now(), updated_at = now()
+       where id = $1
+       returning id, email, password_hash, role, is_active, must_change_password,
+                 created_by, last_login_at, created_at, updated_at`,
+      [admin.id]
+    );
+    const currentAdmin = updated.rows[0] ?? admin;
+    return {
+      admin: publicCheckoutAdminUser(currentAdmin),
+      sessionToken: issueCheckoutAdminSessionToken(currentAdmin.id, currentAdmin.password_hash)
+    };
+  } finally {
+    client.release();
+  }
+};
+
+export const listCheckoutAdminUsers = async (): Promise<{
+  adminUsers: ReturnType<typeof publicCheckoutAdminUser>[];
+}> => {
+  checkoutEnabled();
+  const client = await pgPool.connect();
+  try {
+    await ensureBootstrapCheckoutAdminUser(client);
+    const result = await client.query<CheckoutAdminUserRow>(
+      `select id, email, password_hash, role, is_active, must_change_password,
+              created_by, last_login_at, created_at, updated_at
+       from checkout_admin_users
+       order by created_at desc, email asc`
+    );
+    return { adminUsers: result.rows.map(publicCheckoutAdminUser) };
+  } finally {
+    client.release();
+  }
+};
+
+export const createCheckoutAdminUser = async (
+  input: CreateCheckoutAdminUserInput
+): Promise<{ admin: ReturnType<typeof publicCheckoutAdminUser>; temporaryPassword: string }> => {
+  checkoutEnabled();
+  const email = normalizeEmail(input.email);
+  if (!email) throw new CheckoutError(400, 'Admin email is required', 'missing_admin_email');
+  const temporaryPassword = generateTemporaryAdminPassword();
+  const policy = validatePasswordPolicy({ password: temporaryPassword, email });
+  if (!policy.ok) throw new CheckoutError(500, 'Generated admin password failed policy', 'admin_password_generate_failed');
+
+  const client = await pgPool.connect();
+  try {
+    await ensureBootstrapCheckoutAdminUser(client);
+    const result = await client.query<CheckoutAdminUserRow>(
+      `insert into checkout_admin_users (email, password_hash, role, must_change_password, created_by)
+       values ($1, $2, 'admin', true, $3)
+       returning id, email, password_hash, role, is_active, must_change_password,
+                 created_by, last_login_at, created_at, updated_at`,
+      [email, hashAdminPassword(temporaryPassword), input.createdBy]
+    );
+    const admin = result.rows[0];
+    if (!admin) throw new CheckoutError(500, 'Could not create admin user', 'admin_user_create_failed');
+    return { admin: publicCheckoutAdminUser(admin), temporaryPassword };
+  } catch (error) {
+    if ((error as { code?: string }).code === '23505') {
+      throw new CheckoutError(409, 'Admin user already exists', 'admin_user_exists');
+    }
+    if (error instanceof CheckoutError) throw error;
+    throw new CheckoutError(500, 'Could not create admin user', 'admin_user_create_failed');
+  } finally {
+    client.release();
+  }
+};
+
+export const changeCheckoutAdminPassword = async (
+  input: ChangeCheckoutAdminPasswordInput
+): Promise<{ admin: ReturnType<typeof publicCheckoutAdminUser>; sessionToken: string }> => {
+  checkoutEnabled();
+  const client = await pgPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query<CheckoutAdminUserRow>(
+      `select id, email, password_hash, role, is_active, must_change_password,
+              created_by, last_login_at, created_at, updated_at
+       from checkout_admin_users
+       where id = $1
+       for update`,
+      [input.adminId]
+    );
+    const admin = result.rows[0];
+    if (!admin || !admin.is_active || !verifyAdminPasswordHash(input.currentPassword, admin.password_hash)) {
+      throw new CheckoutError(401, 'Current admin password is incorrect', 'invalid_current_admin_password');
+    }
+    if (verifyAdminPasswordHash(input.newPassword, admin.password_hash)) {
+      throw new CheckoutError(400, 'New admin password must be different', 'admin_password_unchanged');
+    }
+    const policy = validatePasswordPolicy({ password: input.newPassword, email: admin.email });
+    if (!policy.ok) {
+      throw new CheckoutError(400, policy.reason, 'invalid_admin_password');
+    }
+
+    const updated = await client.query<CheckoutAdminUserRow>(
+      `update checkout_admin_users
+       set password_hash = $2,
+           must_change_password = false,
+           updated_at = now()
+       where id = $1
+       returning id, email, password_hash, role, is_active, must_change_password,
+                 created_by, last_login_at, created_at, updated_at`,
+      [admin.id, hashAdminPassword(input.newPassword)]
+    );
+    const currentAdmin = updated.rows[0];
+    if (!currentAdmin) throw new CheckoutError(500, 'Could not update admin password', 'admin_password_update_failed');
+    await client.query('commit');
+    return {
+      admin: publicCheckoutAdminUser(currentAdmin),
+      sessionToken: issueCheckoutAdminSessionToken(currentAdmin.id, currentAdmin.password_hash)
+    };
+  } catch (error) {
+    await client.query('rollback');
+    if (error instanceof CheckoutError) throw error;
+    throw new CheckoutError(500, 'Could not update admin password', 'admin_password_update_failed');
   } finally {
     client.release();
   }
@@ -1054,15 +1814,157 @@ export const handleRazorpayWebhook = async (input: {
   }
 };
 
-export const createCheckoutPromoCode = async (input: CreatePromoCodeInput): Promise<{
-  id: string;
-  code: string;
-  label: string;
-  kind: PromoKind;
-  discountType: DiscountType;
-  discountValue: number;
-  active: boolean;
+export const listCheckoutPromoCodes = async (): Promise<{
+  promoCodes: ReturnType<typeof publicPromoCode>[];
 }> => {
+  checkoutEnabled();
+  const result = await pgPool.query<PromoRow & {
+    active_redemptions: string;
+    live_redeemed_count: string;
+    order_count: string;
+  }>(
+    `select p.id, p.code, p.label, p.kind, p.discount_type, p.discount_value,
+            p.max_discount_paise, p.min_order_paise, p.currency, p.starts_at,
+            p.expires_at, p.max_redemptions, p.max_redemptions_per_customer,
+            p.redeemed_count, p.is_active, p.affiliate_id, p.referrer_id,
+            p.campaign, p.metadata_json, p.created_by, p.created_at, p.updated_at,
+            coalesce(r.active_redemptions, 0) as active_redemptions,
+            coalesce(r.live_redeemed_count, 0) as live_redeemed_count,
+            coalesce(o.order_count, 0) as order_count
+     from checkout_promo_codes p
+     left join lateral (
+       select
+         count(*) filter (where status = 'reserved' and reserved_expires_at > now()) as active_redemptions,
+         count(*) filter (where status = 'redeemed') as live_redeemed_count
+       from checkout_promo_redemptions
+       where promo_code_id = p.id
+     ) r on true
+     left join lateral (
+       select count(*) as order_count
+       from checkout_orders
+       where promo_code_id = p.id
+     ) o on true
+     order by p.created_at desc, p.code asc`
+  );
+  return {
+    promoCodes: result.rows.map((row) =>
+      publicPromoCode(row, {
+        activeRedemptions: Number(row.active_redemptions),
+        redeemedCount: Number(row.live_redeemed_count),
+        orderCount: Number(row.order_count)
+      })
+    )
+  };
+};
+
+export const updateCheckoutPromoCode = async (
+  code: string,
+  input: UpdatePromoCodeInput
+): Promise<ReturnType<typeof publicPromoCode>> => {
+  checkoutEnabled();
+  const resolvedCode = normalizePromoCode(code);
+  if (!resolvedCode) throw new CheckoutError(400, 'Promo code is required', 'missing_code');
+
+  const client = await pgPool.connect();
+  try {
+    await client.query('begin');
+    const currentResult = await client.query<PromoRow>(
+      `select id, code, label, kind, discount_type, discount_value, max_discount_paise,
+              min_order_paise, currency, starts_at, expires_at, max_redemptions,
+              max_redemptions_per_customer, redeemed_count, is_active, affiliate_id,
+              referrer_id, campaign, metadata_json, created_by, created_at, updated_at
+       from checkout_promo_codes
+       where code = $1
+       for update`,
+      [resolvedCode]
+    );
+    const current = currentResult.rows[0];
+    if (!current) throw new CheckoutError(404, 'Promo code was not found', 'promo_not_found');
+
+    const nextDiscountType = input.discountType ?? current.discount_type;
+    const nextDiscountValue = input.discountValue ?? current.discount_value;
+    if (nextDiscountType === 'percent' && nextDiscountValue > 100) {
+      throw new CheckoutError(400, 'Percent discount cannot exceed 100', 'invalid_discount_value');
+    }
+    const nextStartsAt = input.startsAt === undefined ? current.starts_at : input.startsAt;
+    const nextExpiresAt = input.expiresAt === undefined ? current.expires_at : input.expiresAt;
+    if (nextStartsAt && nextExpiresAt && nextExpiresAt <= nextStartsAt) {
+      throw new CheckoutError(400, 'Promo expiry must be after start time', 'invalid_promo_window');
+    }
+
+    const assignments: string[] = [];
+    const values: unknown[] = [resolvedCode];
+    const add = (sql: string, value: unknown) => {
+      values.push(value);
+      assignments.push(sql.replace('?', `$${values.length}`));
+    };
+
+    if (input.label !== undefined) add('label = ?', input.label.trim());
+    if (input.kind !== undefined) add('kind = ?', input.kind);
+    if (input.discountType !== undefined) add('discount_type = ?', input.discountType);
+    if (input.discountValue !== undefined) add('discount_value = ?', input.discountValue);
+    if (input.maxDiscountPaise !== undefined) add('max_discount_paise = ?', input.maxDiscountPaise);
+    if (input.minOrderPaise !== undefined) add('min_order_paise = ?', input.minOrderPaise);
+    if (input.currency !== undefined) add('currency = ?', input.currency.trim().toUpperCase());
+    if (input.startsAt !== undefined) add('starts_at = ?', input.startsAt);
+    if (input.expiresAt !== undefined) add('expires_at = ?', input.expiresAt);
+    if (input.maxRedemptions !== undefined) add('max_redemptions = ?', input.maxRedemptions);
+    if (input.maxRedemptionsPerCustomer !== undefined) add('max_redemptions_per_customer = ?', input.maxRedemptionsPerCustomer);
+    if (input.affiliateId !== undefined) add('affiliate_id = ?', input.affiliateId?.trim() || null);
+    if (input.referrerId !== undefined) add('referrer_id = ?', input.referrerId?.trim() || null);
+    if (input.campaign !== undefined) add('campaign = ?', input.campaign?.trim() || null);
+    if (input.isActive !== undefined) add('is_active = ?', input.isActive);
+    if (input.metadata !== undefined) add('metadata_json = metadata_json || ?::jsonb', JSON.stringify(input.metadata));
+
+    let updated = current;
+    if (assignments.length > 0) {
+      const updateResult = await client.query<PromoRow>(
+        `update checkout_promo_codes
+         set ${assignments.join(', ')}, updated_at = now()
+         where code = $1
+         returning id, code, label, kind, discount_type, discount_value, max_discount_paise,
+                   min_order_paise, currency, starts_at, expires_at, max_redemptions,
+                   max_redemptions_per_customer, redeemed_count, is_active, affiliate_id,
+                   referrer_id, campaign, metadata_json, created_by, created_at, updated_at`,
+        values
+      );
+      updated = updateResult.rows[0] ?? current;
+    }
+    const counts = await client.query<{
+      active_redemptions: string;
+      redeemed_count: string;
+      order_count: string;
+    }>(
+      `select
+         count(*) filter (where r.status = 'reserved' and r.reserved_expires_at > now()) as active_redemptions,
+         count(*) filter (where r.status = 'redeemed') as redeemed_count,
+         (select count(*) from checkout_orders where promo_code_id = $1) as order_count
+       from checkout_promo_redemptions r
+       where r.promo_code_id = $1`,
+      [updated.id]
+    );
+    await client.query('commit');
+    return publicPromoCode(updated, {
+      activeRedemptions: Number(counts.rows[0]?.active_redemptions ?? 0),
+      redeemedCount: Number(counts.rows[0]?.redeemed_count ?? updated.redeemed_count),
+      orderCount: Number(counts.rows[0]?.order_count ?? 0)
+    });
+  } catch (error) {
+    await client.query('rollback');
+    if ((error as { code?: string }).code === '23514') {
+      throw new CheckoutError(400, 'Promo code failed validation', 'invalid_promo_code');
+    }
+    if (error instanceof CheckoutError) throw error;
+    throw new CheckoutError(500, 'Could not update promo code', 'promo_update_failed');
+  } finally {
+    client.release();
+  }
+};
+
+export const createCheckoutPromoCode = async (
+  input: CreatePromoCodeInput
+): Promise<ReturnType<typeof publicPromoCode>> => {
+  checkoutEnabled();
   const code = normalizePromoCode(input.code);
   if (!code) throw new CheckoutError(400, 'Promo code is required', 'missing_code');
   if (input.expiresAt && input.startsAt && input.expiresAt <= input.startsAt) {
@@ -1077,7 +1979,22 @@ export const createCheckoutPromoCode = async (input: CreatePromoCodeInput): Prom
       kind: PromoKind;
       discount_type: DiscountType;
       discount_value: number;
+      max_discount_paise: number | null;
+      min_order_paise: number;
+      currency: string;
+      starts_at: Date | null;
+      expires_at: Date | null;
+      max_redemptions: number | null;
+      max_redemptions_per_customer: number | null;
+      redeemed_count: number;
       is_active: boolean;
+      affiliate_id: string | null;
+      referrer_id: string | null;
+      campaign: string | null;
+      metadata_json: Record<string, unknown>;
+      created_by: string | null;
+      created_at: Date;
+      updated_at: Date;
     }>(
       `insert into checkout_promo_codes (
          code, label, kind, discount_type, discount_value, max_discount_paise,
@@ -1091,7 +2008,10 @@ export const createCheckoutPromoCode = async (input: CreatePromoCodeInput): Prom
          $12, $13, $14, $15,
          $16::jsonb, $17
        )
-       returning id, code, label, kind, discount_type, discount_value, is_active`,
+       returning id, code, label, kind, discount_type, discount_value, max_discount_paise,
+                 min_order_paise, currency, starts_at, expires_at, max_redemptions,
+                 max_redemptions_per_customer, redeemed_count, is_active, affiliate_id,
+                 referrer_id, campaign, metadata_json, created_by, created_at, updated_at`,
       [
         code,
         input.label ?? code,
@@ -1114,15 +2034,7 @@ export const createCheckoutPromoCode = async (input: CreatePromoCodeInput): Prom
     );
     const row = result.rows[0];
     if (!row) throw new CheckoutError(500, 'Could not create promo code', 'promo_create_failed');
-    return {
-      id: row.id,
-      code: row.code,
-      label: row.label,
-      kind: row.kind,
-      discountType: row.discount_type,
-      discountValue: row.discount_value,
-      active: row.is_active
-    };
+    return publicPromoCode(row);
   } catch (error) {
     if ((error as { code?: string }).code === '23505') {
       throw new CheckoutError(409, 'Promo code already exists', 'promo_exists');

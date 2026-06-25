@@ -11,7 +11,10 @@ const authGuardPatterns = [
   /\bdeviceGuard\b/,
   /\brequireAuth\b/,
   /\brequireInternalServiceAuth\b/,
-  /\brequireInternalOrDeviceAuth\b/
+  /\brequireInternalOrDeviceAuth\b/,
+  /\brequireCheckoutAdminServiceAuth\b/,
+  /\brequireCheckoutAdminSessionAuth\b/,
+  /\brequireCheckoutAdminSessionForPasswordChange\b/
 ];
 
 const intentionallyPublic = new Set([

@@ -31,6 +31,18 @@ const isWeakProductionSecret = (value: string | undefined, minLength = 32): bool
   ].includes(normalized);
 };
 
+const isWeakAdminBootstrapPassword = (value: string | undefined): boolean => {
+  const password = value ?? '';
+  if (password !== password.trim() || password.length < 12 || password.length > 128) return true;
+  const categories = [
+    /[a-z]/.test(password),
+    /[A-Z]/.test(password),
+    /[0-9]/.test(password),
+    /[^a-zA-Z0-9]/.test(password)
+  ].filter(Boolean).length;
+  return categories < 3 || isWeakProductionSecret(password, 12);
+};
+
 const isProductionPlaceholder = (value: string | undefined): boolean => {
   const normalized = (value ?? '').trim().toLowerCase();
   return (
@@ -211,6 +223,10 @@ const baseEnvSchema = z.object({
   CHECKOUT_DEFAULT_PRODUCT_ID: z.string().default('reca-suno'),
   CHECKOUT_PROMO_RESERVATION_TTL_SEC: z.coerce.number().int().min(60).default(45 * 60),
   CHECKOUT_DEV_PRICE_OVERRIDE_PAISE: z.coerce.number().int().min(100).optional(),
+  CHECKOUT_ADMIN_BOOTSTRAP_EMAIL: z.string().email().default('shivansh@heyreca.com'),
+  CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD: z.string().optional(),
+  CHECKOUT_ADMIN_SERVICE_TOKEN: z.string().optional(),
+  CHECKOUT_ADMIN_AUTH_TOKEN_SECRET: z.string().optional(),
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional()
@@ -442,7 +458,14 @@ const apiEnvSchema = baseEnvSchema.superRefine((env, ctx) => {
       });
     }
 
-    for (const key of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] as const) {
+    for (const key of [
+      'CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD',
+      'CHECKOUT_ADMIN_SERVICE_TOKEN',
+      'CHECKOUT_ADMIN_AUTH_TOKEN_SECRET',
+      'RAZORPAY_KEY_ID',
+      'RAZORPAY_KEY_SECRET',
+      'RAZORPAY_WEBHOOK_SECRET'
+    ] as const) {
       if (!env[key]) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -450,6 +473,41 @@ const apiEnvSchema = baseEnvSchema.superRefine((env, ctx) => {
           message: `${key} is required when CHECKOUT_ENABLED=true in production`
         });
       }
+    }
+
+    if (env.CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD && isWeakAdminBootstrapPassword(env.CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD'],
+        message: 'CHECKOUT_ADMIN_BOOTSTRAP_PASSWORD must be 12-128 characters and use at least three character classes'
+      });
+    }
+    for (const key of ['CHECKOUT_ADMIN_SERVICE_TOKEN', 'CHECKOUT_ADMIN_AUTH_TOKEN_SECRET'] as const) {
+      if (env[key] && isWeakProductionSecret(env[key], 32)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} must be a high-entropy secret in production`
+        });
+      }
+    }
+    if (
+      env.CHECKOUT_ADMIN_SERVICE_TOKEN &&
+      env.CHECKOUT_ADMIN_AUTH_TOKEN_SECRET &&
+      env.CHECKOUT_ADMIN_SERVICE_TOKEN === env.CHECKOUT_ADMIN_AUTH_TOKEN_SECRET
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CHECKOUT_ADMIN_AUTH_TOKEN_SECRET'],
+        message: 'CHECKOUT_ADMIN_AUTH_TOKEN_SECRET must differ from CHECKOUT_ADMIN_SERVICE_TOKEN'
+      });
+    }
+    if (env.CHECKOUT_ADMIN_SERVICE_TOKEN && env.CHECKOUT_ADMIN_SERVICE_TOKEN === env.INTERNAL_SERVICE_TOKEN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CHECKOUT_ADMIN_SERVICE_TOKEN'],
+        message: 'CHECKOUT_ADMIN_SERVICE_TOKEN must differ from INTERNAL_SERVICE_TOKEN'
+      });
     }
   }
 });

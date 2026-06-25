@@ -1019,6 +1019,23 @@ export const checkoutProducts = pgTable('checkout_products', {
   activeIdx: index('checkout_products_active_idx').on(table.isActive)
 }));
 
+export const checkoutAdminUsers = pgTable('checkout_admin_users', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  email: text('email').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  role: text('role').$type<'owner' | 'admin'>().default('admin').notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  mustChangePassword: boolean('must_change_password').default(true).notNull(),
+  createdBy: text('created_by'),
+  lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  emailUnique: uniqueIndex('checkout_admin_users_email_uq').on(table.email),
+  activeIdx: index('checkout_admin_users_active_idx').on(table.isActive, table.createdAt)
+}));
+
 export const checkoutPromoCodes = pgTable('checkout_promo_codes', {
   id: uuid('id').defaultRandom().primaryKey(),
   code: text('code').notNull(),
