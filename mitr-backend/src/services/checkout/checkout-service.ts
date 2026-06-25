@@ -25,6 +25,11 @@ import {
   type RazorpayPayment
 } from './razorpay-client.js';
 import { issueCheckoutAdminSessionToken } from './checkout-admin-auth.js';
+import {
+  notifyAdminOrderPaid,
+  sendAdminInvite,
+  sendCustomerPaymentReminder
+} from '../email/checkout-emails.js';
 
 type PromoKind = 'promo' | 'referral' | 'affiliate';
 type DiscountType = 'flat' | 'percent';
@@ -1226,6 +1231,8 @@ export const createCheckoutAdminUser = async (
     );
     const admin = result.rows[0];
     if (!admin) throw new CheckoutError(500, 'Could not create admin user', 'admin_user_create_failed');
+    // Best-effort: email the new admin their temporary login credentials.
+    void sendAdminInvite({ email: admin.email, temporaryPassword, createdBy: input.createdBy });
     return { admin: publicCheckoutAdminUser(admin), temporaryPassword };
   } catch (error) {
     if ((error as { code?: string }).code === '23505') {
@@ -1479,8 +1486,8 @@ const markOrderPaid = async (
   order: OrderRow,
   paymentId: string,
   providerPaymentId: string
-): Promise<void> => {
-  await client.query(
+): Promise<{ firstPaid: boolean }> => {
+  const result = await client.query(
     `update checkout_orders
      set status = 'paid',
          razorpay_payment_id = $2,
@@ -1488,7 +1495,7 @@ const markOrderPaid = async (
          payment_verified_at = coalesce(payment_verified_at, now()),
          paid_at = coalesce(paid_at, now()),
          updated_at = now()
-     where id = $1`,
+     where id = $1 and status <> 'paid'`,
     [order.id, providerPaymentId]
   );
   await markPromoRedeemed(client, order.id);
@@ -1498,6 +1505,27 @@ const markOrderPaid = async (
      where id = $1`,
     [paymentId]
   );
+  // rowCount > 0 only on the transition into 'paid', so callers can fire the
+  // confirmation email exactly once even though verify + webhook both run.
+  return { firstPaid: (result.rowCount ?? 0) > 0 };
+};
+
+// Best-effort admin notification once an order's payment is confirmed. Fired
+// after the DB transaction commits so a slow/failed email never blocks or rolls
+// back the payment, and only when markOrderPaid reported the first transition.
+const fireOrderPaidNotification = (order: OrderRow, providerPaymentId: string | null): void => {
+  void notifyAdminOrderPaid({
+    customerName: order.customer_name,
+    customerEmail: order.customer_email,
+    customerPhone: order.customer_phone,
+    productName: order.product_name,
+    formattedAmount: formattedAmount(order.amount_paise, order.currency),
+    promoCode: order.promo_code,
+    razorpayPaymentId: providerPaymentId ?? order.razorpay_payment_id,
+    razorpayOrderId: order.razorpay_order_id,
+    shippingAddress: order.shipping_address_text || undefined,
+    internalOrderId: order.id
+  });
 };
 
 const markOrderFailed = async (
@@ -1522,7 +1550,7 @@ const reconcileVerifiedPayment = async (
   order: OrderRow,
   payment: RazorpayPayment,
   signatureValid: boolean
-): Promise<{ status: string; paid: boolean }> => {
+): Promise<{ status: string; paid: boolean; firstPaid: boolean }> => {
   if (payment.order_id !== order.razorpay_order_id) {
     const paymentId = await upsertCheckoutPayment(client, {
       orderId: order.id,
@@ -1542,7 +1570,7 @@ const reconcileVerifiedPayment = async (
       [order.id, signatureValid]
     );
     logger.warn('Checkout payment order mismatch', { orderId: order.id, paymentId });
-    return { status: 'payment_review_required', paid: false };
+    return { status: 'payment_review_required', paid: false, firstPaid: false };
   }
 
   if (payment.amount !== order.amount_paise || payment.currency !== order.currency) {
@@ -1564,7 +1592,7 @@ const reconcileVerifiedPayment = async (
       [order.id, signatureValid]
     );
     logger.warn('Checkout payment amount mismatch', { orderId: order.id, paymentId });
-    return { status: 'payment_review_required', paid: false };
+    return { status: 'payment_review_required', paid: false, firstPaid: false };
   }
 
   const providerStatus = payment.captured || payment.status === 'captured'
@@ -1591,13 +1619,13 @@ const reconcileVerifiedPayment = async (
   });
 
   if (providerStatus === 'captured') {
-    await markOrderPaid(client, order, paymentId, payment.id);
-    return { status: 'paid', paid: true };
+    const { firstPaid } = await markOrderPaid(client, order, paymentId, payment.id);
+    return { status: 'paid', paid: true, firstPaid };
   }
 
   if (providerStatus === 'failed') {
     await markOrderFailed(client, order, payment.id);
-    return { status: 'payment_failed', paid: false };
+    return { status: 'payment_failed', paid: false, firstPaid: false };
   }
 
   await client.query(
@@ -1610,7 +1638,11 @@ const reconcileVerifiedPayment = async (
      where id = $1 and status <> 'paid'`,
     [order.id, providerStatus === 'authorized' ? 'payment_authorized' : 'payment_pending', payment.id, signatureValid]
   );
-  return { status: providerStatus === 'authorized' ? 'payment_authorized' : 'payment_pending', paid: false };
+  return {
+    status: providerStatus === 'authorized' ? 'payment_authorized' : 'payment_pending',
+    paid: false,
+    firstPaid: false
+  };
 };
 
 export const verifyCheckoutPayment = async (
@@ -1693,7 +1725,8 @@ export const verifyCheckoutPayment = async (
 
     const result = await reconcileVerifiedPayment(client, order, payment, true);
     await client.query('commit');
-    return { verified: true, ...result };
+    if (result.firstPaid) fireOrderPaidNotification(order, payment.id);
+    return { verified: true, status: result.status, paid: result.paid };
   } catch (error) {
     await client.query('rollback');
     if (error instanceof CheckoutError) throw error;
@@ -1804,6 +1837,7 @@ export const handleRazorpayWebhook = async (input: {
     );
 
     await client.query('commit');
+    if (result.firstPaid) fireOrderPaidNotification(order, payment.id);
     return { ok: true, status: result.status };
   } catch (error) {
     await client.query('rollback');
@@ -1812,6 +1846,49 @@ export const handleRazorpayWebhook = async (input: {
   } finally {
     client.release();
   }
+};
+
+export const sendCheckoutPaymentReminder = async (input: {
+  orderId: string;
+  note?: string;
+}): Promise<{ sent: boolean; skipped: boolean; email: string; status: string }> => {
+  checkoutEnabled();
+  const client = await pgPool.connect();
+  let order: OrderRow;
+  try {
+    const result = await client.query<OrderRow>(
+      `select * from checkout_orders where id = $1`,
+      [input.orderId]
+    );
+    const row = result.rows[0];
+    if (!row) throw new CheckoutError(404, 'Checkout order was not found', 'order_not_found');
+    order = row;
+  } finally {
+    client.release();
+  }
+
+  if (order.status === 'paid') {
+    throw new CheckoutError(409, 'Order is already paid', 'order_already_paid');
+  }
+
+  const outcome = await sendCustomerPaymentReminder({
+    customerName: order.customer_name,
+    customerEmail: order.customer_email,
+    productName: order.product_name,
+    formattedAmount: formattedAmount(order.amount_paise, order.currency),
+    note: input.note
+  });
+
+  if (!outcome.delivered && !outcome.skipped) {
+    throw new CheckoutError(502, 'Could not send the payment reminder email', 'payment_reminder_failed');
+  }
+
+  return {
+    sent: outcome.delivered,
+    skipped: Boolean(outcome.skipped),
+    email: order.customer_email,
+    status: order.status
+  };
 };
 
 export const listCheckoutPromoCodes = async (): Promise<{

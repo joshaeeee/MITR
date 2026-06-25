@@ -1181,3 +1181,31 @@ export const checkoutPaymentEvents = pgTable('checkout_payment_events', {
   orderReceivedIdx: index('checkout_payment_events_order_received_idx').on(table.orderId, table.receivedAt),
   eventTypeIdx: index('checkout_payment_events_type_idx').on(table.eventType, table.receivedAt)
 }));
+
+export interface EmailTemplateVariable {
+  key: string;
+  label: string;
+  required: boolean;
+  example: string;
+}
+
+export const emailTemplates = pgTable('email_templates', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  key: text('key').notNull(),
+  name: text('name').notNull(),
+  description: text('description').default('').notNull(),
+  category: text('category').$type<'customer' | 'internal'>().default('customer').notNull(),
+  subject: text('subject').notNull(),
+  html: text('html').notNull(),
+  textBody: text('text_body').default('').notNull(),
+  variables: jsonb('variables').$type<EmailTemplateVariable[]>().default([]).notNull(),
+  sampleData: jsonb('sample_data').$type<Record<string, string>>().default({}).notNull(),
+  sendableFromDashboard: boolean('sendable_from_dashboard').default(false).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  keyUnique: uniqueIndex('email_templates_key_uq').on(table.key),
+  activeCategoryIdx: index('email_templates_active_category_idx').on(table.isActive, table.category)
+}));

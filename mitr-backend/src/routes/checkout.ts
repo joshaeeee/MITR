@@ -23,11 +23,16 @@ import {
   listCheckoutPromoCodes,
   listCheckoutAdminUsers,
   loginCheckoutAdmin,
+  sendCheckoutPaymentReminder,
   updateCheckoutProduct,
   updateCheckoutPromoCode,
   validateCheckoutPromo,
   verifyCheckoutPayment
 } from '../services/checkout/checkout-service.js';
+import {
+  getEmailTemplate,
+  listEmailTemplates
+} from '../services/email/email-templates.js';
 
 const addressSchema = z.object({
   line1: z.string().trim().min(2).max(160),
@@ -111,6 +116,23 @@ const listOrdersQuerySchema = z.object({
 
 const orderParamsSchema = z.object({
   orderId: z.string().uuid()
+});
+
+const paymentReminderSchema = z.object({
+  note: z.string().trim().max(500).optional()
+});
+
+const listEmailTemplatesQuerySchema = z.object({
+  sendableOnly: z.coerce.boolean().optional(),
+  includeInactive: z.coerce.boolean().optional()
+});
+
+const emailTemplateParamsSchema = z.object({
+  key: z.string().trim().regex(/^[a-z0-9-]{1,80}$/)
+});
+
+const emailTemplateQuerySchema = z.object({
+  preview: z.coerce.boolean().optional()
 });
 
 const promoParamsSchema = z.object({
@@ -353,6 +375,18 @@ export const registerCheckoutRoutes = (app: FastifyInstance): void => {
     }
   });
 
+  app.post('/checkout/admin/orders/:orderId/payment-reminder', { preHandler: [requireCheckoutAdminServiceAuth, requireCheckoutAdminSessionAuth] }, async (request, reply) => {
+    const params = orderParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    const body = paymentReminderSchema.safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
+    try {
+      return reply.send(await sendCheckoutPaymentReminder({ orderId: params.data.orderId, note: body.data.note }));
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
   app.get('/checkout/admin/promo-codes', { preHandler: [requireCheckoutAdminServiceAuth, requireCheckoutAdminSessionAuth] }, async (_request, reply) => {
     try {
       return reply.send(await listCheckoutPromoCodes());
@@ -400,6 +434,28 @@ export const registerCheckoutRoutes = (app: FastifyInstance): void => {
     if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
     try {
       return reply.send(await updateCheckoutProduct(params.data.productId, body.data));
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get('/checkout/admin/email-templates', { preHandler: [requireCheckoutAdminServiceAuth, requireCheckoutAdminSessionAuth] }, async (request, reply) => {
+    const parsed = listEmailTemplatesQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      return reply.send(await listEmailTemplates(parsed.data));
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get('/checkout/admin/email-templates/:key', { preHandler: [requireCheckoutAdminServiceAuth, requireCheckoutAdminSessionAuth] }, async (request, reply) => {
+    const params = emailTemplateParamsSchema.safeParse(request.params);
+    const query = emailTemplateQuerySchema.safeParse(request.query);
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    if (!query.success) return reply.status(400).send({ error: query.error.flatten() });
+    try {
+      return reply.send(await getEmailTemplate(params.data.key, { withPreview: query.data.preview ?? true }));
     } catch (error) {
       return sendError(reply, error);
     }

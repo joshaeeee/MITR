@@ -141,6 +141,13 @@
       "when": 1782396000000,
       "tag": "0019_checkout_admin_users",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1782403641806,
+      "tag": "0020_email_templates",
+      "breakpoints": true
     }
   ]
 }

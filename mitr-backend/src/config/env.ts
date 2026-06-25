@@ -229,7 +229,16 @@ const baseEnvSchema = z.object({
   CHECKOUT_ADMIN_AUTH_TOKEN_SECRET: z.string().optional(),
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
-  RAZORPAY_WEBHOOK_SECRET: z.string().optional()
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+  AUTOSEND_API_KEY: z.string().optional(),
+  AUTOSEND_BASE_URL: z.string().url().default('https://api.autosend.com/v1'),
+  EMAIL_FROM_ADDRESS: z.string().email().default('no-reply@heyreca.com'),
+  EMAIL_FROM_NAME: z.string().default('Reca'),
+  EMAIL_REPLY_TO_ADDRESS: z.string().email().optional(),
+  EMAIL_ADMIN_NOTIFY_ADDRESS: z.string().email().default('shivansh@heyreca.com'),
+  EMAIL_BRAND_SUPPORT_ADDRESS: z.string().email().default('support@heyreca.com'),
+  EMAIL_ADMIN_LOGIN_URL: z.string().url().default('https://admin.heyreca.com'),
+  EMAIL_PAYMENT_LINK_BASE_URL: z.string().url().default('https://www.heyreca.com/order')
 });
 
 const requireProductionPostgresTls = (
