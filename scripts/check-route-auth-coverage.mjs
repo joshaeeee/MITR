@@ -18,7 +18,8 @@ const intentionallyPublic = new Set([
   'GET /auth/swiggy/dev-authorize',
   'GET /auth/swiggy/callback',
   'GET /onboarding/questions',
-  'GET /healthz'
+  'GET /healthz',
+  'POST /checkout/webhooks/razorpay'
 ]);
 
 const intentionallyTokenOrRateLimited = new Set([
@@ -29,6 +30,11 @@ const intentionallyTokenOrRateLimited = new Set([
   'POST /auth/session/refresh',
   'POST /auth/oauth/apple',
   'POST /auth/oauth/google',
+  'GET /checkout/product',
+  'POST /checkout/promo/validate',
+  'POST /checkout/orders',
+  'POST /checkout/verify',
+  'POST /checkout/payments/verify',
   'POST /devices/claim/complete',
   'POST /devices/bootstrap/complete',
   'PUT /voice-notes/upload/:voiceNoteId'
