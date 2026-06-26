@@ -1,6 +1,7 @@
 import type { EmailTemplateVariable } from '../../db/schema.js';
 import {
   adminInviteEmail,
+  adminPasswordResetEmail,
   orderConfirmationCustomerEmail,
   orderPaidAdminEmail,
   paymentReminderEmail,
@@ -159,6 +160,28 @@ export const EMAIL_TEMPLATE_CATALOG: CatalogTemplate[] = [
       email: 'new-admin@heyreca.com',
       temporaryPassword: 'Xy7$kP2mQ9',
       createdBy: 'shivansh@heyreca.com',
+      loginUrl: 'https://admin.heyreca.com'
+    }
+  },
+  {
+    key: 'admin-password-reset',
+    name: 'Admin password reset',
+    description: 'Automated email with a new temporary password when an admin requests a password reset.',
+    category: 'internal',
+    sendableFromDashboard: false,
+    variables: [
+      { key: 'email', label: 'Admin email', required: true, example: 'admin@heyreca.com' },
+      { key: 'temporaryPassword', label: 'Temporary password', required: true, example: 'Rc-xxxx9!' },
+      { key: 'loginUrl', label: 'Dashboard URL', required: true, example: 'https://admin.heyreca.com' }
+    ],
+    content: adminPasswordResetEmail({
+      email: token('email'),
+      temporaryPassword: token('temporaryPassword'),
+      loginUrl: token('loginUrl')
+    }),
+    sampleData: {
+      email: 'admin@heyreca.com',
+      temporaryPassword: 'Rc-9aB3xK7m2!',
       loginUrl: 'https://admin.heyreca.com'
     }
   }

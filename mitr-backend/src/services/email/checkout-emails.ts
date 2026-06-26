@@ -3,6 +3,7 @@ import { logger } from '../../lib/logger.js';
 import { sendEmail, type SendEmailResult } from './autosend-client.js';
 import {
   adminInviteEmail,
+  adminPasswordResetEmail,
   orderPaidAdminEmail,
   paymentReminderEmail,
   type AdminInviteEmailData,
@@ -46,6 +47,20 @@ export const sendAdminInvite = (
 ): Promise<SendEmailResult> =>
   safeSend('admin_invite', () => {
     const content = adminInviteEmail({ ...input, loginUrl: env.EMAIL_ADMIN_LOGIN_URL });
+    return sendEmail({
+      to: { email: input.email },
+      subject: content.subject,
+      html: content.html,
+      text: content.text
+    });
+  });
+
+/** Email an admin a new temporary password after a forgot-password request. */
+export const sendAdminPasswordReset = (
+  input: { email: string; temporaryPassword: string }
+): Promise<SendEmailResult> =>
+  safeSend('admin_password_reset', () => {
+    const content = adminPasswordResetEmail({ ...input, loginUrl: env.EMAIL_ADMIN_LOGIN_URL });
     return sendEmail({
       to: { email: input.email },
       subject: content.subject,
