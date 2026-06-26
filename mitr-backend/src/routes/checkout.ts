@@ -31,7 +31,8 @@ import {
 } from '../services/checkout/checkout-service.js';
 import {
   getEmailTemplate,
-  listEmailTemplates
+  listEmailTemplates,
+  sendEmailTemplate
 } from '../services/email/email-templates.js';
 
 const addressSchema = z.object({
@@ -135,6 +136,14 @@ const emailTemplateQuerySchema = z.object({
   preview: z.coerce.boolean().optional()
 });
 
+const sendEmailTemplateSchema = z.object({
+  to: z.object({
+    email: z.string().trim().email().max(180),
+    name: z.string().trim().max(120).optional()
+  }),
+  variables: z.record(z.string(), z.string().max(2000)).default({})
+});
+
 const promoParamsSchema = z.object({
   code: z.string().trim().min(1).max(80)
 });
@@ -223,6 +232,11 @@ export const registerCheckoutRoutes = (app: FastifyInstance): void => {
     windowMs: 10 * 60 * 1000,
     max: 30,
     key: bodyFieldKey('razorpay_order_id')
+  });
+  const emailSendLimit = createRateLimit({
+    keyPrefix: 'checkout:email-send',
+    windowMs: 60 * 1000,
+    max: 30
   });
   const adminLoginLimit = createRateLimit({
     keyPrefix: 'checkout:admin-login',
@@ -456,6 +470,18 @@ export const registerCheckoutRoutes = (app: FastifyInstance): void => {
     if (!query.success) return reply.status(400).send({ error: query.error.flatten() });
     try {
       return reply.send(await getEmailTemplate(params.data.key, { withPreview: query.data.preview ?? true }));
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/checkout/admin/email-templates/:key/send', { preHandler: [requireCheckoutAdminServiceAuth, requireCheckoutAdminSessionAuth, emailSendLimit] }, async (request, reply) => {
+    const params = emailTemplateParamsSchema.safeParse(request.params);
+    const body = sendEmailTemplateSchema.safeParse(request.body);
+    if (!params.success) return reply.status(400).send({ error: params.error.flatten() });
+    if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
+    try {
+      return reply.send(await sendEmailTemplate({ key: params.data.key, to: body.data.to, variables: body.data.variables }));
     } catch (error) {
       return sendError(reply, error);
     }

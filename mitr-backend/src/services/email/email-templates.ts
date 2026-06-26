@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { pgPool } from '../../db/client.js';
 import type { EmailTemplateVariable } from '../../db/schema.js';
 import { CheckoutError } from '../checkout/checkout-service.js';
+import { sendEmail } from './autosend-client.js';
 import { EMAIL_TEMPLATE_CATALOG } from './template-catalog.js';
 
 interface EmailTemplateRow {
@@ -176,15 +177,23 @@ export const getEmailTemplate = async (
   }
 };
 
-/** Fetch the raw row for sending. Exported for the send API. */
-export const getEmailTemplateForSend = async (
+/** Fetch the raw row for sending. */
+const getEmailTemplateForSend = async (
   key: string
-): Promise<{ subject: string; html: string; text: string; variables: EmailTemplateVariable[]; isActive: boolean }> => {
+): Promise<{
+  subject: string;
+  html: string;
+  text: string;
+  variables: EmailTemplateVariable[];
+  isActive: boolean;
+  sendableFromDashboard: boolean;
+}> => {
   const client = await pgPool.connect();
   try {
     await ensureEmailTemplatesSeeded(client);
     const result = await client.query<EmailTemplateRow>(
-      `select subject, html, text_body, variables, is_active from email_templates where key = $1`,
+      `select subject, html, text_body, variables, is_active, sendable_from_dashboard
+       from email_templates where key = $1`,
       [key]
     );
     const row = result.rows[0];
@@ -195,9 +204,46 @@ export const getEmailTemplateForSend = async (
       html: row.html,
       text: row.text_body,
       variables: row.variables ?? [],
-      isActive: row.is_active
+      isActive: row.is_active,
+      sendableFromDashboard: row.sendable_from_dashboard
     };
   } finally {
     client.release();
   }
+};
+
+/**
+ * Renders a dashboard-sendable template with the supplied variables and sends it
+ * via AutoSend. Throws on unknown/inactive/non-sendable template or missing
+ * required variables; throws 502 if AutoSend hard-fails. Returns skipped:true
+ * when AutoSend is not configured (no key) rather than treating it as an error.
+ */
+export const sendEmailTemplate = async (input: {
+  key: string;
+  to: { email: string; name?: string };
+  variables: Record<string, string | null | undefined>;
+}): Promise<{ sent: boolean; skipped: boolean; emailId?: string; to: string }> => {
+  const template = await getEmailTemplateForSend(input.key);
+  if (!template.sendableFromDashboard) {
+    throw new CheckoutError(403, 'This template cannot be sent from the dashboard', 'email_template_not_sendable');
+  }
+
+  const rendered = renderEmailTemplate(template, input.variables);
+  const result = await sendEmail({
+    to: { email: input.to.email, name: input.to.name },
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text
+  });
+
+  if (!result.delivered && !result.skipped) {
+    throw new CheckoutError(502, 'Could not send the email', 'email_send_failed');
+  }
+
+  return {
+    sent: result.delivered,
+    skipped: Boolean(result.skipped),
+    emailId: result.emailId,
+    to: input.to.email
+  };
 };
