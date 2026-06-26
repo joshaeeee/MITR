@@ -28,6 +28,7 @@ import { issueCheckoutAdminSessionToken } from './checkout-admin-auth.js';
 import {
   notifyAdminOrderPaid,
   sendAdminInvite,
+  sendAdminPasswordReset,
   sendCustomerPaymentReminder
 } from '../email/checkout-emails.js';
 
@@ -1185,6 +1186,55 @@ export const loginCheckoutAdmin = async (
       admin: publicCheckoutAdminUser(currentAdmin),
       sessionToken: issueCheckoutAdminSessionToken(currentAdmin.id, currentAdmin.password_hash)
     };
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * Forgot-password: issues a fresh temporary password for an admin and emails it,
+ * forcing a change on next login. Always returns a generic success response so
+ * the endpoint cannot be used to enumerate which emails are registered admins.
+ */
+export const requestCheckoutAdminPasswordReset = async (
+  input: { email: string }
+): Promise<{ ok: true }> => {
+  checkoutEnabled();
+  const email = normalizeEmail(input.email);
+  if (!email) return { ok: true };
+
+  const client = await pgPool.connect();
+  try {
+    await ensureBootstrapCheckoutAdminUser(client);
+    const result = await client.query<CheckoutAdminUserRow>(
+      `select id, email, is_active from checkout_admin_users where email = $1`,
+      [email]
+    );
+    const admin = result.rows[0];
+    if (!admin || !admin.is_active) {
+      // Unknown or disabled account: do nothing, but respond identically.
+      return { ok: true };
+    }
+
+    const temporaryPassword = generateTemporaryAdminPassword();
+    const policy = validatePasswordPolicy({ password: temporaryPassword, email });
+    if (!policy.ok) {
+      logger.error('Generated admin reset password failed policy', { reason: policy.reason });
+      return { ok: true };
+    }
+
+    await client.query(
+      `update checkout_admin_users
+       set password_hash = $2, must_change_password = true, updated_at = now()
+       where id = $1`,
+      [admin.id, hashAdminPassword(temporaryPassword)]
+    );
+
+    void sendAdminPasswordReset({ email, temporaryPassword });
+    return { ok: true };
+  } catch (error) {
+    logger.error('Checkout admin password reset failed', { error: (error as Error).message });
+    return { ok: true };
   } finally {
     client.release();
   }

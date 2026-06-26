@@ -221,6 +221,47 @@ export const adminInviteEmail = (data: AdminInviteEmailData): EmailContent => {
   return { subject: 'Your Reca admin access (temporary password inside)', html, text };
 };
 
+// --- 2b. Admin password reset (forgot password) ------------------------------
+
+export interface AdminPasswordResetEmailData {
+  email: string;
+  temporaryPassword: string;
+  loginUrl: string;
+}
+
+export const adminPasswordResetEmail = (data: AdminPasswordResetEmailData): EmailContent => {
+  const credentials = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px dashed ${BRAND.orange};border-radius:14px;margin:4px 0 8px;background-color:#fdf3ea;">
+      <tr><td style="padding:14px 16px;font-family:Helvetica,Arial,sans-serif;font-size:13px;color:${BRAND.muted};">Email</td>
+          <td style="padding:14px 16px;font-family:'Courier New',monospace;font-size:14px;font-weight:700;color:${BRAND.ink};">${esc(data.email)}</td></tr>
+      <tr><td style="padding:14px 16px;font-family:Helvetica,Arial,sans-serif;font-size:13px;color:${BRAND.muted};border-top:1px solid ${BRAND.hairline};">New temporary password</td>
+          <td style="padding:14px 16px;font-family:'Courier New',monospace;font-size:16px;font-weight:700;color:${BRAND.forest};border-top:1px solid ${BRAND.hairline};letter-spacing:1px;">${esc(data.temporaryPassword)}</td></tr>
+    </table>
+    <p style="margin:14px 0 0;font-family:Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:${BRAND.muted};">For your security you'll be asked to set a new password the moment you sign in. Your previous password no longer works.</p>`;
+
+  const html = wrapShell({
+    preheader: 'A new temporary password for your Reca admin account.',
+    heading: 'Reset your Reca admin password',
+    intro: 'We received a request to reset your Reca admin password. Use the temporary password below to sign in, then choose a new one.',
+    bodyHtml: credentials,
+    cta: { label: 'Sign in to the dashboard', url: data.loginUrl },
+    footerNote: "If you didn't request this, sign in and change your password immediately — your account may be at risk."
+  });
+
+  const text = [
+    'Reset your Reca admin password',
+    'We received a request to reset your Reca admin password.',
+    '',
+    `Email: ${data.email}`,
+    `New temporary password: ${data.temporaryPassword}`,
+    '',
+    `Sign in: ${data.loginUrl}`,
+    "You'll be asked to set a new password on sign-in. Your previous password no longer works.",
+    "If you didn't request this, sign in and change your password immediately."
+  ].join('\n');
+
+  return { subject: 'Reset your Reca admin password', html, text };
+};
+
 // --- 3. Customer pending-payment reminder ------------------------------------
 
 export interface PaymentReminderEmailData {

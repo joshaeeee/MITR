@@ -23,6 +23,7 @@ import {
   listCheckoutPromoCodes,
   listCheckoutAdminUsers,
   loginCheckoutAdmin,
+  requestCheckoutAdminPasswordReset,
   sendCheckoutPaymentReminder,
   updateCheckoutProduct,
   updateCheckoutPromoCode,
@@ -194,6 +195,10 @@ const adminLoginSchema = z.object({
   password: z.string().min(1).max(256)
 });
 
+const adminForgotPasswordSchema = z.object({
+  email: z.string().trim().email().max(180)
+});
+
 const createAdminUserSchema = z.object({
   email: z.string().trim().email().max(180)
 });
@@ -242,6 +247,12 @@ export const registerCheckoutRoutes = (app: FastifyInstance): void => {
     keyPrefix: 'checkout:admin-login',
     windowMs: 15 * 60 * 1000,
     max: 8,
+    key: bodyFieldKey('email')
+  });
+  const adminForgotPasswordLimit = createRateLimit({
+    keyPrefix: 'checkout:admin-forgot',
+    windowMs: 15 * 60 * 1000,
+    max: 5,
     key: bodyFieldKey('email')
   });
   const verifyPaymentHandler = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -319,6 +330,16 @@ export const registerCheckoutRoutes = (app: FastifyInstance): void => {
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
     try {
       return reply.send(await loginCheckoutAdmin(parsed.data));
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.post('/checkout/admin/auth/forgot-password', { preHandler: [requireCheckoutAdminServiceAuth, adminForgotPasswordLimit] }, async (request, reply) => {
+    const parsed = adminForgotPasswordSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      return reply.send(await requestCheckoutAdminPasswordReset(parsed.data));
     } catch (error) {
       return sendError(reply, error);
     }
